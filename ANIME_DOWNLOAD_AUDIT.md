@@ -300,3 +300,57 @@ $ tsx scripts/anime-audit-repro.mjs
 - `ansembed.net/embed-8fgve1livt6b.html` → renders a playing video ("Black Torch S1 01 VOSTFR", 23:45) — streams exist server-side.
 - `GET …/fetch.php?query=…` → HTTP 500 (POST-only; expected).
 - `anime-sama.eu` → NXDOMAIN (dead old domain); `.to`/`.tv`/`.si` resolve (Cloudflare).
+
+### 8.1 nakanime player-host coverage — the wider mirror ecosystem (2026-08-31, fourth push)
+
+**Symptom that motivated this:** on a fresh deployment, `.a rezero s5 ep2 r2`
+flowed perfectly through search → seasons → episodes, then died at the quality
+probe ("Real qualities unavailable (protected playlist)") AND at download
+(multi-mirror + legacy VidMoly both failed) — the WhatsApp card came back with
+`Player Source: Direct Stream` and no player link. Root cause: nakanime serves
+episodes from a MUCH wider player set than anime-sama, and the extractor only
+knew the anime-sama subset (embed4me, smoothpre, sibnet, sendvid,
+vidmoly/ansembed/vmpx/topembed).
+
+**Player set observed on nakanime** (from the reference downloader's domain
+registry) and the status after this push:
+
+| Host(s) | Recipe | Status |
+|---|---|---|
+| ansembed.net | plain m3u8 | already supported |
+| embed4me/lpayer | /api/v1/video + AES-128-CBC | already supported |
+| video.sibnet.ru | direct mp4 | already supported |
+| sendvid.com | direct mp4 | already supported |
+| vidmoly.* (→.biz), vmpx, topembed | packed/HLS | already supported |
+| smoothpre/dramiyos | packed HLS | already supported |
+| **movearnpre.com, ovaltinecdn.com** | packed, HLS at `/stream/…` (relative → resolve against embed origin) | **added** |
+| **uqload.is** | embed-`<code>`.html, plain or packed m3u8 | **added** |
+| **vidzy.live/.org** | packed + fallback `var k=[..]` XOR(base64) body | **added** |
+| **luluvdo.com / lulustream.com** | plain or packed m3u8 | **added** |
+| **oneupload.net/.to** | jwplayer `file:"…m3u8|mp4"` | **added** |
+| **filemoon / bysesukior.com** | `GET /api/videos/<code>` → AES-GCM JSON (key = key_parts[version] ‖ key_parts[31−version], b64url, tag = last 16 B) | **added** |
+| **voe** (rotating domains, `/e/<code>`) | application/json payload: rot13 → strip `@$ ^^ ~@ %? *~ !! #&` → b64 → (ord−3) → reverse → b64 → JSON `.source` | **added** |
+| **mivalyo.com, dingtezuni.com** | generic packed/m3u8 scan | **added (generic)** |
+
+**Implementation** (`animeStreamExtractor.ts`):
+- `scanPlayerHtmlForStreams(html, origin)` — pure scanner: unpack Dean-Edwards,
+  then absolute m3u8/txt (master preferred) → relative `/…m3u8` → vidzy XOR body
+  → direct mp4. URL regexes EXCLUDE `|` (the packer's word separator caused
+  `url|nextword` captures — caught by a unit test).
+- `probeGenericPlayerPage(url)` — fetch + scan + real HLS track resolution; used
+  by the packed-player family AND as a **last-resort branch for any unknown
+  host**, so a future mirror swap degrades gracefully instead of dying.
+- `decryptFilemoonPayload`, `decodeVoePayload`, `vidzyXorDecode`, `isVoeStyleUrl`
+  exported for tests (16 new unit tests incl. AES-GCM round-trip with Node
+  crypto and a full voe chain round-trip). Suite: 178/178.
+- `hostPriority` re-ranked: ansembed 1, embed4me 2, sibnet 3, sendvid 4,
+  vidmoly 5, smoothpre/movearnpre 6, uqload/vidzy/lulu 7, oneupload/filemoon/
+  mivalyo/dingtezuni 8, voe 9, unknown 10.
+- `urlSafety.ts`: concrete new hosts added to both trusted lists (fast path
+  only — unknown public hosts were already allowed via the DNS/private-IP
+  check, so stream CDNs are never blocked).
+- `scripts/anime-repro.ts`: one-shot replay of the whole `.a q sN epN rN`
+  pipeline on the live host (search source, seasons, per-list player URLs,
+  per-mirror HTTP status + extraction result, optional `--dl` download) —
+  `npx tsx scripts/anime-repro.ts rezero 5 2 --dl`. `searchAnime`,
+  `parseSeasons`, `parseEpisodes` are now exported from novabox for it.

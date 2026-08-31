@@ -133,7 +133,9 @@ async function isPublicFetchTarget(rawUrl: string, label: string): Promise<boole
 // Search Anime Catalog (anime-sama first; nakanime mirror as automatic
 // fallback when anime-sama is unreachable — e.g. Cloudflare 403 on the
 // host's IP range, see ANIME_DOWNLOAD_AUDIT.md R3)
-async function searchAnime(query: string) {
+// Exported for scripts/anime-repro.ts (one-shot pipeline replay used to debug
+// `.a` failures on the live host — see scripts/anime-repro.ts header).
+export async function searchAnime(query: string) {
   try {
     return await searchAnimeSama(query);
   } catch (err: any) {
@@ -177,8 +179,8 @@ async function searchAnimeSama(query: string) {
 }
 
 // Parse main anime page for seasons (panneauAnime calls; nakanime mirror
-// uses its own season index)
-async function parseSeasons(animeUrl: string) {
+// uses its own season index). Exported for scripts/anime-repro.ts.
+export async function parseSeasons(animeUrl: string) {
   if (isNakanimeUrl(animeUrl)) {
     return nakanimeSeasons(animeUrl);
   }
@@ -229,8 +231,9 @@ async function checkVfExists(url: string): Promise<boolean> {
   }
 }
 
-// Parse episodes.js file (nakanime mirror resolves players via its API)
-async function parseEpisodes(jsUrl: string) {
+// Parse episodes.js file (nakanime mirror resolves players via its API).
+// Exported for scripts/anime-repro.ts.
+export async function parseEpisodes(jsUrl: string) {
   if (isNakanimeUrl(jsUrl)) {
     return nakanimeEpisodePlayers(jsUrl.replace(/episodes\.js$/, "").replace(/\/$/, ""));
   }

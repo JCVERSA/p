@@ -176,12 +176,329 @@ export function hostPriority(url: string): number {
   if (l.includes("sibnet")) return 3;
   if (l.includes("sendvid")) return 4;
   if (l.includes("vidmoly") || l.includes("vmpx") || l.includes("topembed")) return 5;
-  if (l.includes("smoothpre") || l.includes("dramiyos")) return 6;
-  return 7;
+  if (l.includes("smoothpre") || l.includes("dramiyos") || l.includes("movearnpre") || l.includes("ovaltinecdn")) return 6;
+  if (l.includes("uqload") || l.includes("vidzy") || l.includes("luluvdo") || l.includes("lulustream")) return 7;
+  if (l.includes("oneupload") || l.includes("filemoon") || l.includes("bysesukior") || l.includes("mivalyo") || l.includes("dingtezuni")) return 8;
+  if (l.includes("voe")) return 9;
+  return 10;
 }
 
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+// ============================================================================
+// nakanime.tv mirror player ecosystem (2026-08, audit §8)
+// ============================================================================
+// nakanime re-serves the anime-sama catalog with a WIDER player set than
+// anime-sama itself. Hosts beyond the legacy recipes above:
+//   movearnpre.com / ovaltinecdn.com  packed page, HLS under /stream/...
+//   uqload.is                         embed-<code>.html, plain or packed m3u8
+//   vidzy.live / vidzy.org            packed page + XOR(base64, var k=[..])
+//   luluvdo.com / lulustream.com      plain or packed m3u8
+//   oneupload.net / .to               jwplayer file:"https://...m3u8"
+//   filemoon / bysesukior.com         /api/videos/<code> AES-GCM JSON payload
+//   voe (rotating domains, /e/<code>) rot13+base64 JSON payload in the page
+//   mivalyo.com / dingtezuni.com      generic packed / m3u8 probe
+// Recipes ported from the reference nakanime downloader (SertraFurr).
+
+/** Player hosts handled by the generic page probe (packed / m3u8 / mp4 scan). */
+export const NAKANIME_GENERIC_PLAYER_HINTS = [
+  "movearnpre", "ovaltinecdn", "uqload", "vidzy", "luluvdo", "lulustream",
+  "oneupload", "mivalyo", "dingtezuni", "smoothpre", "dramiyos"
+];
+
+/** Base64 (url-safe tolerant, padding tolerant) decode. */
+export function b64UrlSafeDecode(s: string): Buffer {
+  let t = (s || "").replace(/-/g, "+").replace(/_/g, "/");
+  const r = t.length % 4;
+  if (r) t += "=".repeat(4 - r);
+  return Buffer.from(t, "base64");
+}
+
+function rot13(s: string): string {
+  let out = "";
+  for (const c of s) {
+    const o = c.charCodeAt(0);
+    if (o >= 65 && o <= 90) out += String.fromCharCode(((o - 65 + 13) % 26) + 65);
+    else if (o >= 97 && o <= 122) out += String.fromCharCode(((o - 97 + 13) % 26) + 97);
+    else out += c;
+  }
+  return out;
+}
+
+/**
+ * voe embedded payload decoder:
+ * rot13 -> strip noise ops -> base64 -> (ord-3) -> reverse -> base64 -> JSON
+ */
+export function decodeVoePayload(payload: string): any | null {
+  try {
+    if (!payload) return null;
+    let s = rot13(payload);
+    for (const op of ["@$", "^^", "~@", "%?", "*~", "!!", "#&"]) {
+      s = s.split(op).join("");
+    }
+    s = b64UrlSafeDecode(s).toString("utf8");
+    s = Array.from(s, (c) => String.fromCharCode(c.charCodeAt(0) - 3)).join("");
+    s = s.split("").reverse().join("");
+    s = b64UrlSafeDecode(s).toString("utf8");
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+/** vidzy fallback: base64 body XOR'd with the byte list from `var k = [..]`. */
+export function vidzyXorDecode(encodedB64: string, keyBytes: number[]): string {
+  const raw = b64UrlSafeDecode(encodedB64);
+  const key = Buffer.from(keyBytes.filter((n) => Number.isFinite(n) && n >= 0 && n <= 255));
+  const out = Buffer.allocUnsafe(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    out[i] = raw[i] ^ key[i % key.length];
+  }
+  return out.toString("utf8");
+}
+
+/**
+ * filemoon /api/videos/<code> payload: AES-GCM. Key is reassembled from
+ * key_parts[version] + key_parts[31 - version] (1-based), payload's last 16
+ * bytes are the auth tag.
+ */
+export function decryptFilemoonPayload(
+  versionStr: string,
+  keyParts: unknown,
+  ivB64: unknown,
+  payloadB64: unknown
+): any | null {
+  try {
+    if (!versionStr || !Array.isArray(keyParts) || !ivB64 || !payloadB64) return null;
+    const version = parseInt(versionStr, 10);
+    if (isNaN(version)) return null;
+    const aIdx = version;
+    const iIdx = 31 - version;
+    if (aIdx < 1 || aIdx > keyParts.length || iIdx < 1 || iIdx > keyParts.length) return null;
+    const key = Buffer.concat([
+      b64UrlSafeDecode(String(keyParts[aIdx - 1])),
+      b64UrlSafeDecode(String(keyParts[iIdx - 1]))
+    ]);
+    const iv = b64UrlSafeDecode(String(ivB64));
+    const payload = b64UrlSafeDecode(String(payloadB64));
+    if (payload.length < 16 || iv.length < 8) return null;
+    const tag = payload.subarray(payload.length - 16);
+    const ciphertext = payload.subarray(0, payload.length - 16);
+    const algo = key.length === 32 ? "aes-256-gcm" : key.length === 16 ? "aes-128-gcm" : key.length === 24 ? "aes-192-gcm" : null;
+    if (!algo) return null;
+    const decipher = crypto.createDecipheriv(algo, key, iv, { authTagLength: 16 });
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+    return JSON.parse(decrypted);
+  } catch {
+    return null;
+  }
+}
+
+/** True when a URL smells like a voe embed (voe rotates its domains). */
+export function isVoeStyleUrl(url: string): boolean {
+  const l = (url || "").toLowerCase();
+  if (!l) return false;
+  if (l.includes("voe")) return true;
+  if (/^https?:\/\/[^\/]+\/e\/[a-z0-9]+/.test(l)) {
+    const knownOthers = [
+      "sibnet", "vidmoly", "lulustream", "luluvdo", "vidzy", "filemoon", "bysesukior",
+      "uqload", "ansembed", "embed4me", "sendvid", "oneupload", "movearnpre"
+    ];
+    return !knownOthers.some((p) => l.includes(p));
+  }
+  return false;
+}
+
+export interface PlayerHtmlScanResult {
+  url: string;
+  type: "hls" | "direct_mp4";
+}
+
+/**
+ * Pure scanner shared by all generic player probes: unpacks Dean-Edwards
+ * packers and looks for a playable stream, in reliability order:
+ *   1. absolute .m3u8/.txt (master.m3u8 preferred)
+ *   2. relative /...m3u8 resolved against the player origin (movearnpre)
+ *   3. vidzy XOR-encoded body (var k = [..] + })("base64"))
+ *   4. absolute .mp4 direct file (oneupload / jwplayer)
+ */
+export function scanPlayerHtmlForStreams(html: string, playerOrigin: string): PlayerHtmlScanResult | null {
+  if (!html) return null;
+  const combined = html + "\n" + unpackDeanEdwards(html);
+
+  // 1. Absolute HLS
+  const absMatches = combined.match(/https?:\/\/[^\s"'<>|]+\.(?:m3u8|txt)(?:[^\s"'<>|]*)/gi) || [];
+  const firstAbs = absMatches[0];
+  if (firstAbs) {
+    const master = absMatches.find((u) => u.toLowerCase().includes("master.m3u8")) || firstAbs;
+    return { url: master, type: "hls" };
+  }
+
+  // 2. Relative HLS (e.g. "/stream/<id>/master.m3u8.txt")
+  const rel = combined.match(/["'\s=(](\/[^\s"'<>|]+\.(?:m3u8|txt)(?:\?[^\s"'<>|]*)?)/i);
+  if (rel && rel[1] && playerOrigin) {
+    return { url: playerOrigin.replace(/\/$/, "") + rel[1], type: "hls" };
+  }
+
+  // 3. vidzy XOR body
+  const kMatch = combined.match(/var\s+k\s*=\s*\[([\d\s,]+)\]/);
+  const sMatch = combined.match(/\}\)\(["']([A-Za-z0-9+/=]+)["']\)/);
+  if (kMatch && sMatch) {
+    try {
+      const keyBytes = kMatch[1].split(",").map((x) => parseInt(x.trim(), 10));
+      const decoded = vidzyXorDecode(sMatch[1], keyBytes);
+      const abs = decoded.match(/https?:\/\/[^\s"'|]+\.(?:m3u8|mp4)[^\s"'|]*/i);
+      if (abs) {
+        return { url: abs[0], type: abs[0].includes(".m3u8") ? "hls" : "direct_mp4" };
+      }
+      const relX = decoded.match(/[^\s"']*\/[^\s"']*\.(?:m3u8|mp4)[^\s"']*/i);
+      if (relX && relX[0].startsWith("/") && playerOrigin) {
+        return { url: playerOrigin.replace(/\/$/, "") + relX[0], type: relX[0].includes(".m3u8") ? "hls" : "direct_mp4" };
+      }
+    } catch {
+      // ignore malformed XOR bodies
+    }
+  }
+
+  // 4. Direct MP4
+  const mp4 = combined.match(/https?:\/\/[^\s"'<>|]+\.mp4(?:[^\s"'<>|]*)/i);
+  if (mp4) {
+    return { url: mp4[0], type: "direct_mp4" };
+  }
+
+  return null;
+}
+
+/**
+ * Generic player-page probe: fetches the embed page, scans raw + unpacked
+ * HTML for a playable stream, resolves real HLS tracks when possible.
+ * Used for the packed-player family AND as a last-resort for unknown hosts.
+ */
+export async function probeGenericPlayerPage(playerUrl: string, hostLabel?: string): Promise<ExtractedStreamResult | null> {
+  try {
+    const originMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
+    if (!originMatch) return null;
+    const playerOrigin = originMatch[1];
+
+    const resp = await axios.get(playerUrl, {
+      headers: {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": `${playerOrigin}/`
+      },
+      timeout: 8000,
+      maxRedirects: 5,
+      validateStatus: () => true,
+      ...animeProxyOptions()
+    });
+    if (resp.status !== 200) return null;
+    const rawHtml = typeof resp.data === "string" ? resp.data : "";
+    if (!rawHtml) return null;
+
+    const scan = scanPlayerHtmlForStreams(rawHtml, playerOrigin);
+    if (!scan) return null;
+
+    const headers = {
+      "User-Agent": DEFAULT_USER_AGENT,
+      "Referer": `${playerOrigin}/`,
+      "Origin": playerOrigin
+    };
+
+    let tracks: StreamQualityTrack[] = [];
+    if (scan.type === "hls") {
+      try {
+        tracks = await fetchHlsTracksAndSizes(scan.url, `${playerOrigin}/`, playerOrigin);
+      } catch {
+        // tracks are optional — the bare URL is still usable
+      }
+    }
+
+    let host = hostLabel || "";
+    if (!host) {
+      try {
+        host = new URL(playerUrl).hostname.replace(/^www\./, "");
+      } catch {
+        host = "Packed Player";
+      }
+    }
+
+    return {
+      hostName: host,
+      url: scan.url,
+      type: scan.type,
+      headers,
+      availableTracks: tracks
+    };
+  } catch (err: any) {
+    if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] generic probe error (${playerUrl}):`, err.message);
+    return null;
+  }
+}
+
+/**
+ * voe embed resolver: follows in-page window.location hops, decodes the
+ * application/json payload chain, falls back to a plain m3u8 scan.
+ * Returns a direct stream URL (usually mp4) or null.
+ */
+async function extractVoeStream(voeUrl: string, depth = 0): Promise<string | null> {
+  try {
+    const resp = await axios.get(voeUrl, {
+      headers: {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": "https://nakanime.tv/"
+      },
+      timeout: 8000,
+      maxRedirects: 5,
+      validateStatus: () => true,
+      ...animeProxyOptions()
+    });
+    if (resp.status !== 200) return null;
+    const html = typeof resp.data === "string" ? resp.data : "";
+
+    // In-page redirect hop (voe chains landing pages)
+    const loc = html.match(/window\.location\.href\s*=\s*["']([^"']+)["']/);
+    if (loc && loc[1] && loc[1] !== voeUrl && depth < 3) {
+      let next = loc[1];
+      if (!next.startsWith("http")) {
+        try {
+          next = new URL(next, voeUrl).href;
+        } catch {
+          next = "";
+        }
+      }
+      if (next) {
+        const nested = await extractVoeStream(next, depth + 1);
+        if (nested) return nested;
+      }
+    }
+
+    // Encrypted JSON payload
+    const jsonMatch = html.match(/<script type="application\/json">\s*(\[[\s\S]*?\])\s*<\/script>/);
+    if (jsonMatch) {
+      try {
+        const arr = JSON.parse(jsonMatch[1]);
+        if (Array.isArray(arr) && arr.length > 0 && typeof arr[0] === "string") {
+          const data = decodeVoePayload(arr[0]);
+          const src = data?.source || data?.direct_access_url;
+          if (typeof src === "string" && src && !/bigbuckbunny|sample/i.test(src)) {
+            return src;
+          }
+        }
+      } catch {
+        // try the plain scan below
+      }
+    }
+
+    // Plain m3u8 in page (skip known dummy streams)
+    for (const m of html.matchAll(/["'](https?:\/\/[^\s"']+\.m3u8[^\s"']*)["']/gi)) {
+      if (!/bigbuckbunny|sample/i.test(m[1])) return m[1];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Extract direct streams from streaming player mirrors (Smoothpre, Sibnet, Sendvid, VidMoly, Ansembed)
@@ -226,53 +543,98 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
       }
     }
 
-    // 1. Smoothpre & generic Dean-Edwards packed players (Priority 1: Multi-quality HLS streams)
-    if (lowerUrl.includes("smoothpre") || lowerUrl.includes("dramiyos") || lowerUrl.includes("embed") || lowerUrl.includes("player")) {
+    // 0b. Filemoon — /api/videos/<code> returns an AES-GCM encrypted sources
+    // payload (key reassembled from key_parts, see decryptFilemoonPayload).
+    if (lowerUrl.includes("filemoon") || lowerUrl.includes("bysesukior")) {
       try {
-        const resp = await axios.get(playerUrl, {
-          headers: {
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Referer": "https://anime-sama.to/"
-          },
-          timeout: 7000,
-          validateStatus: () => true,
-    ...animeProxyOptions()
-        });
-
-        if (resp.status === 200) {
-          const rawHtml = typeof resp.data === "string" ? resp.data : "";
-          const unpackedHtml = unpackDeanEdwards(rawHtml);
-
-          const m3u8Matches =
-            unpackedHtml.match(/https?:\/\/[^"\x27\s<>]+\.(?:m3u8|txt)[^"\x27\s<>]*/gi) ||
-            rawHtml.match(/https?:\/\/[^"\x27\s<>]+\.(?:m3u8|txt)[^"\x27\s<>]*/gi);
-
-          if (m3u8Matches && m3u8Matches.length > 0) {
-            // Pick master.m3u8 or the first valid HLS URL
-            const masterUrl = m3u8Matches.find(u => u.includes("master.m3u8")) || m3u8Matches[0];
-            const originMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
-            const playerOrigin = originMatch ? originMatch[1] : "https://Smoothpre.com";
-
-            const streamHeaders = {
+        const codeMatch = playerUrl.match(/\/(?:e|d|download|play|v)\/([a-zA-Z0-9]+)/i);
+        let code = codeMatch ? codeMatch[1] : "";
+        if (!code) {
+          const parts = playerUrl.split("?")[0].split("/").filter(Boolean);
+          code = parts[parts.length - 1] || "";
+        }
+        const fmOriginMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
+        const fmOrigin = fmOriginMatch ? fmOriginMatch[1] : "https://bysesukior.com";
+        if (code) {
+          const resp = await axios.get(`${fmOrigin}/api/videos/${code}`, {
+            headers: {
               "User-Agent": DEFAULT_USER_AGENT,
-              "Referer": `${playerOrigin}/`,
-              "Origin": playerOrigin
-            };
-
-            const parsedTracks = await fetchHlsTracksAndSizes(masterUrl, `${playerOrigin}/`, playerOrigin);
-
-            return {
-              hostName: "Smoothpre",
-              url: masterUrl,
-              type: "hls",
-              headers: streamHeaders,
-              availableTracks: parsedTracks
-            };
+              "Referer": "https://nakanime.tv/",
+              "Accept": "application/json, text/plain, */*"
+            },
+            timeout: 8000,
+            validateStatus: () => true,
+            ...animeProxyOptions()
+          });
+          if (resp.status === 200 && resp.data) {
+            const playback = resp.data?.playback || resp.data;
+            const decrypted = decryptFilemoonPayload(
+              String(playback?.version ?? ""),
+              playback?.key_parts,
+              playback?.iv,
+              playback?.payload
+            );
+            const sources = Array.isArray(decrypted?.sources) ? decrypted.sources : [];
+            const first = sources.find((s: any) => typeof s?.url === "string" && s.url.length > 0);
+            if (first) {
+              const isHls = /\.m3u8/i.test(first.url);
+              let fmTracks: StreamQualityTrack[] = [];
+              if (isHls) {
+                try {
+                  fmTracks = await fetchHlsTracksAndSizes(first.url, `${fmOrigin}/`, fmOrigin);
+                } catch {}
+              }
+              return {
+                hostName: "Filemoon",
+                url: first.url,
+                type: isHls ? "hls" : "direct_mp4",
+                headers: {
+                  "User-Agent": DEFAULT_USER_AGENT,
+                  "Referer": `${fmOrigin}/`,
+                  "Origin": fmOrigin
+                },
+                availableTracks: fmTracks
+              };
+            }
           }
         }
       } catch (err: any) {
-        if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] Smoothpre probe error:`, err.message);
+        if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] Filemoon probe error:`, err.message);
       }
+      // Fallback: plain page scan (some mirrors expose m3u8 directly)
+      const fmPage = await probeGenericPlayerPage(playerUrl, "Filemoon");
+      if (fmPage) return fmPage;
+    }
+
+    // 0c. voe — rotating domains, payload hidden in an application/json
+    // script tag (rot13 + double base64 chain, see decodeVoePayload).
+    if (isVoeStyleUrl(playerUrl)) {
+      const voeStream = await extractVoeStream(playerUrl);
+      if (voeStream) {
+        const isHls = /\.m3u8/i.test(voeStream);
+        return {
+          hostName: "Voe",
+          url: voeStream,
+          type: isHls ? "hls" : "direct_mp4",
+          headers: {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Referer": "https://nakanime.tv/",
+            "Origin": "https://nakanime.tv"
+          }
+        };
+      }
+    }
+
+    // 1. Packed / generic player family (Smoothpre, Movearnpre, Uqload,
+    // Vidzy, LuluStream, OneUpload, Mivalyo, Dingtezuni, *embed*, *player*)
+    if (
+      NAKANIME_GENERIC_PLAYER_HINTS.some((h) => lowerUrl.includes(h)) ||
+      lowerUrl.includes("embed") ||
+      lowerUrl.includes("player")
+    ) {
+      const legacyLabel = lowerUrl.includes("smoothpre") || lowerUrl.includes("dramiyos") ? "Smoothpre" : undefined;
+      const generic = await probeGenericPlayerPage(playerUrl, legacyLabel);
+      if (generic) return generic;
     }
 
     // 2. Sibnet (Fast, direct MP4 delivery)
@@ -430,6 +792,17 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
         }
       } catch (err: any) {
         if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] VidMoly probe error:`, err.message);
+      }
+    }
+
+    // 5. Last-resort generic probe for ANY other host — one page fetch +
+    // m3u8/mp4/packed scan. Keeps the pipeline alive when a mirror swaps to
+    // a host nobody knows yet (the exact failure mode of audit §8 / R8).
+    {
+      const lastResort = await probeGenericPlayerPage(playerUrl);
+      if (lastResort) {
+        if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] last-resort generic probe HIT for ${playerUrl}`);
+        return lastResort;
       }
     }
   } catch (err: any) {

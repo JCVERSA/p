@@ -140,7 +140,19 @@ export async function isSafeDownloadUrl(rawUrl: string): Promise<boolean> {
     "embed4me.com",
     "uqload.is",
     "minochinos.com",
-    "nakanime.tv"
+    "nakanime.tv",
+    "movearnpre.com",
+    "ovaltinecdn.com",
+    "vidzy.live",
+    "vidzy.org",
+    "luluvdo.com",
+    "lulustream.com",
+    "oneupload.net",
+    "oneupload.to",
+    "mivalyo.com",
+    "dingtezuni.com",
+    "filemoon.sx",
+    "bysesukior.com"
   ];
   if (trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h))) {
     return remember(true);
@@ -183,7 +195,19 @@ async function resolvePinnedAddresses(hostname: string): Promise<Array<{ address
     "embed4me.com",
     "uqload.is",
     "minochinos.com",
-    "nakanime.tv"
+    "nakanime.tv",
+    "movearnpre.com",
+    "ovaltinecdn.com",
+    "vidzy.live",
+    "vidzy.org",
+    "luluvdo.com",
+    "lulustream.com",
+    "oneupload.net",
+    "oneupload.to",
+    "mivalyo.com",
+    "dingtezuni.com",
+    "filemoon.sx",
+    "bysesukior.com"
   ];
   const isTrusted = trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h));
 
