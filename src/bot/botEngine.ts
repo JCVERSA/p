@@ -1,4 +1,11 @@
-import makeWASocket, {
+// NOTE: use the NAMED export only. This module is ESM-only ("type": "module")
+// with no CJS build; in the esbuild CJS production bundle a default import
+// compiles to `(0, import_baileys.default)(...)`, and esbuild's __toESM
+// interop sets `.default` to the whole require(esm) namespace instead of the
+// function — which crashed the bot with "(0, import_baileys.default) is not
+// a function". Named imports pass through the wrapper untouched.
+import {
+  makeWASocket,
   DisconnectReason,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,

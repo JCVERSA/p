@@ -74,6 +74,10 @@ export function getCommandsDir(): string {
 // Keep a map and list of registered commands
 const commandsMap = new Map<string, BotCommand>();
 
+/** Disk files that are the SOURCE of a statically-imported built-in command
+ *  whose filename differs from its registered command name. */
+const BUILTIN_SOURCE_FILE_EXCEPTIONS = new Set(["novabox"]);
+
 /** Commands loaded from disk (name -> module), kept in memory between reloads. */
 const diskCommandCache = new Map<string, BotCommand>();
 
@@ -214,6 +218,11 @@ export async function initRegistry(): Promise<void> {
   for (const file of files) {
     const name = file.replace(/\.ts$/, "").toLowerCase();
     if (builtinNames.has(name)) continue; // built-ins win to avoid duplicates
+    // Some built-in commands live in a source file whose name differs from
+    // the registered command name (novabox.ts exports the "anime" command).
+    // Loading those from disk is redundant in dev (skipped as duplicate) and
+    // impossible in production (plain Node cannot parse TS) — skip quietly.
+    if (BUILTIN_SOURCE_FILE_EXCEPTIONS.has(name)) continue;
     const cmd = await loadCommandModule(name);
     // L3: a disk file whose exported name is already registered (e.g.
     // novabox.ts exporting "anime", a static built-in) is a duplicate —
