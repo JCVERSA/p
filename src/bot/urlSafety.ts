@@ -139,7 +139,8 @@ export async function isSafeDownloadUrl(rawUrl: string): Promise<boolean> {
     "smoothstream.com",
     "embed4me.com",
     "uqload.is",
-    "minochinos.com"
+    "minochinos.com",
+    "nakanime.tv"
   ];
   if (trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h))) {
     return remember(true);
@@ -181,7 +182,8 @@ async function resolvePinnedAddresses(hostname: string): Promise<Array<{ address
     "smoothstream.com",
     "embed4me.com",
     "uqload.is",
-    "minochinos.com"
+    "minochinos.com",
+    "nakanime.tv"
   ];
   const isTrusted = trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h));
 

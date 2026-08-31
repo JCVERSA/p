@@ -17,6 +17,7 @@ try {
 }
 import { registerTempDownload } from "../tempDownloadManager.js";
 import { animeProxyOptions } from "../services/scrapingProxy.js";
+import { isNakanimeUrl, nakanimeSearch, nakanimeSeasons, nakanimeEpisodePlayers } from "../services/nakanimeClient.js";
 import { isSafeDownloadUrl } from "../urlSafety.js";
 import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batchDownloadManager.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
@@ -129,8 +130,24 @@ async function isPublicFetchTarget(rawUrl: string, label: string): Promise<boole
   return false;
 }
 
-// Search Anime Catalog
+// Search Anime Catalog (anime-sama first; nakanime mirror as automatic
+// fallback when anime-sama is unreachable — e.g. Cloudflare 403 on the
+// host's IP range, see ANIME_DOWNLOAD_AUDIT.md R3)
 async function searchAnime(query: string) {
+  try {
+    return await searchAnimeSama(query);
+  } catch (err: any) {
+    console.warn(`[NOVABOX] anime-sama search failed (${err?.response?.status || err?.code || err?.message}), trying nakanime fallback...`);
+    const naka = await nakanimeSearch(query);
+    if (naka.length > 0) {
+      console.log(`[NOVABOX] nakanime fallback returned ${naka.length} result(s) for "${query}"`);
+      return naka;
+    }
+    throw err;
+  }
+}
+
+async function searchAnimeSama(query: string) {
   const url = "https://anime-sama.to/template-php/defaut/fetch.php";
   const params = new URLSearchParams();
   params.append("query", query);
@@ -159,8 +176,12 @@ async function searchAnime(query: string) {
   return results;
 }
 
-// Parse main anime page for seasons (panneauAnime calls)
+// Parse main anime page for seasons (panneauAnime calls; nakanime mirror
+// uses its own season index)
 async function parseSeasons(animeUrl: string) {
+  if (isNakanimeUrl(animeUrl)) {
+    return nakanimeSeasons(animeUrl);
+  }
   if (!(await isPublicFetchTarget(animeUrl, "season page"))) return [];
   const res = await axios.get(animeUrl, {
     headers: {
@@ -195,6 +216,7 @@ async function parseSeasons(animeUrl: string) {
 
 // Fast check to see if VF version exists
 async function checkVfExists(url: string): Promise<boolean> {
+  if (isNakanimeUrl(url)) return false; // nakanime carries language per player source
   try {
     const res = await axios.head(url, {
       headers: { "User-Agent": "Mozilla/5.0" },
@@ -207,8 +229,11 @@ async function checkVfExists(url: string): Promise<boolean> {
   }
 }
 
-// Parse episodes.js file
+// Parse episodes.js file (nakanime mirror resolves players via its API)
 async function parseEpisodes(jsUrl: string) {
+  if (isNakanimeUrl(jsUrl)) {
+    return nakanimeEpisodePlayers(jsUrl.replace(/episodes\.js$/, "").replace(/\/$/, ""));
+  }
   if (!(await isPublicFetchTarget(jsUrl, "episode list"))) return {};
   const res = await axios.get(jsUrl, {
     headers: {

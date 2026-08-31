@@ -234,6 +234,38 @@ Implemented after the VPS verification round (all unit-tested, 153/153 green):
 
 ---
 
+## 8. nakanime.tv automatic fallback source (2026-08-31, third push)
+
+Both of the user's VPS IPs are hard-blocked by anime-sama's Cloudflare
+("Attention Required" + captcha = IP-range block; WARP egress is blocked too,
+verified live). The site itself is up, and **nakanime.tv — a content mirror
+of anime-sama — answers HTTP 200 from the blocked VPS**.
+
+Implemented: when `fetch.php` search fails (403/network), the bot now falls
+back to nakanime automatically — no configuration needed.
+
+- New `src/bot/services/nakanimeClient.ts`:
+  - XOR codec for their encrypted JSON API (`nkapiv1` + request-path key
+    derivation), unit-tested against captured payloads.
+  - `nakanimeSearch()` — `/api/catalog/search` (encrypted) → catalog results.
+  - `nakanimeSeasons()` — embedded seasons JSON on the episode page, with the
+    encrypted `/api/anime/<id>/episodes` API as fallback.
+  - `nakanimeEpisodePlayers()` — per-episode `data-episode-id` +
+    `POST /api/sources/anime` (encrypted) → the SAME player-mirror shape the
+    anime-sama pipeline uses (`{listNumber: [urlByEpisodeIndex]}`), so the
+    existing multi-host extractor, downloader and delivery flow work as-is.
+- `novabox.ts`: `searchAnime()` tries anime-sama then nakanime;
+  `parseSeasons`/`parseEpisodes`/`checkVfExists` branch on nakanime URLs.
+- `urlSafety.ts`: `nakanime.tv` added to trusted hosts.
+- Doctor stage 1 now also probes nakanime and reports whether the fallback
+  path is available.
+
+Limitations: nakanime carries language per player source (VF/VOSTFR shown as
+separate "Lecteurs" instead of the VF/VOSTFR switch), and per-episode source
+lookups are capped at 40 episodes/season with concurrency 4.
+
+---
+
 ## Appendix A — Reproductions (run with the repo's real code)
 
 ```
