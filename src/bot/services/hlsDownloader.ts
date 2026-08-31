@@ -597,7 +597,11 @@ export async function downloadHlsAppLevel(
     for (let i = 0; i < segments.length; i++) {
       const segmentFile = path.join(tempDir, `segment_${String(i).padStart(6, "0")}.ts`);
       const buffer = await fsp.readFile(segmentFile);
-      writer.write(buffer);
+      if (!writer.write(buffer)) {
+        // Backpressure: wait for the drain event instead of queueing every
+        // segment buffer in memory (batch OOM fix, audit 8.12).
+        await new Promise<void>((resolveDrain) => writer.once("drain", () => resolveDrain()));
+      }
     }
     
     await new Promise<void>((resolveWriter, rejectWriter) => {

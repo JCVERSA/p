@@ -2091,7 +2091,11 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
     clearUserSession(context.sender);
 
     // Process episodes with bounded concurrency (concurrency = 2) for maximum speed and container safety
-    const CONCURRENCY_LIMIT = 2;
+    // Episodes are processed SEQUENTIALLY by default: each pipeline holds
+    // ~2x the episode size in flight (segments + consolidated TS + ffmpeg),
+    // and two in parallel OOM-killed the whole bot on a 12-episode batch
+    // (audit 8.12). Raise with NEBULA_BATCH_CONCURRENCY on fat hosts.
+    const CONCURRENCY_LIMIT = Math.max(1, Number(process.env.NEBULA_BATCH_CONCURRENCY || 1));
     let totalMBDownloaded = 0;
     let quotaExceeded = false;
 

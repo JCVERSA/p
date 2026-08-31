@@ -626,3 +626,26 @@ Sanity math: 24 min at ~0.5 MB/s ≈ 92 MB = 480p territory; a true 720p of the
 same episode would be ~140-190 MB.
 
 Suite: 217/217 (21 files).
+
+### 8.12 Batch OOM-kill — sequential episodes + backpressure consolidation (2026-08-31, fourteenth push)
+
+**User log (12-episode batch, `.a 1-12` after `r1`):** mid-batch the process
+died with a bare `Killed` — the kernel OOM-killer terminated Node. The
+interleaved `Starting ... 154 segments` / `Successfully ... 78 segments!` lines
+were TWO concurrent episode pipelines (batch CONCURRENCY_LIMIT was 2), not a
+miscounting log.
+
+Each pipeline holds ~2x the episode size in flight (segment workspace +
+consolidated TS + ffmpeg); two 90 MB episodes in parallel + Baileys + panel
+exceeded the container RAM. The consolidation loop also wrote every segment
+buffer without waiting for `drain`, queuing the whole episode in memory.
+
+Fixes:
+- Batch episodes now run **sequentially** by default
+  (`NEBULA_BATCH_CONCURRENCY=1`), overridable on hosts with headroom.
+- Consolidation respects write backpressure (awaits `drain`), bounding concat
+  memory.
+- Note: the segment workspace is cleaned in a `finally` per episode, but an
+  OOM kill bypasses it — `/tmp/cat_catch_*` should be swept once after a kill.
+
+Suite: 217/217 (21 files).
