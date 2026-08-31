@@ -171,11 +171,13 @@ export function decryptEmbed4MeResponse(hexBody: string): string | null {
  */
 export function hostPriority(url: string): number {
   const l = (url || "").toLowerCase();
-  if (l.includes("ansembed")) return 1;
-  if (l.includes("embed4me") || l.includes("lpayer")) return 2;
-  if (l.includes("sibnet")) return 3;
-  if (l.includes("sendvid")) return 4;
-  if (l.includes("vidmoly") || l.includes("vmpx") || l.includes("topembed")) return 5;
+  // VidMoly first: stable two-quality HLS manifests (480P/1080P) with honest
+  // sizes — the quality reference. Everything else is a fallback (audit 8.4).
+  if (l.includes("vidmoly") || l.includes("vmpx") || l.includes("topembed")) return 1;
+  if (l.includes("ansembed")) return 2;
+  if (l.includes("embed4me") || l.includes("lpayer")) return 3;
+  if (l.includes("sibnet")) return 4;
+  if (l.includes("sendvid")) return 5;
   if (l.includes("smoothpre") || l.includes("dramiyos") || l.includes("movearnpre") || l.includes("ovaltinecdn")) return 6;
   if (l.includes("uqload") || l.includes("vidzy") || l.includes("luluvdo") || l.includes("lulustream")) return 7;
   if (l.includes("oneupload") || l.includes("filemoon") || l.includes("bysesukior") || l.includes("mivalyo") || l.includes("dingtezuni")) return 8;
@@ -659,28 +661,35 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
             } else if (streamPath.startsWith("/")) {
               streamPath = "https://video.sibnet.ru" + streamPath;
             }
+            // ONE honest track: sibnet serves a single mp4 whose real
+            // resolution is unknown without ffprobe — label it "Original" and
+            // surface the REAL byte size via HEAD. The previous fabricated
+            // 480P/360P pair made `.a ... r2` download a 299 MB 1080p file
+            // labelled "360P" (audit 8.4).
+            let sibnetSize = 0;
+            try {
+              const head = await axios.head(streamPath, {
+                headers: { "User-Agent": DEFAULT_USER_AGENT, Referer: playerUrl },
+                timeout: 5000,
+                validateStatus: () => true,
+                ...animeProxyOptions()
+              });
+              const len = parseInt(String(head.headers?.["content-length"] || "0"), 10);
+              if (!isNaN(len) && len > 0) sibnetSize = len;
+            } catch {}
+            const sibnetHeaders = { "User-Agent": DEFAULT_USER_AGENT, "Referer": playerUrl };
             return {
               hostName: "Sibnet",
               url: streamPath,
               type: "direct_mp4",
-              headers: {
-                "User-Agent": DEFAULT_USER_AGENT,
-                "Referer": playerUrl
-              },
+              headers: sibnetHeaders,
               availableTracks: [
                 {
-                  resolution: "480P",
+                  resolution: "Original",
                   url: streamPath,
-                  fileSizeBytes: 85 * 1024 * 1024,
+                  fileSizeBytes: sibnetSize || undefined,
                   type: "direct_mp4",
-                  headers: { "User-Agent": DEFAULT_USER_AGENT, "Referer": playerUrl }
-                },
-                {
-                  resolution: "360P",
-                  url: streamPath,
-                  fileSizeBytes: 55 * 1024 * 1024,
-                  type: "direct_mp4",
-                  headers: { "User-Agent": DEFAULT_USER_AGENT, "Referer": playerUrl }
+                  headers: sibnetHeaders
                 }
               ]
             };

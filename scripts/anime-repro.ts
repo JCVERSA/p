@@ -187,8 +187,21 @@ async function main(): Promise<void> {
   // ---------------------------------------------- 4. PLAYER EXTRACTION ----
   hr("4/5 STREAM EXTRACTION PER MIRROR");
   const sorted = [...mirrors].sort((a, b) => hostPriority(a) - hostPriority(b));
+  const seenHosts = new Set<string>();
+  const deduped = sorted.filter((m) => {
+    try {
+      const h = new URL(m).hostname;
+      if (seenHosts.has(h)) return false;
+      seenHosts.add(h);
+      return true;
+    } catch {
+      return true;
+    }
+  });
+  console.log(`probing ${deduped.length} unique host(s) (from ${sorted.length} mirrors)`);
   let anyStream = false;
-  for (const m of sorted) {
+  const t4 = Date.now();
+  for (const m of deduped) {
     const host = (() => {
       try {
         return new URL(m).hostname;
@@ -229,6 +242,7 @@ async function main(): Promise<void> {
     }
     console.log(line);
   }
+  console.log(`extraction stage took ${((Date.now() - t4) / 1000).toFixed(1)}s`);
   if (!anyStream) {
     console.log(
       "\n[KO] NO mirror produced a playable stream -> this is exactly why WhatsApp got the fallback-links card.",

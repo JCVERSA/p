@@ -421,3 +421,35 @@ VOSTFR; user expected VF by default and doubted multi-episode ZIP existed.
 
 Suite: 195/195 (19 files, +12 tests: canonical mapping, nearest-quality
 fallback, VF label classification, language tier splitting).
+
+### 8.4 VidMoly-first quality policy + honest Sibnet (2026-08-31, seventh push)
+
+**User report:** `.a code geass s2 ep2 r2` delivered a **299.2 MB** file
+labelled "360P". Root cause: the Sibnet extractor branch FABRICATED two tracks
+("480P"/85 MB and "360P"/55 MB, hardcoded, same underlying MP4 of unknown real
+resolution), and Sibnet sat at priority 3 — ABOVE vidmoly (5). The quick flow's
+exact-quality search therefore matched the fake "360P" on sibnet before ever
+probing vidmoly, downloaded the real ~1080p file, and labelled it "360P".
+
+Fixes:
+- `hostPriority()`: **VidMoly/vmpx/topembed = 1** (quality reference), ansembed
+  2, embed4me 3, **sibnet 4** (fallback only), sendvid 5, packed family 6,
+  uqload/vidzy/lulu 7, oneupload/filemoon/mivalyo/dingtezuni 8, voe 9.
+- Sibnet branch: ONE honest track labelled `Original` with the REAL byte size
+  (HTTP HEAD Content-Length). No more invented qualities → no more fake
+  exact-matches on fast lanes.
+- Quick flow keeps canonical rN semantics (§8.3): on vidmoly's real menu
+  (480P/1080P), r2 has no exact match → nearest ≤ → smallest = real 480P →
+  auto-compressed (<95 MB target) for in-chat delivery.
+- Delivery card now shows the REAL host name when the pre-selected variant
+  downloads directly (was "Direct Stream").
+- `scripts/anime-repro.ts`: mirrors deduplicated per host before probing
+  (7 mirrors → 4 unique hosts on rezero s5; that was the slowness the user
+  interrupted) + extraction-stage timing.
+
+Design report: docs/RAPPORT_SYSTEME_TELECHARGEMENT.md (cat-catch source
+analysis: variant listing from #EXT-X-STREAM-INF, HEAD-sampled size estimate,
+6-thread segment downloader — our downloadHlsAppLevel already matches/exceeds
+it at 173 MB/19.8 s).
+
+Suite: 196/196 (19 files).

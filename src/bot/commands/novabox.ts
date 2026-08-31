@@ -2174,6 +2174,11 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       }
     };
     downloadSuccess = await executeDirectOrFfmpegDownload(streamToDownload, localPath, 240000);
+    if (downloadSuccess) {
+      try {
+        activePlayerName = new URL(session.selectedVariantUrl).hostname.replace(/^www\./, "");
+      } catch {}
+    }
   }
 
   // Multi-mirror fallback if direct selected variant failed or wasn't pre-selected
