@@ -17,7 +17,7 @@ try {
 }
 import { registerTempDownload } from "../tempDownloadManager.js";
 import { animeProxyOptions } from "../services/scrapingProxy.js";
-import { isNakanimeUrl, nakanimeSearch, nakanimeSeasons, nakanimeEpisodePlayers } from "../services/nakanimeClient.js";
+import { isNakanimeUrl, nakanimeSearch, nakanimeSeasons, nakanimeEpisodePlayers, nakanimeEpisodePlayersDetailed } from "../services/nakanimeClient.js";
 import { isSafeDownloadUrl } from "../urlSafety.js";
 import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batchDownloadManager.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
@@ -30,6 +30,9 @@ import {
   robustFetchText,
   downloadWithAllMirrorsFallback,
   fetchHlsTracksAndSizes,
+  extractMultiHostStream,
+  pickOptimalStream,
+  hostPriority,
   StreamQualityTrack
 } from "../services/animeStreamExtractor.js";
 import {
@@ -37,6 +40,7 @@ import {
   isExactAnimeMatch,
   resolveRequestedSeason,
   resolveRequestedEpisodes,
+  canonicalResolutionForChoice,
   QuickDownloadParams
 } from "../utils/quickAnimeParser.js";
 
@@ -60,12 +64,14 @@ interface AnimeSession {
   seasons: Array<{ name: string; subPath: string; url: string }>;
   selectedSeason?: { name: string; subPath: string; url: string };
   episodes?: Record<number, string[]>;
+  episodeListLabels?: Record<number, { host: string; language: string }>; // nakanime: host+lang per list
   selectedEpisodeIndex?: number;
   selectedEpisodeIndices?: number[]; // Multi-episode batch support
   isSeasonZipDownload?: boolean; // Full season download mode
   availableVariants?: HlsVariant[];
   selectedVariantUrl?: string;
   selectedVariantHeaders?: Record<string, string>;
+  languageForcedByUser?: boolean; // true after an explicit .a vf / .a vostfr
   singleStreamDetected?: {
     label: string;
     resolution: string;
@@ -269,6 +275,58 @@ export async function parseEpisodes(jsUrl: string) {
   return episodeLists;
 }
 
+/**
+ * Episode lists + per-list language labels (nakanime only; anime-sama lists
+ * carry no language — the season URL already encodes it).
+ */
+export async function parseEpisodesDetailed(
+  jsUrl: string
+): Promise<{ lists: Record<number, string[]>; labels: Record<number, { host: string; language: string }> }> {
+  if (isNakanimeUrl(jsUrl)) {
+    return nakanimeEpisodePlayersDetailed(
+      jsUrl
+        .replace(/episodes\.js$/, "")
+        .replace(/\/$/, "")
+    );
+  }
+  const lists = await parseEpisodes(jsUrl);
+  return { lists, labels: {} };
+}
+
+/** True when a nakanime player-list language label means French dub. */
+export function isNakanimeVfLabel(language: string): boolean {
+  const l = (language || "").toUpperCase().replace(/\s+/g, "");
+  return l.includes("VF") && !l.includes("VOSTFR") && !l.includes("VOST");
+}
+
+/**
+ * Splits an episode's mirror URLs into language tiers: `primary` matches the
+ * requested language (VF-by-default policy), `secondary` holds the rest as
+ * download fallback. Lists without labels (anime-sama) all go to primary.
+ */
+export function splitMirrorsByLanguage(
+  episodes: Record<number, string[]> | undefined,
+  labels: Record<number, { host: string; language: string }> | undefined,
+  epIndex: number,
+  language: string
+): { primary: string[]; secondary: string[] } {
+  const primary: string[] = [];
+  const secondary: string[] = [];
+  const wantVf = (language || "").toUpperCase() === "VF";
+  const hasLabels = !!labels && Object.keys(labels).length > 0;
+
+  for (const listId of Object.keys(episodes || {}).map(Number).sort((a, b) => a - b)) {
+    const url = episodes?.[listId]?.[epIndex];
+    if (!url) continue;
+    const listIsVf = hasLabels ? isNakanimeVfLabel(labels![listId]?.language || "") : false;
+    const bucket = listIsVf === wantVf || !hasLabels ? primary : secondary;
+    if (!bucket.includes(url)) bucket.push(url);
+  }
+
+  if (primary.length === 0) return { primary: secondary, secondary: [] };
+  return { primary, secondary };
+}
+
 async function executeQuickDownloadPipeline(
   sock: any,
   msg: any,
@@ -345,13 +403,27 @@ async function executeQuickDownloadPipeline(
 
     // 4. Fetch episodes for target season
     const jsUrl = targetSeason.url + "episodes.js";
-    const eps = await parseEpisodes(jsUrl);
+    const { lists: eps, labels: epLabels } = await parseEpisodesDetailed(jsUrl);
     if (!eps || Object.keys(eps).length === 0) {
       clearUserSession(context.sender);
       return context.reply("❌ *Erreur:* Aucun épisode disponible pour cette saison.");
     }
 
     session.episodes = eps;
+    session.episodeListLabels = epLabels;
+
+    // nakanime: VF detection from player-list language labels - VF becomes the
+    // default (still overridable with `.a ... vostfr`, audit 8.3).
+    if (isNakanimeUrl(chosenAnime.url)) {
+      const hasVfLabels = Object.values(epLabels).some((l) => isNakanimeVfLabel(l.language));
+      if (hasVfLabels) {
+        if (!session.languages.includes("VF")) session.languages.push("VF");
+        if (!quickParams.language) {
+          session.selectedLanguage = "VF";
+        }
+      }
+    }
+
     const totalEpisodes = Math.max(...Object.values(eps).map(arr => arr.length));
 
     if (totalEpisodes <= 0) {
@@ -377,90 +449,76 @@ async function executeQuickDownloadPipeline(
       ? `${resolvedIndices.length} épisodes (Ép ${resolvedIndices[0] + 1} à Ép ${resolvedIndices[resolvedIndices.length - 1] + 1})`
       : `Épisode ${resolvedIndices[0] + 1}`;
 
-    // 6. Check if resolution choice was provided
+    // 6. Resolution choice provided -> canonical mapping + all-mirror search
     if (quickParams.resolutionChoice) {
-      let detectedTracks: StreamQualityTrack[] = [];
-      let bestMirrorStream: any = null;
+      // Quick mode shows no variant menu: rN maps to its CANONICAL quality
+      // (r1=480P, r2=360P, r3=720P, r4=1080P), then EVERY mirror is searched
+      // for that exact quality. Treating rN as an index into one mirror's
+      // track list once resolved `.a ... r2` to 1080P (audit 8.3).
+      const canonical = canonicalResolutionForChoice(quickParams.resolutionChoice);
+      const { primary, secondary } = splitMirrorsByLanguage(
+        session.episodes || {},
+        session.episodeListLabels,
+        resolvedIndices[0],
+        session.selectedLanguage || "VOSTFR"
+      );
+      const orderedMirrors = [...primary, ...secondary.filter((u) => !primary.includes(u))];
+
+      let matched: { url: string; headers?: Record<string, string>; label: string } | null = null;
+      let nearest: { url: string; headers?: Record<string, string>; label: string } | null = null;
 
       try {
-        const mirrorUrls: string[] = [];
-        for (const listId of Object.keys(session.episodes || {}).map(Number)) {
-          const url = session.episodes?.[listId]?.[resolvedIndices[0]];
-          if (url && !mirrorUrls.includes(url)) {
-            mirrorUrls.push(url);
+        const sortedMirrors = [...orderedMirrors].sort((a, b) => hostPriority(a) - hostPriority(b));
+        for (const mirror of sortedMirrors) {
+          const extracted = await extractMultiHostStream(mirror);
+          if (!extracted || !extracted.url) continue;
+          const tracks: StreamQualityTrack[] =
+            extracted.availableTracks && extracted.availableTracks.length > 0
+              ? extracted.availableTracks
+              : [
+                  {
+                    resolution: extracted.type === "direct_mp4" ? "480P" : "720P",
+                    url: extracted.url,
+                    headers: extracted.headers,
+                    type: extracted.type
+                  }
+                ];
+          const exact = tracks.find((t) => (t.resolution || "").toUpperCase() === canonical);
+          if (exact && exact.url) {
+            matched = {
+              url: exact.url,
+              headers: exact.headers || extracted.headers,
+              label: (exact.resolution || canonical).toUpperCase()
+            };
+            break;
           }
-        }
-        if (mirrorUrls.length > 0) {
-          bestMirrorStream = await resolveBestMirrorStream(mirrorUrls);
-          if (bestMirrorStream.availableTracks && bestMirrorStream.availableTracks.length > 0) {
-            detectedTracks = bestMirrorStream.availableTracks;
+          if (!nearest) {
+            const alt = pickOptimalStream(tracks, canonical);
+            if (alt && alt.url) {
+              nearest = {
+                url: alt.url,
+                headers: alt.headers || extracted.headers,
+                label: (alt.resolution || canonical).toUpperCase()
+              };
+            }
           }
         }
       } catch {}
 
-      if (detectedTracks.length === 0) {
-        const resolved = await resolveEpisodeStream(session.episodes || {}, resolvedIndices[0]);
-        if (resolved.hlsUrl) {
-          const legacyVariants = await inspectHlsStreams(resolved.hlsUrl, resolved.refererUrl, resolved.originUrl);
-          detectedTracks = legacyVariants.map(v => ({
-            resolution: v.label,
-            url: v.url,
-            bandwidth: v.bandwidth,
-            fileSizeBytes: v.estimatedSizeMB * 1024 * 1024,
-            type: 'hls' as const
-          }));
-        }
+      let finalRes = canonical;
+      if (matched) {
+        session.selectedVariantUrl = matched.url;
+        session.selectedVariantHeaders = matched.headers;
+        finalRes = matched.label;
+        console.log(`[NOVABOX] Quick quality "${canonical}" matched exactly on a mirror: ${matched.url.slice(0, 90)}`);
+      } else if (nearest) {
+        session.selectedVariantUrl = nearest.url;
+        session.selectedVariantHeaders = nearest.headers;
+        finalRes = nearest.label;
+        console.log(`[NOVABOX] Quick quality "${canonical}" unavailable; nearest picked: ${nearest.label}`);
       }
-
-      if (detectedTracks.length > 0) {
-        detectedTracks.sort((a, b) => {
-          const order: Record<string, number> = { '480P': 1, '360P': 2, '720P': 3, '1080P': 4 };
-          const rankA = order[a.resolution.toUpperCase()] || 5;
-          const rankB = order[b.resolution.toUpperCase()] || 5;
-          return rankA - rankB;
-        });
-
-        session.availableVariants = detectedTracks.map(t => ({
-          label: t.resolution,
-          resolution: t.resolution,
-          bandwidth: t.bandwidth || 800000,
-          estimatedSizeMB: t.fileSizeBytes ? Math.round(t.fileSizeBytes / (1024 * 1024)) : 75,
-          url: t.url,
-          headers: t.headers || (bestMirrorStream ? bestMirrorStream.headers : undefined),
-          isDirectWhatsAppFit: t.fileSizeBytes ? (t.fileSizeBytes / (1024 * 1024) <= 100) : true
-        }));
-      }
-
-      let finalRes = "720P";
-      const resChoiceLower = quickParams.resolutionChoice.toLowerCase();
-      const rIdxMatch = resChoiceLower.match(/^r(\d+)$/);
-
-      if (rIdxMatch) {
-        const rIdx = parseInt(rIdxMatch[1], 10);
-        if (session.availableVariants && session.availableVariants.length > 0) {
-          const clampedIdx = Math.min(Math.max(1, rIdx), session.availableVariants.length) - 1;
-          const v = session.availableVariants[clampedIdx];
-          session.selectedVariantUrl = v.url;
-          session.selectedVariantHeaders = v.headers;
-          finalRes = v.label;
-          if (v.estimatedSizeMB > 100 && (finalRes === "480P" || finalRes === "360P")) {
-            session.forceCompress = true;
-          }
-        } else {
-          if (rIdx === 1) { finalRes = "480P"; session.forceCompress = true; }
-          else if (rIdx === 2) { finalRes = "360P"; session.forceCompress = true; }
-          else if (rIdx === 3) { finalRes = "720P"; }
-          else if (rIdx === 4) { finalRes = "1080P"; }
-        }
-      } else {
-        finalRes = quickParams.resolutionChoice.toUpperCase();
-        if (session.availableVariants) {
-          const matchedV = session.availableVariants.find(v => v.label.toUpperCase() === finalRes || v.resolution.toUpperCase() === finalRes);
-          if (matchedV) {
-            session.selectedVariantUrl = matchedV.url;
-            session.selectedVariantHeaders = matchedV.headers;
-          }
-        }
+      if (finalRes === "480P" || finalRes === "360P") {
+        session.forceCompress = true; // keep the file WhatsApp-fit on fast lanes
       }
 
       await context.react("🚀");
@@ -766,6 +824,7 @@ const animeCommand: BotCommand = {
           }
 
           session.selectedLanguage = langChoice;
+          session.languageForcedByUser = true;
           session.step = "season";
 
           let filteredSeasons = session.seasons;
@@ -842,7 +901,7 @@ const animeCommand: BotCommand = {
 
         try {
           const jsUrl = selectedSeason.url + "episodes.js";
-          const eps = await parseEpisodes(jsUrl);
+          const { lists: eps, labels: epLabels } = await parseEpisodesDetailed(jsUrl);
           
           if (!eps || Object.keys(eps).length === 0) {
             clearUserSession(sender);
@@ -850,6 +909,20 @@ const animeCommand: BotCommand = {
           }
 
           session.episodes = eps;
+          session.episodeListLabels = epLabels;
+
+          // nakanime: switch the session to VF when the season has VF player
+          // lists and the user did not explicitly force a language (VF-by-
+          // default policy, audit 8.3).
+          if (
+            isNakanimeUrl(selectedSeason.url) &&
+            !session.languageForcedByUser &&
+            Object.values(epLabels).some((l) => isNakanimeVfLabel(l.language))
+          ) {
+            if (!session.languages.includes("VF")) session.languages.push("VF");
+            session.selectedLanguage = "VF";
+          }
+
           const totalEpisodes = Math.max(...Object.values(eps).map(arr => arr.length));
 
           if (isSeasonDownload) {
@@ -1837,19 +1910,19 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       updateEpisodeProgress(batchJob.id, epNum, { status: "downloading", progressPercent: 35 });
 
       try {
-        // Collect mirror URLs for this episode
-        const mirrorUrls: string[] = [];
-        for (const listId of Object.keys(session.episodes || {}).map(Number)) {
-          const url = session.episodes?.[listId]?.[epIndex];
-          if (url && !mirrorUrls.includes(url)) {
-            mirrorUrls.push(url);
-          }
-        }
+        // Collect mirror URLs for this episode (session language first, audit 8.3)
+        const { primary: batchPrimary, secondary: batchSecondary } = splitMirrorsByLanguage(
+          session.episodes || {},
+          session.episodeListLabels,
+          epIndex,
+          session.selectedLanguage || "VOSTFR"
+        );
 
         let success = false;
-        if (mirrorUrls.length > 0) {
+        for (const tier of [batchPrimary, batchSecondary]) {
+          if (success || tier.length === 0) continue;
           try {
-            const fallbackResult = await downloadWithAllMirrorsFallback(mirrorUrls, resolution, localPath, 240000);
+            const fallbackResult = await downloadWithAllMirrorsFallback(tier, resolution, localPath, 240000);
             if (fallbackResult.success && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
               success = true;
             }
@@ -2077,14 +2150,14 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
   let downloadSuccess = false;
   let activePlayerName = "Direct Stream";
 
-  // Collect mirror URLs for this episode
-  const mirrorUrls: string[] = [];
-  for (const listId of Object.keys(session.episodes || {}).map(Number)) {
-    const url = session.episodes?.[listId]?.[epIndex];
-    if (url && !mirrorUrls.includes(url)) {
-      mirrorUrls.push(url);
-    }
-  }
+  // Collect mirror URLs for this episode, split into language tiers so the
+  // session language (VF by default when available) is tried first (audit 8.3).
+  const { primary: langPrimaryMirrors, secondary: mirrorUrls } = splitMirrorsByLanguage(
+    session.episodes || {},
+    session.episodeListLabels,
+    epIndex,
+    session.selectedLanguage || "VOSTFR"
+  );
 
   // Multi-host stream resolution
   let streamToDownload: any = null;
@@ -2104,13 +2177,22 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
   }
 
   // Multi-mirror fallback if direct selected variant failed or wasn't pre-selected
-  if (!downloadSuccess && mirrorUrls.length > 0) {
-    console.log(`[NOVABOX] Running multi-mirror download fallback for ${mirrorUrls.length} mirrors...`);
-    const fallbackResult = await downloadWithAllMirrorsFallback(mirrorUrls, resolution, localPath, 240000);
+  if (!downloadSuccess && langPrimaryMirrors.length > 0) {
+    console.log(`[NOVABOX] Multi-mirror download (${session.selectedLanguage || "VOSTFR"} lists first): ${langPrimaryMirrors.length} mirrors...`);
+    const fallbackResult = await downloadWithAllMirrorsFallback(langPrimaryMirrors, resolution, localPath, 240000);
     if (fallbackResult.success && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
       downloadSuccess = true;
       if (fallbackResult.hostName) activePlayerName = fallbackResult.hostName;
       console.log(`[NOVABOX] Multi-mirror download fallback succeeded with host: ${fallbackResult.hostName}`);
+    }
+  }
+  if (!downloadSuccess && mirrorUrls.length > 0) {
+    console.log(`[NOVABOX] Retrying with the other language mirrors (${mirrorUrls.length})...`);
+    const fallbackResult = await downloadWithAllMirrorsFallback(mirrorUrls, resolution, localPath, 240000);
+    if (fallbackResult.success && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
+      downloadSuccess = true;
+      if (fallbackResult.hostName) activePlayerName = fallbackResult.hostName;
+      console.log(`[NOVABOX] Cross-language mirror fallback succeeded with host: ${fallbackResult.hostName}`);
     }
   }
 

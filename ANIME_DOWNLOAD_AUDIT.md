@@ -383,3 +383,41 @@ Direct Stream`, no player link, and a failed download (empty mirror set).
   the source is nakanime; `nakanimeSeasonRefNumbers()` exported for it.
 
 Suite: 183/183 (18 files, +5 nakanime indexing tests).
+
+### 8.3 Quick-mode quality semantics + VF-by-default + language tiers (2026-08-31, sixth push)
+
+**User report:** `.a rezero s5 ep2 r2` downloaded at **1080P (339 MB)** and
+returned a temp link instead of a WhatsApp-playable video; language was always
+VOSTFR; user expected VF by default and doubted multi-episode ZIP existed.
+
+**Findings & fixes:**
+
+1. **rN was an INDEX, not a quality.** Quick mode parsed `r2` then picked
+   `variants[rIdx-1]` from the track list of the FIRST extractable mirror only
+   (`resolveBestMirrorStream` was called without the requested resolution).
+   For rezero ep2 that mirror was embed4me with tracks `[720P, 1080P]` →
+   index 2 = **1080P**. Fixed:
+   - `canonicalResolutionForChoice()` (quickAnimeParser, exported): r1=480P,
+     r2=360P, r3=720P, r4=1080P (clamped), plus explicit `480p/720p/...`.
+   - The quick flow now probes mirrors in reliability order, **searching every
+     mirror for the exact canonical quality** (early exit on match; sibnet's
+     direct 360P/480P mp4 qualifies), else keeps the nearest track via the
+     improved `pickOptimalStream`.
+   - `pickOptimalStream(requested)`: exact → tallest ≤ requested → smallest
+     overall. No more silent upgrades to 1080P on fast lanes.
+2. **VF by default.** anime-sama already defaulted to VF when present, but the
+   nakanime path had no VF signal (`checkVfExists` is a no-op there). The
+   sources API returns a language per player, so:
+   - `nakanimeEpisodePlayersDetailed()` returns `{lists, labels}` (host +
+     language per list); `nakanimeEpisodePlayers()` kept as wrapper.
+   - Quick + interactive flows store `session.episodeListLabels` and switch
+     the session to **VF when VF lists exist and the user did not force**
+     (`.a vostfr` sets `session.languageForcedByUser`).
+   - Downloads use `splitMirrorsByLanguage()`: session-language mirrors first,
+     other-language mirrors as a second attempt (single + batch flows).
+3. **Multi-episode ZIP already existed** (`.a <q> sN 1-5 r1`, `e2,e5`,
+   `all`) — confirmed to the user with syntax; no code change.
+4. `scripts/anime-repro.ts` now prints per-list `host (language)` labels.
+
+Suite: 195/195 (19 files, +12 tests: canonical mapping, nearest-quality
+fallback, VF label classification, language tier splitting).

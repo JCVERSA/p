@@ -317,23 +317,32 @@ async function fetchEpisodePlayerUrls(
  * Player URLs for every episode of a season, in the exact shape the novabox
  * session expects: `{ <listNumber>: [urlByEpisodeIndex] }` — list numbers are
  * stable per host+language ("Lecteur 1..N"), mirroring anime-sama's epsN.
+ * `labels` carries the host+language of each list so the bot can prefer VF
+ * player lists (VF-by-default policy, audit §8.3).
  */
-export async function nakanimeEpisodePlayers(seasonUrl: string): Promise<Record<number, string[]>> {
+export interface NakanimeListLabels {
+  [listNum: number]: { host: string; language: string };
+}
+
+export async function nakanimeEpisodePlayersDetailed(
+  seasonUrl: string
+): Promise<{ lists: Record<number, string[]>; labels: NakanimeListLabels }> {
   const idMatch = seasonUrl.match(/\/anime\/(\d+)/);
   const seasonMatch = seasonUrl.match(/\/season\/(\d+)/);
-  if (!idMatch) return {};
+  if (!idMatch) return { lists: {}, labels: {} };
   const animeId = Number(idMatch[1]);
   const season = seasonMatch ? Number(seasonMatch[1]) : 1;
 
   const index = await loadSeasonIndex(animeId);
-  if (!index) return {};
+  if (!index) return { lists: {}, labels: {} };
   // Positional semantics (anime-sama parity): list slot i holds the player of
   // the i-th episode of the season listing, NOT episode-number-1 — nakanime's
   // script order is not guaranteed ascending (see normalizeNakanimeEpisodeRefs).
   const eps = normalizeNakanimeEpisodeRefs(index.episodesBySeason.get(season) || []).slice(0, MAX_EPISODE_LOOKUPS);
-  if (eps.length === 0) return {};
+  if (eps.length === 0) return { lists: {}, labels: {} };
 
   const listKeys = new Map<string, number>(); // "host (lang)" -> list number
+  const labels: NakanimeListLabels = {};
   const lists: Record<number, string[]> = {};
 
   let cursor = 0;
@@ -348,6 +357,7 @@ export async function nakanimeEpisodePlayers(seasonUrl: string): Promise<Record<
         const listNum = listKeys.get(key)!;
         if (!lists[listNum]) lists[listNum] = [];
         lists[listNum][epIndex] = src.url;
+        labels[listNum] = { host: src.host, language: src.language };
       }
     }
   };
@@ -360,5 +370,10 @@ export async function nakanimeEpisodePlayers(seasonUrl: string): Promise<Record<
       if (!lists[n][i]) lists[n][i] = lists[n][i] || "";
     }
   }
-  return lists;
+  return { lists, labels };
+}
+
+/** Back-compat wrapper: player lists only (labels-less callers, tests, repro). */
+export async function nakanimeEpisodePlayers(seasonUrl: string): Promise<Record<number, string[]>> {
+  return (await nakanimeEpisodePlayersDetailed(seasonUrl)).lists;
 }

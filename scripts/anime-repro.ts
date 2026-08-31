@@ -81,7 +81,7 @@ let exitCode = 0;
 
 async function main(): Promise<void> {
   // Imports are dynamic so --proxy/.env are applied before modules read env.
-  const { searchAnime, parseSeasons, parseEpisodes } =
+  const { searchAnime, parseSeasons, parseEpisodesDetailed } =
     await import("../src/bot/commands/novabox.js");
   const { isNakanimeUrl, nakanimeSeasonRefNumbers } =
     await import("../src/bot/services/nakanimeClient.js");
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
   hr("3/5 EPISODE PLAYERS");
   const jsUrl = season.url + "episodes.js";
   console.log(`episodes source: ${trunc(jsUrl, 120)}`);
-  const eps = await parseEpisodes(jsUrl);
+  const { lists: eps, labels: epLabels } = await parseEpisodesDetailed(jsUrl);
   if (isNakanimeUrl(season.url)) {
     try {
       const nums = await nakanimeSeasonRefNumbers(season.url, seasonNum);
@@ -167,6 +167,12 @@ async function main(): Promise<void> {
     if (arr[epIndex] && !mirrors.includes(arr[epIndex])) mirrors.push(arr[epIndex]);
     console.log(`  list ${id}: ${arr.length} eps  |  ep${epNum} -> ${trunc(epUrl, 110)}`);
   }
+  const labelStr = Object.keys(epLabels)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((k) => `${k}: ${epLabels[k].host} (${epLabels[k].language})`)
+    .join("  |  ");
+  if (labelStr) console.log(`list labels: ${labelStr}`);
   const maxEps = Math.max(...listIds.map((id) => (eps[id] || []).length));
   if (epIndex >= maxEps) {
     console.log(`[KO] ep${epNum} out of range (max ${maxEps})`);

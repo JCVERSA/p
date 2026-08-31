@@ -946,14 +946,29 @@ export async function resolveBestMirrorStream(mirrorUrls: string[], preferredRes
 /**
  * Selects optimal stream based on user's priority for 480p/360p fast downloads
  */
+function trackHeight(res: string | undefined): number {
+  const m = (res || "").match(/(\d{3,4})/);
+  return m ? parseInt(m[1], 10) : 720;
+}
+
 export function pickOptimalStream(tracks: StreamQualityTrack[], requestedRes?: string): StreamQualityTrack {
   if (!tracks || tracks.length === 0) {
     return { resolution: "480P", url: "", type: "hls" };
   }
 
   if (requestedRes) {
-    const match = tracks.find(t => t.resolution.toUpperCase() === requestedRes.toUpperCase());
+    const wanted = requestedRes.toUpperCase();
+    const match = tracks.find(t => (t.resolution || "").toUpperCase() === wanted);
     if (match) return match;
+
+    // Requested quality missing on this mirror: prefer the tallest track that
+    // is NOT taller than the request (fast lanes stay fast); if everything is
+    // taller, take the smallest available (audit §8.3 — `.a … r2` used to
+    // silently land on 1080P when a mirror only exposed 720P/1080P).
+    const byHeight = [...tracks].sort((a, b) => trackHeight(a.resolution) - trackHeight(b.resolution));
+    const under = byHeight.filter(t => trackHeight(t.resolution) <= trackHeight(wanted));
+    if (under.length > 0) return under[under.length - 1];
+    return byHeight[0];
   }
 
   // Priority order: 480p > 360p > 720p > 1080p

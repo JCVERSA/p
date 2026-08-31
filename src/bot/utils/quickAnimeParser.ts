@@ -297,6 +297,26 @@ export function isExactAnimeMatch(
 }
 
 /**
+ * Maps a quick-mode resolution choice to its CANONICAL quality label:
+ * r1=480P, r2=360P, r3=720P, r4=1080P (the menu shown to users), plus the
+ * explicit forms (480p/720p/…). Quick mode has no visible variant list, so
+ * rN must NEVER be treated as an index into a mirror-specific track list
+ * (audit §8.3: `.a rezero s5 ep2 r2` once resolved to 1080P because the
+ * first extractable mirror only exposed [720P, 1080P]).
+ */
+export function canonicalResolutionForChoice(choice: string): string {
+  const c = (choice || "").trim().toLowerCase();
+  const m = c.match(/^r(\d+)$/);
+  if (m) {
+    const idx = parseInt(m[1], 10);
+    const map = ["480P", "360P", "720P", "1080P"];
+    return map[Math.min(Math.max(idx, 1), map.length) - 1];
+  }
+  if (/^(1080p|720p|480p|360p)$/.test(c)) return c.toUpperCase();
+  return "480P";
+}
+
+/**
  * Resolves the requested season from an anime's parsed season list
  */
 export function resolveRequestedSeason(
