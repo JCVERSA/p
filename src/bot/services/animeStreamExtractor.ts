@@ -609,21 +609,35 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
       if (fmPage) return fmPage;
     }
 
-    // 0c. voe — rotating domains, payload hidden in an application/json
-    // script tag (rot13 + double base64 chain, see decodeVoePayload).
+    // 0c. voe / voembed — rotating domains, payload hidden in an
+    // application/json script tag (rot13 + double base64 chain, see
+    // decodeVoePayload). The manifest's REAL variants are parsed so quality
+    // labels and sizes are honest — without this, the quick flow labelled the
+    // 480p voembed file "720P" from a synthesized fallback track (audit 8.11).
     if (isVoeStyleUrl(playerUrl)) {
       const voeStream = await extractVoeStream(playerUrl);
       if (voeStream) {
         const isHls = /\.m3u8/i.test(voeStream);
+        const voeOriginMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
+        const voeOrigin = voeOriginMatch ? voeOriginMatch[1] : "https://voembed.net";
+        let voeTracks: StreamQualityTrack[] = [];
+        if (isHls) {
+          try {
+            voeTracks = await fetchHlsTracksAndSizes(voeStream, `${voeOrigin}/`, voeOrigin);
+          } catch {
+            // tracks are optional — the bare master URL stays usable
+          }
+        }
         return {
           hostName: "Voe",
           url: voeStream,
           type: isHls ? "hls" : "direct_mp4",
           headers: {
             "User-Agent": DEFAULT_USER_AGENT,
-            "Referer": "https://nakanime.tv/",
-            "Origin": "https://nakanime.tv"
-          }
+            "Referer": `${voeOrigin}/`,
+            "Origin": voeOrigin
+          },
+          availableTracks: voeTracks
         };
       }
     }

@@ -607,3 +607,22 @@ entry fall back to nakanime VOSTFR (honest in both directions). Opt-outs:
 (`.a <q>` step-by-step) flow keeps its explicit language menu.
 
 Suite: 217/217 (21 files).
+
+### 8.11 voe/voembed tracks were not parsed — "720P" label on a 480p file (2026-08-31, thirteenth push)
+
+**User catch:** `.a sparks of tomorrow vf s1 ep9 r2` delivered 92.3 MB labelled
+*720P*, while the probe had downloaded the SAME episode at **852x480 / 92.28
+MB**. Suspicion confirmed: the Voe/voembed branch returned the master HLS
+without parsing its variants, so `resolveCanonicalQualityTrack` synthesized a
+fallback track labelled "720P" (the generic hls default) while the downloader's
+own master resolver silently picked the 480p variant. Honest size, wrong label.
+
+Fix: the voe branch now runs `fetchHlsTracksAndSizes` on the master (referer =
+player origin instead of the hardcoded nakanime one), so quick mode sees the
+REAL menu (480P/1080P), labels the nearest quality honestly and hands the exact
+variant URL to the downloader (no more silent heuristic pick).
+
+Sanity math: 24 min at ~0.5 MB/s ≈ 92 MB = 480p territory; a true 720p of the
+same episode would be ~140-190 MB.
+
+Suite: 217/217 (21 files).
