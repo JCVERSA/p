@@ -1,11 +1,16 @@
 /**
  * ============================================================================
- *  NEBULA — Anime Download Doctor (Novabox pipeline diagnostic)
+ *  NEBULA - Anime Download Doctor (Novabox pipeline diagnostic)
  * ============================================================================
  *  Run ON THE SERVER where the bot lives:
  *
  *      npx tsx scripts/anime-doctor.ts            # safe checks (~60s max)
  *      npx tsx scripts/anime-doctor.ts --full     # + real 2-segment download
+ *
+ *  Egress proxy (Cloudflare-blocked VPS? see ANIME_DOWNLOAD_AUDIT.md R3):
+ *
+ *      npx tsx scripts/anime-doctor.ts --proxy http://user:pass@host:port
+ *      NEBULA_ANIME_PROXY=http://host:port npx tsx scripts/anime-doctor.ts
  *
  *  It walks the exact stages the `.a` / `.anime` command executes, using the
  *  repo's real code where possible, and prints a PASS/FAIL table with the
@@ -13,8 +18,8 @@
  *  fails.
  *
  *  Stages
- *   0. Runtime environment (node, ffmpeg binary, APP_URL)
- *   1. anime-sama.to reachability (DNS, TLS, Cloudflare challenge)
+ *   0. Runtime environment (node, ffmpeg binary, APP_URL, proxy)
+ *   1. anime-sama reachability (DNS, TLS, Cloudflare challenge)
  *   2. Search endpoint  POST /template-php/defaut/fetch.php   (P0)
  *   3. Catalog page     panneauAnime(...) season parsing       (P0)
  *   4. episodes.js      var epsN = [...] parsing               (P0)
@@ -22,8 +27,8 @@
  *   6. HLS manifest     master playlist + quality tracks       (P1)
  *   7. Segment download + ffmpeg remux (only with --full)      (P1)
  *
- *  NOTE: stages 2–4 replicate the private regexes of
- *  src/bot/commands/novabox.ts verbatim — keep them in sync.
+ *  NOTE: stages 2-4 replicate the private regexes of
+ *  src/bot/commands/novabox.ts verbatim - keep them in sync.
  * ============================================================================
  */
 
@@ -32,10 +37,11 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import dns from "dns/promises";
-import axios from "axios";
+import axios, { type AxiosProxyConfig } from "axios";
 import * as cheerio from "cheerio";
 import ffmpegStatic from "ffmpeg-static";
 import { isSafeDownloadUrl } from "../src/bot/urlSafety.js";
+import { parseProxyUrl, ANIME_PROXY_ENV } from "../src/bot/services/scrapingProxy.js";
 import {
   extractMultiHostStream,
   fetchHlsTracksAndSizes,
@@ -43,10 +49,20 @@ import {
 } from "../src/bot/services/animeStreamExtractor.js";
 
 const FULL = process.argv.includes("--full");
+const PROXY_ARG = (() => {
+  const i = process.argv.indexOf("--proxy");
+  return i !== -1 ? process.argv[i + 1] : undefined;
+})();
+// --proxy must also reach the repo's real code paths (stages 5-7), which read
+// the env var themselves via getAnimeProxyConfig().
+if (PROXY_ARG) process.env[ANIME_PROXY_ENV] = PROXY_ARG;
+const PROXY: AxiosProxyConfig | undefined = parseProxyUrl(
+  PROXY_ARG ?? process.env[ANIME_PROXY_ENV],
+);
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-// The site rotates TLDs under legal pressure (.fr→.org→.eu→.tv→.si→.to…).
+// The site rotates TLDs under legal pressure (.fr->.org->.eu->.tv->.si->.to...).
 // Probe a list and use the first that answers.
 const CANDIDATE_DOMAINS = (process.env.NEBULA_ANIME_DOMAIN || "")
   .split(",")
@@ -76,7 +92,30 @@ function row(
 }
 
 function hr() {
-  console.log("─".repeat(78));
+  console.log("-".repeat(78));
+}
+
+/** Cloudflare / WAF detection shared by all stages. */
+function looksLikeCloudflare(status: number, body: string): boolean {
+  return (
+    status === 403 ||
+    status === 503 ||
+    body.includes("Just a moment") ||
+    body.includes("cf_chl_opt") ||
+    (body.includes("cloudflare") && body.includes("captcha")) ||
+    body.includes("Attention Required")
+  );
+}
+
+function cloudflareHint(): string {
+  return (
+    "Cloudflare/WAF is blocking this server's requests (HTTP 403). This VPS IP range is flagged - " +
+    "no parser fix can help until egress changes. Options: (1) route the anime pipeline through a " +
+    `proxy: set ${ANIME_PROXY_ENV}=http://user:pass@host:port in .env (supported by the bot AND this doctor ` +
+    "via --proxy), e.g. a residential/mobile proxy or one in a non-blocked region; (2) host the bot " +
+    "(or just a tiny HTTP forward proxy) on a network that is not blocked - verify with: " +
+    "curl -sI -A 'Mozilla/5.0' https://anime-sama.to | head -3"
+  );
 }
 
 async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
@@ -91,12 +130,19 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
   }
 }
 
-// ───────────────────────── Stage 0: environment ─────────────────────────
+// ------------------------------ Stage 0: environment ------------------------------
 hr();
-console.log("STAGE 0 — Runtime environment");
+console.log("STAGE 0 - Runtime environment");
 hr();
 
 console.log(`node            : ${process.version}`);
+if (PROXY) {
+  console.log(
+    `proxy           : ${PROXY.protocol}://${PROXY.host}:${PROXY.port}${PROXY.auth ? " (with auth)" : ""}`,
+  );
+} else {
+  console.log(`proxy           : none (direct egress)`);
+}
 let ffmpegOk = false;
 let ffmpegDetail = "system `ffmpeg` on PATH";
 try {
@@ -133,12 +179,12 @@ row(
   appUrl
     ? undefined
     : "Batch/oversize downloads are delivered as links built from APP_URL. Without it (and if the panel was never " +
-        "opened from a public host) links are relative like '/api/media/download/<token>' — unusable in WhatsApp.",
+        "opened from a public host) links are relative like '/api/media/download/<token>' - unusable in WhatsApp.",
 );
 
-// ───────────────────── Stage 1: upstream reachability ─────────────────────
+// ---------------------------- Stage 1: upstream reachability ----------------------------
 hr();
-console.log("STAGE 1 — anime-sama reachability");
+console.log("STAGE 1 - anime-sama reachability");
 hr();
 
 let domain = "";
@@ -156,19 +202,19 @@ for (const d of CANDIDATE_DOMAINS) {
         headers: { "User-Agent": UA },
         timeout: 10000,
         validateStatus: () => true,
+        proxy: PROXY,
       }),
       15000,
       "http",
     );
     const body = typeof res.data === "string" ? res.data : "";
-    const cf = body.includes("Just a moment") || body.includes("cf_chl_opt") || res.status === 403;
-    if (cf) {
+    if (looksLikeCloudflare(res.status, body)) {
       row(
         "1",
         `HTTPS ${d}`,
         "FAIL",
-        `HTTP ${res.status} — Cloudflare challenge detected`,
-        undefined,
+        `HTTP ${res.status} - Cloudflare/WAF block page detected`,
+        cloudflareHint(),
         true,
       );
     } else {
@@ -200,19 +246,18 @@ if (!domain) {
     "usable domain",
     "FAIL",
     `none of [${CANDIDATE_DOMAINS.join(", ")}] answered`,
-    undefined,
+    cloudflareHint(),
     true,
   );
 } else {
-  console.log(`→ using https://${domain} for the following stages`);
+  console.log(`-> using https://${domain} for the following stages`);
 }
 
-// ───────────────────── Stage 2: search endpoint (P0) ─────────────────────
+// ---------------------------- Stage 2: search endpoint (P0) ----------------------------
 hr();
-console.log("STAGE 2 — search endpoint (what `.a <name>` uses first)");
+console.log("STAGE 2 - search endpoint (what `.a <name>` uses first)");
 hr();
 
-// Mirrors novabox.ts searchAnime()
 const TEST_QUERY = process.env.DOCTOR_QUERY || "solo leveling";
 let searchFirstUrl = "";
 try {
@@ -223,6 +268,7 @@ try {
       headers: { "User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded" },
       timeout: 10000,
       validateStatus: () => true,
+      proxy: PROXY,
     }),
     15000,
     "search",
@@ -243,13 +289,22 @@ try {
       `HTTP 200, ${results.length} results, first: "${results[0].title}"`,
     );
     searchFirstUrl = results[0].url;
+  } else if (looksLikeCloudflare(res.status, html)) {
+    row(
+      "2",
+      "fetch.php search",
+      "FAIL",
+      `HTTP ${res.status} - Cloudflare/WAF block page`,
+      cloudflareHint(),
+      true,
+    );
   } else {
     row(
       "2",
       "fetch.php search",
       "FAIL",
       `HTTP ${res.status}, ${html.length} bytes, ${results.length} parsed results`,
-      "Endpoint reachable but markup parse failed → the site's search HTML changed; update searchAnime() selectors " +
+      "Endpoint reachable but markup parse failed -> the site's search HTML changed; update searchAnime() selectors " +
         "in src/bot/commands/novabox.ts.",
       true,
     );
@@ -260,15 +315,15 @@ try {
     "fetch.php search",
     "FAIL",
     e.message,
-    "Search is the first network call the command makes — if this fails, EVERYTHING downstream fails with " +
-      "'Aucun résultat trouvé'. Check stage 1 remediation.",
+    "Search is the first network call the command makes - if this fails, EVERYTHING downstream fails with " +
+      "'Aucun resultat trouve'. Check stage 1 remediation.",
     true,
   );
 }
 
-// ───────────────────── Stage 3: catalog seasons (P0) ─────────────────────
+// ---------------------------- Stage 3: catalog seasons (P0) ----------------------------
 hr();
-console.log("STAGE 3 — catalog page season parsing (panneauAnime)");
+console.log("STAGE 3 - catalog page season parsing (panneauAnime)");
 hr();
 
 const catalogUrl = searchFirstUrl || `https://${domain}/catalogue/solo-leveling/`;
@@ -279,45 +334,57 @@ try {
       headers: { "User-Agent": UA },
       timeout: 10000,
       validateStatus: () => true,
+      proxy: PROXY,
     }),
     15000,
     "catalog",
   );
   const html = typeof res.data === "string" ? res.data : "";
-  const regex = /panneauAnime\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*\)/g;
-  const seasons: Array<{ name: string; subPath: string }> = [];
-  let m;
-  while ((m = regex.exec(html)) !== null) {
-    if (m[1].toLowerCase() === "nom" || m[2].toLowerCase() === "url") continue;
-    seasons.push({ name: m[1], subPath: m[2] });
+  if (looksLikeCloudflare(res.status, html)) {
+    row(
+      "3",
+      `catalog page (${catalogUrl})`,
+      "FAIL",
+      `HTTP ${res.status} - Cloudflare/WAF block page`,
+      cloudflareHint(),
+      true,
+    );
+  } else {
+    const regex = /panneauAnime\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*\)/g;
+    const seasons: Array<{ name: string; subPath: string }> = [];
+    let m;
+    while ((m = regex.exec(html)) !== null) {
+      if (m[1].toLowerCase() === "nom" || m[2].toLowerCase() === "url") continue;
+      seasons.push({ name: m[1], subPath: m[2] });
+    }
+    row(
+      "3",
+      `panneauAnime parse (${catalogUrl})`,
+      seasons.length ? "PASS" : "FAIL",
+      seasons.length
+        ? `${seasons.length} seasons: ${seasons
+            .slice(0, 6)
+            .map((s) => s.name)
+            .join(", ")}...`
+        : `HTTP ${res.status}, 0 seasons parsed`,
+      seasons.length
+        ? undefined
+        : "Search works but the catalog page markup changed (or the result URL points at a dead domain - check the " +
+            "absolute URL inside fetch.php results). Update parseSeasons() in novabox.ts.",
+      true,
+    );
+    seasonSubPath =
+      seasons.find((s) => /saison\s*1/i.test(s.name))?.subPath ||
+      seasons[0]?.subPath ||
+      seasonSubPath;
   }
-  row(
-    "3",
-    `panneauAnime parse (${catalogUrl})`,
-    seasons.length ? "PASS" : "FAIL",
-    seasons.length
-      ? `${seasons.length} seasons: ${seasons
-          .slice(0, 6)
-          .map((s) => s.name)
-          .join(", ")}…`
-      : `HTTP ${res.status}, 0 seasons parsed`,
-    seasons.length
-      ? undefined
-      : "Search works but the catalog page markup changed (or the result URL points at a dead domain — check the " +
-          "absolute URL inside fetch.php results). Update parseSeasons() in novabox.ts.",
-    true,
-  );
-  seasonSubPath =
-    seasons.find((s) => /saison\s*1/i.test(s.name))?.subPath ||
-    seasons[0]?.subPath ||
-    seasonSubPath;
 } catch (e: any) {
   row("3", "catalog page", "FAIL", e.message, undefined, true);
 }
 
-// ───────────────────── Stage 4: episodes.js (P0) ────────────────────────
+// ---------------------------- Stage 4: episodes.js (P0) ----------------------------
 hr();
-console.log("STAGE 4 — episodes.js parsing");
+console.log("STAGE 4 - episodes.js parsing");
 hr();
 
 const epsUrl = `${catalogUrl.replace(/\/$/, "")}/${seasonSubPath.replace(/^\//, "")}/episodes.js`;
@@ -327,6 +394,7 @@ try {
       headers: { "User-Agent": UA },
       timeout: 10000,
       validateStatus: () => true,
+      proxy: PROXY,
     }),
     15000,
     "episodes",
@@ -343,22 +411,33 @@ try {
     if (urls.length) lists[parseInt(m[1])] = urls;
   }
   const total = Math.max(0, ...Object.values(lists).map((a) => a.length));
-  row(
-    "4",
-    "epsN arrays",
-    Object.keys(lists).length ? "PASS" : "FAIL",
-    Object.keys(lists).length
-      ? `lists ${Object.keys(lists).join(",")} — max ${total} episodes`
-      : `HTTP ${res.status}, 0 lists parsed from ${epsUrl}`,
-    Object.keys(lists).length
-      ? undefined
-      : "Season page works but episodes.js format changed. Update parseEpisodes() in novabox.ts.",
-    true,
-  );
+  if (looksLikeCloudflare(res.status, js)) {
+    row(
+      "4",
+      "epsN arrays",
+      "FAIL",
+      `HTTP ${res.status} - Cloudflare/WAF block page`,
+      cloudflareHint(),
+      true,
+    );
+  } else {
+    row(
+      "4",
+      "epsN arrays",
+      Object.keys(lists).length ? "PASS" : "FAIL",
+      Object.keys(lists).length
+        ? `lists ${Object.keys(lists).join(",")} - max ${total} episodes`
+        : `HTTP ${res.status}, 0 lists parsed from ${epsUrl}`,
+      Object.keys(lists).length
+        ? undefined
+        : "Season page works but episodes.js format changed. Update parseEpisodes() in novabox.ts.",
+      true,
+    );
+  }
 
-  // ───────────────────── Stage 5: mirror players (P1) ─────────────────────
+  // ---------------------------- Stage 5: mirror players (P1) ----------------------------
   hr();
-  console.log("STAGE 5 — player mirror extraction (first episode)");
+  console.log("STAGE 5 - player mirror extraction (first episode)");
   hr();
 
   const mirrors: string[] = [];
@@ -369,14 +448,19 @@ try {
 
   let anyStream: Awaited<ReturnType<typeof extractMultiHostStream>> = null;
   for (const mirror of mirrors) {
-    const host = new URL(mirror).host;
+    let host: string;
+    try {
+      host = new URL(mirror).host;
+    } catch {
+      host = mirror;
+    }
     const safe = await isSafeDownloadUrl(mirror).catch(() => false);
     if (!safe) {
       row(
         "5",
         host,
         "FAIL",
-        `${mirror} — blocked by urlSafety (SSRF guard)`,
+        `${mirror} - blocked by urlSafety (SSRF guard)`,
         "Host resolves to a private/unresolvable address or scheme is not http(s).",
       );
       continue;
@@ -388,7 +472,7 @@ try {
           "5",
           host,
           "PASS",
-          `${extracted.hostName} ${extracted.type} — ${extracted.url.slice(0, 70)}…`,
+          `${extracted.hostName} ${extracted.type} - ${extracted.url.slice(0, 70)}...`,
         );
         if (!anyStream) anyStream = extracted;
       } else {
@@ -396,22 +480,22 @@ try {
           "5",
           host,
           "FAIL",
-          `${mirror} — no stream extracted`,
+          `${mirror} - no stream extracted`,
           "Player page layout changed or the video needs a dedicated extractor. " +
             "Known gaps in this bot: lpayer.embed4me.com (needs /api/v1/video + AES-128 key 'kiemtienmua911ca'/" +
             "IV '1234567890oiuytr'), uqload.is, minochinos.com, voe/filemoon/luluvdo/vidzy. " +
-            "See ANIME_DOWNLOAD_AUDIT.md §R3.",
+            "See ANIME_DOWNLOAD_AUDIT.md section R1/R3.",
         );
       }
     } catch (e: any) {
-      row("5", host, "FAIL", `${mirror} — ${e.message}`);
+      row("5", host, "FAIL", `${mirror} - ${e.message}`);
     }
   }
   if (mirrors.length === 0) row("5", "mirrors", "SKIP", "no mirrors found in stage 4");
 
-  // ───────────────────── Stage 6: HLS manifest (P1) ──────────────────────
+  // ---------------------------- Stage 6: HLS manifest (P1) ----------------------------
   hr();
-  console.log("STAGE 6 — HLS manifest + quality tracks");
+  console.log("STAGE 6 - HLS manifest + quality tracks");
   hr();
 
   if (anyStream) {
@@ -429,7 +513,7 @@ try {
         `${tracks.length} tracks [${tracks.map((t) => t.resolution).join(", ")}]; would pick ${pick.resolution}`,
         tracks.length && tracks[0].url
           ? undefined
-          : "Manifest unreachable → the 4 offered qualities are FABRICATED fallbacks pointing at the master URL; " +
+          : "Manifest unreachable -> the 4 offered qualities are FABRICATED fallbacks pointing at the master URL; " +
               "downloads will fail or serve the wrong quality. Check Referer/Origin headers for this CDN.",
       );
     } catch (e: any) {
@@ -439,10 +523,10 @@ try {
     row("6", "master playlist", "SKIP", "no stream extracted in stage 5");
   }
 
-  // ───────────────── Stage 7: real download probe (--full) ───────────────
+  // -------------------------- Stage 7: real download probe (--full) --------------------------
   hr();
   if (FULL) {
-    console.log("STAGE 7 — end-to-end download probe (--full)");
+    console.log("STAGE 7 - end-to-end download probe (--full)");
     hr();
     const { downloadHlsAppLevel } = await import("../src/bot/services/hlsDownloader.js");
     if (anyStream) {
@@ -461,7 +545,7 @@ try {
           ok ? `${(size / 1048576).toFixed(1)} MB written to ${out}` : `ok=${ok}, size=${size}`,
           ok && size > 1000
             ? undefined
-            : "Segments fetch but the remux fails → check stage 0 (ffmpeg). If stage 6 tracks were fabricated, " +
+            : "Segments fetch but the remux fails -> check stage 0 (ffmpeg). If stage 6 tracks were fabricated, " +
                 "the master URL itself may be 403 for this server.",
         );
       } catch (e: any) {
@@ -471,21 +555,26 @@ try {
       row("7", "HLS download + remux", "SKIP", "no stream to download");
     }
   } else {
-    console.log("STAGE 7 — skipped (re-run with --full for a real 90s download probe)");
+    console.log("STAGE 7 - skipped (re-run with --full for a real 90s download probe)");
   }
 } catch (e: any) {
   row("4", "episodes.js", "FAIL", e.message, undefined, true);
 }
 
-// ───────────────────────────── Report ────────────────────────────────────
+// ------------------------------ Report ------------------------------
 hr();
 console.log("RESULTS");
 hr();
-const icon: Record<Row["status"], string> = { PASS: "✅", FAIL: "❌", WARN: "⚠️ ", SKIP: "⏭️ " };
+const icon: Record<Row["status"], string> = {
+  PASS: "[PASS]",
+  FAIL: "[FAIL]",
+  WARN: "[WARN]",
+  SKIP: "[SKIP]",
+};
 for (const r of rows) {
-  console.log(`${icon[r.status]} [${r.stage}]${r.p0 ? " (P0)" : "  "} ${r.name}`);
-  console.log(`      ${r.detail}`);
-  if (r.hint) console.log(`      → ${r.hint}`);
+  console.log(`${icon[r.status]} [${r.stage}]${r.p0 ? " (P0)" : "      "} ${r.name}`);
+  console.log(`        ${r.detail}`);
+  if (r.hint) console.log(`        -> ${r.hint}`);
 }
 hr();
 const p0Fails = rows.filter((r) => r.p0 && r.status === "FAIL");
@@ -495,11 +584,11 @@ console.log(
 );
 if (p0Fails.length) {
   console.log(
-    "\nDiagnosis: a P0 stage failed — the command cannot work at all until this is fixed.",
+    "\nDiagnosis: a P0 stage failed - the command cannot work at all until this is fixed.",
   );
 } else if (p1Fails.length) {
   console.log(
-    "\nDiagnosis: discovery works but media extraction is broken — expect 'download temporarily\nunavailable' or link-only replies. Fix the stage 5/6 failures (see ANIME_DOWNLOAD_AUDIT.md).",
+    "\nDiagnosis: discovery works but media extraction is broken - expect 'download temporarily\nunavailable' or link-only replies. Fix the stage 5/6 failures (see ANIME_DOWNLOAD_AUDIT.md).",
   );
 } else {
   console.log(

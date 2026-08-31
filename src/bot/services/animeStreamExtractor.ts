@@ -7,6 +7,7 @@ import crypto from "crypto";
 import ffmpegPath from "ffmpeg-static";
 import { execSync } from "child_process";
 import { downloadHlsAppLevel, robustFetchText, robustFetchBuffer, resolveAbsoluteUrl, resolveMediaPlaylistUrl } from "./hlsDownloader.js";
+import { getAnimeProxyConfig } from "./scrapingProxy.js";
 
 let resolvedFfmpegPath = "ffmpeg";
 try {
@@ -158,7 +159,8 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
             "Referer": "https://anime-sama.to/"
           },
           timeout: 7000,
-          validateStatus: () => true
+          validateStatus: () => true,
+    proxy: getAnimeProxyConfig()
         });
 
         if (resp.status === 200) {
@@ -206,7 +208,8 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
             "Referer": "https://video.sibnet.ru/"
           },
           timeout: 6000,
-          validateStatus: () => true
+          validateStatus: () => true,
+    proxy: getAnimeProxyConfig()
         });
         if (resp.status === 200) {
           const html = typeof resp.data === "string" ? resp.data : "";
@@ -257,7 +260,8 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
             "Referer": "https://anime-sama.to/"
           },
           timeout: 6000,
-          validateStatus: () => true
+          validateStatus: () => true,
+    proxy: getAnimeProxyConfig()
         });
         if (resp.status === 200) {
           const html = typeof resp.data === "string" ? resp.data : "";
@@ -305,7 +309,8 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
             "Referer": "https://anime-sama.to/"
           },
           timeout: 6000,
-          validateStatus: () => true
+          validateStatus: () => true,
+    proxy: getAnimeProxyConfig()
         });
         if (resp.status === 200) {
           const html = typeof resp.data === "string" ? resp.data : "";
@@ -377,7 +382,8 @@ export async function fetchHlsTracksAndSizes(
   try {
     const resp = await axios.get(masterUrl, {
       headers: reqHeaders,
-      timeout: 8000
+      timeout: 8000,
+      proxy: getAnimeProxyConfig()
     });
     const manifest = typeof resp.data === "string" ? resp.data : "";
     const lines = manifest.split("\n");
@@ -687,7 +693,8 @@ export async function executeDirectOrFfmpegDownload(
         headers: stream.headers || {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         },
-        timeout: timeoutMs
+        timeout: timeoutMs,
+        proxy: getAnimeProxyConfig()
       });
 
       response.data.pipe(writer);

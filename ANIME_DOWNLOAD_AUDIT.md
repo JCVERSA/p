@@ -3,6 +3,7 @@
 **Repository:** `JCVERSA/p` · Branch `arena/01a05555-p` · Commit `31fe212`
 **Audit date:** 2026-08-31 · **Mode:** analysis + diagnostics — **the download pipeline source code was NOT modified**
 **Deliverable added:** `scripts/anime-doctor.ts` (run `npx tsx scripts/anime-doctor.ts --full` on the server that hosts the bot) + this report.
+**Update 2026-08-31 (VPS verification + fixes):** see §6 — the doctor confirmed a full Cloudflare 403 block on the user's VPS (R3), and the pipeline now supports an egress proxy via `NEBULA_ANIME_PROXY`.
 
 ---
 
@@ -176,6 +177,39 @@ For deeper tracing at runtime: `DEBUG_MEDIA=true npm run dev` — probe errors i
 | **P2** | Domain configurability + CF detection logging; startup ffmpeg check; drop fake quality tracks; enforce download timeout | 0.5 day | Robustness & honest UX |
 | **P2** | Real (non-simulated) panel retry; remove 1.1.1.1 pin; refresh trusted hosts | 0.5 day | Correctness |
 | **P3** | Season fallback guard, VF variant languages, DEBUG polarity, dedupe unpackers, env-tunable concurrency | 0.5 day | Polish |
+
+---
+
+## 6. VPS verification results & shipped mitigations (2026-08-31)
+
+The doctor was run on the production VPS (Debian 11, Node v22.23.2, system ffmpeg 4.3.9):
+
+| Stage | Result |
+|---|---|
+| 0 ffmpeg / node | PASS |
+| 1 anime-sama.to / .tv / .si | **FAIL — HTTP 403 Cloudflare/WAF block page on ALL domains** (DNS fine, `anime-sama.eu` NXDOMAIN) |
+| 2–4 search / seasons / episodes.js | FAIL — all 403 (cascade of stage 1) |
+| 5–7 | SKIP (no data) |
+
+**Confirmed root cause on that host: R3 (Cloudflare IP-range block).** The parsers never receive HTML to parse.
+Note: `fetch_page`-style fetches from a *different* egress succeed — the block is IP-based, not site-wide.
+
+### Shipped in this update
+
+1. **`NEBULA_ANIME_PROXY` egress proxy support** — new `src/bot/services/scrapingProxy.ts`, wired into **all 16 anime-pipeline axios calls** (search, seasons, episodes.js, VF checks, player probes, HLS manifests, direct MP4 download, robust fetchers in `hlsDownloader.ts`). Usage: set `NEBULA_ANIME_PROXY=http://user:pass@host:port` in `.env` (http/https CONNECT proxies; SOCKS not supported by axios' built-in client — export `https_proxy` + agent instead). When unset, behavior is unchanged.
+2. **Doctor upgrades** — ASCII-only output (no terminal mojibake), `--proxy <url>` flag (also propagates to the repo's real code paths for stages 5–7), and Cloudflare-aware hints on every stage (previously stages 2–4 misattributed 403s to “markup changed”).
+
+### Decision tree for a blocked VPS
+
+1. Confirm the block scope from the VPS: `curl -sI -A 'Mozilla/5.0' https://anime-sama.to | head -3` — if curl is 403 too → IP-level block.
+2. **Preferred:** put an HTTP proxy on an unblocked network in front of the bot (tiny `squid`/`tinyproxy`, a residential proxy, or Cloudflare-friendly hosting) → `NEBULA_ANIME_PROXY=... npm run dev`, verify with `npx tsx scripts/anime-doctor.ts --full --proxy http://...`.
+3. If curl passes but Node/axios is 403 → TLS-fingerprint filtering; escalate to a fingerprint-spoofing HTTP client (`got-scraping` / `curl-impersonate`) — not yet implemented (tracked under R3 in §3).
+4. FlareSolverr can solve JS challenges but keeps the same egress IP — only helps when the block is challenge-based, not IP-based.
+
+### Unrelated crash observed on the VPS: esbuild deadlock in `npm run dev`
+
+`fatal error: all goroutines are asleep - deadlock!` from the esbuild Go child right after panel start.
+The trace (`internalContext.Rebuild`, `RunOnResolvePlugins`) is **Vite's dev-server dependency optimizer** (mounted by `server.ts` in dev), not the bot or anime code — the repo's own `commandCompiler.ts` uses plain `build()` without plugins/contexts. Known intermittent esbuild failure class (evanw/esbuild#3636, #3287). Remediation: re-run (often transient), `rm -rf node_modules/.vite`, check `free -m` / `df -h`, and for a stable VPS deployment use production mode — `npm run build && npm start` — which serves the pre-built panel and never runs Vite's optimizer at runtime.
 
 ---
 

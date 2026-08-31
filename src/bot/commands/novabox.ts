@@ -16,6 +16,7 @@ try {
   resolvedFfmpegPath = ffmpegPath || "ffmpeg";
 }
 import { registerTempDownload } from "../tempDownloadManager.js";
+import { getAnimeProxyConfig } from "../services/scrapingProxy.js";
 import { isSafeDownloadUrl } from "../urlSafety.js";
 import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batchDownloadManager.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
@@ -129,7 +130,8 @@ async function searchAnime(query: string) {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "Content-Type": "application/x-www-form-urlencoded"
     },
-    timeout: 8000
+    timeout: 8000,
+    proxy: getAnimeProxyConfig()
   });
 
   const $ = cheerio.load(res.data);
@@ -154,7 +156,8 @@ async function parseSeasons(animeUrl: string) {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
-    timeout: 8000
+    timeout: 8000,
+    proxy: getAnimeProxyConfig()
   });
 
   const html = res.data;
@@ -185,7 +188,8 @@ async function checkVfExists(url: string): Promise<boolean> {
   try {
     const res = await axios.head(url, {
       headers: { "User-Agent": "Mozilla/5.0" },
-      timeout: 2000
+      timeout: 2000,
+      proxy: getAnimeProxyConfig()
     });
     return res.status === 200;
   } catch {
@@ -200,7 +204,8 @@ async function parseEpisodes(jsUrl: string) {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
-    timeout: 8000
+    timeout: 8000,
+    proxy: getAnimeProxyConfig()
   });
 
   const jsContent = res.data;
@@ -1538,7 +1543,8 @@ export async function probeMediaHeaders(targetUrl: string, refererUrl: string, o
       },
       timeout: 5000,
       maxRedirects: 5,
-      validateStatus: () => true
+      validateStatus: () => true,
+      proxy: getAnimeProxyConfig()
     });
 
     const rawContentLength = res.headers["content-length"];
@@ -1575,7 +1581,8 @@ async function validateVidMolyStreamVariant(streamUrl: string, refererUrl: strin
         "Range": "bytes=0-2048"
       },
       timeout: 4000,
-      validateStatus: (status) => status >= 200 && status < 400
+      validateStatus: (status) => status >= 200 && status < 400,
+      proxy: getAnimeProxyConfig()
     });
 
     const data = typeof res.data === "string" ? res.data : "";
@@ -1601,7 +1608,8 @@ async function inspectHlsStreams(hlsUrl: string, refererUrl: string, originUrl: 
         "Accept": "*/*"
       },
       timeout: 6000,
-      validateStatus: () => true
+      validateStatus: () => true,
+      proxy: getAnimeProxyConfig()
     });
 
     if (res.status === 200 && typeof res.data === "string" && (res.data.includes("#EXT") || res.data.includes("BANDWIDTH"))) {

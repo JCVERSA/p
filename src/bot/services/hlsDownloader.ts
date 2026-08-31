@@ -7,6 +7,7 @@ import crypto from "crypto";
 import { spawn, execSync } from "child_process";
 import ffmpegPath from "ffmpeg-static";
 import { isSafeDownloadUrl } from "../urlSafety.js";
+import { getAnimeProxyConfig } from "./scrapingProxy.js";
 
 // Resolve local FFmpeg binary path
 let resolvedFfmpegPath = "ffmpeg";
@@ -161,7 +162,7 @@ export async function robustFetchText(url: string, headers: Record<string, strin
 
     // Try Axios
     try {
-      const resp = await axios.get(url, { headers: candidateHeaders, timeout: 10000, validateStatus: (status) => status === 200 });
+      const resp = await axios.get(url, { headers: candidateHeaders, timeout: 10000, validateStatus: (status) => status === 200, proxy: getAnimeProxyConfig() });
       if (isValid(resp.data)) return resp.data;
     } catch (err: any) {
       if (process.env.DEBUG_MEDIA === "true") {
@@ -188,7 +189,7 @@ export async function robustFetchText(url: string, headers: Record<string, strin
   for (const subUrl of subVariants) {
     for (const h of headerCandidates.slice(0, 3)) {
       try {
-        const resp = await axios.get(subUrl, { headers: h, timeout: 8000, validateStatus: (s) => s === 200 });
+        const resp = await axios.get(subUrl, { headers: h, timeout: 8000, validateStatus: (s) => s === 200, proxy: getAnimeProxyConfig() });
         if (isValid(resp.data) && resp.data.includes("#EXT")) {
           console.log(`[ROBUST_FETCH] Sub-variant fallback succeeded for: ${subUrl}`);
           return resp.data;
@@ -217,7 +218,7 @@ export async function robustFetchBuffer(url: string, headers: Record<string, str
 
     // Try Axios arraybuffer
     try {
-      const resp = await axios.get(url, { headers: candidateHeaders, timeout: 15000, responseType: "arraybuffer", validateStatus: (status) => status >= 200 && status < 300 });
+      const resp = await axios.get(url, { headers: candidateHeaders, timeout: 15000, responseType: "arraybuffer", validateStatus: (status) => status >= 200 && status < 300, proxy: getAnimeProxyConfig() });
       const buf = Buffer.from(resp.data);
       if (isValid(buf)) return buf;
     } catch (err: any) {
