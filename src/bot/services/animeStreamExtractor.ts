@@ -1004,6 +1004,76 @@ export async function downloadStreamToDisk(stream: ExtractedStreamResult, output
 export { robustFetchText, robustFetchBuffer, resolveAbsoluteUrl };
 
 /**
+ * Quick-mode quality resolver: probes mirrors in reliability order (VidMoly
+ * first) and lets the FIRST mirror that yields usable tracks decide — exact
+ * canonical quality when present, else pickOptimalStream's nearest. This
+ * early-exit keeps `.a ... rN` at one probe in the common case instead of
+ * walking every mirror of the episode (audit 8.5).
+ */
+export type MirrorProbeFn = (url: string) => Promise<ExtractedStreamResult | null>;
+
+export interface CanonicalQualityMatch {
+  url: string;
+  headers?: Record<string, string>;
+  label: string;
+  exact: boolean;
+  mirror: string;
+}
+
+export async function resolveCanonicalQualityTrack(
+  mirrorUrls: string[],
+  canonical: string,
+  probe: MirrorProbeFn = extractMultiHostStream
+): Promise<CanonicalQualityMatch | null> {
+  if (!mirrorUrls || mirrorUrls.length === 0) return null;
+  const sorted = [...mirrorUrls].sort((a, b) => hostPriority(a) - hostPriority(b));
+  for (const mirror of sorted) {
+    let extracted: ExtractedStreamResult | null = null;
+    try {
+      extracted = await probe(mirror);
+    } catch {
+      extracted = null;
+    }
+    if (!extracted || !extracted.url) continue;
+
+    const tracks: StreamQualityTrack[] =
+      extracted.availableTracks && extracted.availableTracks.length > 0
+        ? extracted.availableTracks
+        : [
+            {
+              resolution: extracted.type === "direct_mp4" ? "Original" : "720P",
+              url: extracted.url,
+              headers: extracted.headers,
+              type: extracted.type
+            }
+          ];
+
+    const exact = tracks.find((t) => t.url && (t.resolution || "").toUpperCase() === canonical.toUpperCase());
+    if (exact) {
+      return {
+        url: exact.url,
+        headers: exact.headers || extracted.headers,
+        label: (exact.resolution || canonical).toUpperCase(),
+        exact: true,
+        mirror
+      };
+    }
+    const alt = pickOptimalStream(tracks, canonical);
+    if (alt && alt.url) {
+      return {
+        url: alt.url,
+        headers: alt.headers || extracted.headers,
+        label: (alt.resolution || canonical).toUpperCase(),
+        exact: false,
+        mirror
+      };
+    }
+    // Mirror yielded a stream but no usable track — try the next mirror.
+  }
+  return null;
+}
+
+/**
  * Iterates through all available mirrors for an episode and executes the download,
  * guaranteeing seamless fallback if any host encounters a 403 Forbidden or network failure.
  */

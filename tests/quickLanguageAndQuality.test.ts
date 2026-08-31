@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { canonicalResolutionForChoice } from "../src/bot/utils/quickAnimeParser.js";
-import { pickOptimalStream } from "../src/bot/services/animeStreamExtractor.js";
+import { pickOptimalStream, resolveCanonicalQualityTrack } from "../src/bot/services/animeStreamExtractor.js";
 import { isNakanimeVfLabel, splitMirrorsByLanguage } from "../src/bot/commands/novabox.js";
 
 describe("canonicalResolutionForChoice (quick mode rN semantics)", () => {
@@ -95,5 +95,75 @@ describe("splitMirrorsByLanguage", () => {
     const onlyVostLabels = { 1: labels[2] };
     const { primary } = splitMirrorsByLanguage(onlyVost, onlyVostLabels, 0, "VF");
     expect(primary).toEqual(["https://vost.example/e1"]);
+  });
+});
+
+describe("resolveCanonicalQualityTrack (vidmoly-first early-exit, audit 8.5)", () => {
+  const probeOk = (tracks: Array<{ resolution: string; url: string }>) => async () => ({
+    hostName: "test",
+    url: tracks[0]?.url || "https://x/master.m3u8",
+    type: "hls" as const,
+    headers: {},
+    availableTracks: tracks.map((t) => ({ ...t, type: "hls" as const }))
+  });
+
+  it("returns the exact canonical quality from the first mirror that has it", async () => {
+    const probed: string[] = [];
+    const match = await resolveCanonicalQualityTrack(
+      ["https://vidmoly.org/e/a", "https://ansembed.net/e/b"],
+      "480P",
+      async (u) => {
+        probed.push(u);
+        return probeOk([{ resolution: "480P", url: "https://cdn/480.m3u8" }, { resolution: "1080P", url: "https://cdn/1080.m3u8" }])();
+      }
+    );
+    expect(match?.exact).toBe(true);
+    expect(match?.label).toBe("480P");
+    expect(match?.url).toBe("https://cdn/480.m3u8");
+    expect(probed).toEqual(["https://vidmoly.org/e/a"]); // early exit
+  });
+
+  it("falls back to the nearest quality from the FIRST usable mirror without probing the rest", async () => {
+    const probed: string[] = [];
+    const match = await resolveCanonicalQualityTrack(
+      ["https://vidmoly.org/e/a", "https://video.sibnet.ru/x"],
+      "360P",
+      async (u) => {
+        probed.push(u);
+        return probeOk([{ resolution: "480P", url: "https://cdn/480.m3u8" }, { resolution: "1080P", url: "https://cdn/1080.m3u8" }])();
+      }
+    );
+    expect(match?.exact).toBe(false);
+    expect(match?.label).toBe("480P");
+    expect(probed).toEqual(["https://vidmoly.org/e/a"]);
+  });
+
+  it("moves to the next mirror when the first yields nothing", async () => {
+    const match = await resolveCanonicalQualityTrack(
+      ["https://vidmoly.org/e/a", "https://ansembed.net/e/b"],
+      "720P",
+      async (u) => (u.includes("vidmoly") ? null : probeOk([{ resolution: "720P", url: "https://cdn/720.m3u8" }])())
+    );
+    expect(match?.exact).toBe(true);
+    expect(match?.url).toBe("https://cdn/720.m3u8");
+  });
+
+  it("probes in hostPriority order regardless of input order", async () => {
+    const probed: string[] = [];
+    await resolveCanonicalQualityTrack(
+      ["https://video.sibnet.ru/x", "https://vidmoly.org/e/a"],
+      "480P",
+      async (u) => {
+        probed.push(u);
+        return probeOk([{ resolution: "1080P", url: "https://cdn/1080.m3u8" }])();
+      }
+    );
+    expect(probed[0]).toBe("https://vidmoly.org/e/a");
+  });
+
+  it("returns null when no mirror yields anything", async () => {
+    const match = await resolveCanonicalQualityTrack(["https://a.example/x"], "480P", async () => null);
+    expect(match).toBeNull();
+    expect(await resolveCanonicalQualityTrack([], "480P", async () => null)).toBeNull();
   });
 });

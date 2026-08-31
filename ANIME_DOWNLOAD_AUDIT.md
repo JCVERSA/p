@@ -453,3 +453,37 @@ analysis: variant listing from #EXT-X-STREAM-INF, HEAD-sampled size estimate,
 it at 173 MB/19.8 s).
 
 Suite: 196/196 (19 files).
+
+### 8.5 Latency: kill the compression black hole + early-exit quality scan (2026-08-31, eighth push)
+
+**User report:** ~15 min perceived wait for the temp link on `.a code geass s2
+ep2 r2` (VF, 480P, 115.2 MB). Log timestamps told the real story: command at
+5:05:55, link registered 5:08:16 — **2 min 21 s in the bot**, the rest being
+WhatsApp delivery/queueing. Inside those 2:21:
+
+- ~120 s: an x264 transcode attempt doomed from the start (115 MB > 95 MB
+  threshold, `-preset fast`, 120 s kill timer, silent catch → raw file kept).
+  Pure waste: the outcome (link) was identical without it.
+- ~20-40 s: episode-player lookups (25 POSTs) + quality scan walking EVERY
+  mirror of the episode seeking an exact 360P that does not exist on vidmoly.
+
+Fixes:
+- **Compression policy**: only when the raw file exceeds the 100 MB WhatsApp
+  document ceiling (95–100 MB sends fine as a document — no transcode), preset
+  `veryfast`, `-threads 0`, and every outcome is logged (OK + sizes + duration,
+  no-smaller-file, timeout/failure). No more silent black hole.
+- **`resolveCanonicalQualityTrack()`** (animeStreamExtractor, exported): the
+  FIRST mirror with usable tracks decides (vidmoly-first order), exact canonical
+  quality or nearest — one probe in the common case instead of one per mirror.
+- **Players cache**: `nakanimeEpisodePlayersDetailed` results cached 10 min per
+  season (retries/batch follow-ups skip up to 120 source lookups);
+  `clearNakanimePlayersCache()` exported.
+- **Timings everywhere**: players fetch, quality scan (probe count implicit),
+  compression, total pipeline, and WhatsApp send resolution per lane — the next
+  slow run is diagnosable from `/root/bot.log` alone.
+
+Expected single-episode latency now: players 10-30 s (cached: ~0 s) + scan
+1 probe (~2-5 s) + download 5-15 s + remux ~2-5 s => **~20-40 s to link**
+(compression only when >100 MB, and it now actually finishes or logs why).
+
+Suite: 201/201 (19 files, +5 resolver tests with injected probe).

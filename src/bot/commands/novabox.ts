@@ -30,9 +30,7 @@ import {
   robustFetchText,
   downloadWithAllMirrorsFallback,
   fetchHlsTracksAndSizes,
-  extractMultiHostStream,
-  pickOptimalStream,
-  hostPriority,
+  resolveCanonicalQualityTrack,
   StreamQualityTrack
 } from "../services/animeStreamExtractor.js";
 import {
@@ -81,6 +79,7 @@ interface AnimeSession {
     originUrl: string;
   };
   forceCompress?: boolean;
+  pipelineStartedAt?: number; // quick-flow total latency diagnostics
   pendingQuickParams?: QuickDownloadParams;
   timer: any;
 }
@@ -402,8 +401,10 @@ async function executeQuickDownloadPipeline(
     session.selectedSeason = targetSeason;
 
     // 4. Fetch episodes for target season
+    const tPlayers = Date.now();
     const jsUrl = targetSeason.url + "episodes.js";
     const { lists: eps, labels: epLabels } = await parseEpisodesDetailed(jsUrl);
+    session.pipelineStartedAt = session.pipelineStartedAt || tPlayers;
     if (!eps || Object.keys(eps).length === 0) {
       clearUserSession(context.sender);
       return context.reply("❌ *Erreur:* Aucun épisode disponible pour cette saison.");
@@ -425,6 +426,7 @@ async function executeQuickDownloadPipeline(
     }
 
     const totalEpisodes = Math.max(...Object.values(eps).map(arr => arr.length));
+    console.log(`[NOVABOX] Players fetched: ${Object.keys(eps).length} list(s), ${totalEpisodes} eps in ${((Date.now() - tPlayers) / 1000).toFixed(1)}s`);
 
     if (totalEpisodes <= 0) {
       clearUserSession(context.sender);
@@ -449,12 +451,10 @@ async function executeQuickDownloadPipeline(
       ? `${resolvedIndices.length} épisodes (Ép ${resolvedIndices[0] + 1} à Ép ${resolvedIndices[resolvedIndices.length - 1] + 1})`
       : `Épisode ${resolvedIndices[0] + 1}`;
 
-    // 6. Resolution choice provided -> canonical mapping + all-mirror search
+    // 6. Resolution choice provided -> canonical quality + vidmoly-first
+    // early-exit resolution (the FIRST mirror with usable tracks decides:
+    // exact canonical quality, else the nearest one — audit 8.5).
     if (quickParams.resolutionChoice) {
-      // Quick mode shows no variant menu: rN maps to its CANONICAL quality
-      // (r1=480P, r2=360P, r3=720P, r4=1080P), then EVERY mirror is searched
-      // for that exact quality. Treating rN as an index into one mirror's
-      // track list once resolved `.a ... r2` to 1080P (audit 8.3).
       const canonical = canonicalResolutionForChoice(quickParams.resolutionChoice);
       const { primary, secondary } = splitMirrorsByLanguage(
         session.episodes || {},
@@ -464,62 +464,24 @@ async function executeQuickDownloadPipeline(
       );
       const orderedMirrors = [...primary, ...secondary.filter((u) => !primary.includes(u))];
 
-      let matched: { url: string; headers?: Record<string, string>; label: string } | null = null;
-      let nearest: { url: string; headers?: Record<string, string>; label: string } | null = null;
-
-      try {
-        const sortedMirrors = [...orderedMirrors].sort((a, b) => hostPriority(a) - hostPriority(b));
-        for (const mirror of sortedMirrors) {
-          const extracted = await extractMultiHostStream(mirror);
-          if (!extracted || !extracted.url) continue;
-          const tracks: StreamQualityTrack[] =
-            extracted.availableTracks && extracted.availableTracks.length > 0
-              ? extracted.availableTracks
-              : [
-                  {
-                    resolution: extracted.type === "direct_mp4" ? "480P" : "720P",
-                    url: extracted.url,
-                    headers: extracted.headers,
-                    type: extracted.type
-                  }
-                ];
-          const exact = tracks.find((t) => (t.resolution || "").toUpperCase() === canonical);
-          if (exact && exact.url) {
-            matched = {
-              url: exact.url,
-              headers: exact.headers || extracted.headers,
-              label: (exact.resolution || canonical).toUpperCase()
-            };
-            break;
-          }
-          if (!nearest) {
-            const alt = pickOptimalStream(tracks, canonical);
-            if (alt && alt.url) {
-              nearest = {
-                url: alt.url,
-                headers: alt.headers || extracted.headers,
-                label: (alt.resolution || canonical).toUpperCase()
-              };
-            }
-          }
-        }
-      } catch {}
+      const tScan = Date.now();
+      const match = await resolveCanonicalQualityTrack(orderedMirrors, canonical);
 
       let finalRes = canonical;
-      if (matched) {
-        session.selectedVariantUrl = matched.url;
-        session.selectedVariantHeaders = matched.headers;
-        finalRes = matched.label;
-        console.log(`[NOVABOX] Quick quality "${canonical}" matched exactly on a mirror: ${matched.url.slice(0, 90)}`);
-      } else if (nearest) {
-        session.selectedVariantUrl = nearest.url;
-        session.selectedVariantHeaders = nearest.headers;
-        finalRes = nearest.label;
-        console.log(`[NOVABOX] Quick quality "${canonical}" unavailable; nearest picked: ${nearest.label}`);
+      if (match) {
+        session.selectedVariantUrl = match.url;
+        session.selectedVariantHeaders = match.headers;
+        finalRes = match.label;
+        console.log(
+          `[NOVABOX] Quick quality "${canonical}" -> ${match.exact ? "exact" : "nearest"} ${match.label} via ${match.mirror} (scan ${((Date.now() - tScan) / 1000).toFixed(1)}s)`
+        );
+      } else {
+        console.log(`[NOVABOX] Quick quality "${canonical}": no mirror yielded tracks (scan ${((Date.now() - tScan) / 1000).toFixed(1)}s) — adaptive download`);
       }
       if (finalRes === "480P" || finalRes === "360P") {
         session.forceCompress = true; // keep the file WhatsApp-fit on fast lanes
       }
+      session.pipelineStartedAt = session.pipelineStartedAt || Date.now();
 
       await context.react("🚀");
       return await sendFinalEpisode(sock, msg, context, session, finalRes);
@@ -2244,16 +2206,24 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       let fileSizeMB = stats.size / (1024 * 1024);
       console.log(`[NOVABOX] Downloaded raw file size: ${fileSizeMB.toFixed(2)} MB`);
 
-      // Auto-compress with FFmpeg if file > 95MB and compression is requested or lower res was picked
-      const shouldCompress = fileSizeMB > 95 && (session.forceCompress || resolution === "480P" || resolution === "360P" || resolution.includes("Compress"));
+      // Auto-compress ONLY when the raw file exceeds the 100 MB WhatsApp
+      // document ceiling (95-100 MB sends fine as a document — transcoding
+      // there was a pure time sink, audit 8.5). x264 veryfast + all cores.
+      const shouldCompress =
+        fileSizeMB > 100 &&
+        (session.forceCompress || resolution === "480P" || resolution === "360P" || resolution.includes("Compress"));
 
       if (shouldCompress) {
+        const tComp = Date.now();
+        console.log(`[NOVABOX] Compressing ${fileSizeMB.toFixed(1)} MB -> 480p (veryfast) to fit WhatsApp limits...`);
         await context.reply(`🔄 *Compressing media for WhatsApp direct delivery...* (Target: < 95 MB)\n_This ensures smooth playable video in chat._`);
         compressedPath = path.join(os.tmpdir(), "comp_" + filename);
         
         try {
           const ffmpegArgs = [
             "-y",
+            "-threads",
+            "0",
             "-i",
             localPath,
             "-vf",
@@ -2263,7 +2233,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
             "-crf",
             "26",
             "-preset",
-            "fast",
+            "veryfast",
             "-c:a",
             "aac",
             "-b:a",
@@ -2297,12 +2267,20 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
             if (compStats.size > 0 && compStats.size < stats.size) {
               activeSendPath = compressedPath;
               fileSizeMB = compStats.size / (1024 * 1024);
-              console.log(`[NOVABOX] Compressed file size: ${fileSizeMB.toFixed(2)} MB`);
+              console.log(
+                `[NOVABOX] Compression OK: ${(compStats.size / 1048576).toFixed(2)} MB in ${((Date.now() - tComp) / 1000).toFixed(1)}s`
+              );
+            } else {
+              console.warn(`[NOVABOX] Compression produced no smaller file (${(compStats.size / 1048576).toFixed(1)} MB) in ${((Date.now() - tComp) / 1000).toFixed(1)}s — sending raw`);
             }
           }
-        } catch {
-          // Compression fallback
+        } catch (compErr: any) {
+          console.warn(`[NOVABOX] Compression failed/skipped after ${((Date.now() - tComp) / 1000).toFixed(1)}s: ${compErr?.message || compErr} — sending raw file`);
         }
+      }
+
+      if (session.pipelineStartedAt) {
+        console.log(`[NOVABOX] Pipeline total so far (players+scan+download${shouldCompress ? "+compress" : ""}): ${((Date.now() - session.pipelineStartedAt) / 1000).toFixed(1)}s`);
       }
 
       // Move file into managed temporary store so the download link remains valid for 2 hours
@@ -2335,6 +2313,9 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         (vidmolyUrl ? `• 📺 *Play Ad-Free (${playerSourceLabel(vidmolyUrl)}):* ${vidmolyUrl}\n` : "") +
         `\n🌌 _Nebula Bot - Your ultimate media center_`;
 
+      const tSend = Date.now();
+      const logSendDone = (lane: string) =>
+        console.log(`[NOVABOX] WhatsApp ${lane} send resolved in ${((Date.now() - tSend) / 1000).toFixed(1)}s`);
       if (fileSizeMB <= 60) {
         // Send as a direct playable video in chat
         console.log(`[NOVABOX] Delivering direct video file in chat: "${activeSendPath}" (${fileSizeMB.toFixed(2)} MB)`);
@@ -2343,6 +2324,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
           caption: caption,
           mimetype: "video/mp4"
         }, { quoted: msg });
+        logSendDone("video");
       } else if (fileSizeMB <= 100) {
         // Send caption first
         await context.reply(caption);
@@ -2353,6 +2335,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
           mimetype: "video/mp4",
           fileName: filename
         }, { quoted: msg });
+        logSendDone("document");
       } else {
         // File exceeds WhatsApp 100MB direct attachment limit
         if (tempDownloadLink) {

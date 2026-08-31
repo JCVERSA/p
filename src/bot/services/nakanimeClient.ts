@@ -324,9 +324,24 @@ export interface NakanimeListLabels {
   [listNum: number]: { host: string; language: string };
 }
 
+// Short-TTL cache: player lists are stable enough for consecutive commands on
+// the same season (retries, batch follow-ups) — skips up to 120 episode-source
+// lookups per command (audit 8.5).
+const playersCache = new Map<string, { at: number; entry: { lists: Record<number, string[]>; labels: NakanimeListLabels } }>();
+const PLAYERS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+export function clearNakanimePlayersCache(): void {
+  playersCache.clear();
+}
+
 export async function nakanimeEpisodePlayersDetailed(
   seasonUrl: string
 ): Promise<{ lists: Record<number, string[]>; labels: NakanimeListLabels }> {
+  const cacheKey = seasonUrl.replace(/\/$/, "").toLowerCase();
+  const hit = playersCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < PLAYERS_CACHE_TTL_MS) {
+    return hit.entry;
+  }
   const idMatch = seasonUrl.match(/\/anime\/(\d+)/);
   const seasonMatch = seasonUrl.match(/\/season\/(\d+)/);
   if (!idMatch) return { lists: {}, labels: {} };
@@ -370,7 +385,9 @@ export async function nakanimeEpisodePlayersDetailed(
       if (!lists[n][i]) lists[n][i] = lists[n][i] || "";
     }
   }
-  return { lists, labels };
+  const entry = { lists, labels };
+  playersCache.set(cacheKey, { at: Date.now(), entry });
+  return entry;
 }
 
 /** Back-compat wrapper: player lists only (labels-less callers, tests, repro). */
