@@ -487,3 +487,32 @@ Expected single-episode latency now: players 10-30 s (cached: ~0 s) + scan
 (compression only when >100 MB, and it now actually finishes or logs why).
 
 Suite: 201/201 (19 files, +5 resolver tests with injected probe).
+
+### 8.6 nakanime language labels are unreliable — VF no longer auto-selected (2026-08-31, ninth push)
+
+**User report:** `.a code geass s2 ep2 r2` delivered a file carded `VF` whose
+audio was NOT French. The download itself had correctly used the vidmoly list
+nakanime labels `VF` (embed-nmi8na05x8w1 → file hiqgnufyody7, 115.2 MB — a
+different file from the VOSTFR-labelled vidmoly list, 84.7 MB), so the
+selection logic worked as designed: **nakanime's language metadata itself is
+wrong for that player** (labelled VF, actually VOSTFR). A server cannot hear
+the audio track, so this cannot be verified programmatically.
+
+Policy changes:
+- nakanime VF labels now only REGISTER `VF` as an available language (so
+  `.a vf` / `.a <q> sN epN vf rN` works and prefers VF-labelled lists via
+  splitMirrorsByLanguage) — they no longer auto-select VF. Default is VOSTFR
+  again, which is honest in both directions.
+- Card "Play Ad-Free (vidmoly…)" link: was ALWAYS the first vidmoly list
+  regardless of language/selection (contradicted the downloaded file and fed
+  the confusion). getVidMolyUrl() now takes labels+language and picks the
+  vidmoly list matching the session language first; legacy order otherwise.
+- anime-sama direct path unchanged (VF detection there is URL-based and
+  reliable).
+
+Open: user ground-truth check (browser) of the two VF-labelled players —
+vidmoly embed-nmi8na05x8w1 and sibnet videoid=3204263 — to decide whether
+per-host label trust (e.g. trust sibnet VF, ignore vidmoly VF) can safely
+restore a VF-by-default on nakanime.
+
+Suite: 201/201 (19 files).

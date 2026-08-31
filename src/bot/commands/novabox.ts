@@ -413,15 +413,14 @@ async function executeQuickDownloadPipeline(
     session.episodes = eps;
     session.episodeListLabels = epLabels;
 
-    // nakanime: VF detection from player-list language labels - VF becomes the
-    // default (still overridable with `.a ... vostfr`, audit 8.3).
+    // nakanime: register VF as an AVAILABLE language when player lists carry a
+    // VF label, but do NOT auto-select it — nakanime's language metadata is
+    // unreliable (a vidmoly list labelled VF actually served VOSTFR, audit
+    // 8.6). VF stays one keystroke away: `.a <q> sN epN vf rN`.
     if (isNakanimeUrl(chosenAnime.url)) {
       const hasVfLabels = Object.values(epLabels).some((l) => isNakanimeVfLabel(l.language));
-      if (hasVfLabels) {
-        if (!session.languages.includes("VF")) session.languages.push("VF");
-        if (!quickParams.language) {
-          session.selectedLanguage = "VF";
-        }
+      if (hasVfLabels && !session.languages.includes("VF")) {
+        session.languages.push("VF");
       }
     }
 
@@ -873,16 +872,15 @@ const animeCommand: BotCommand = {
           session.episodes = eps;
           session.episodeListLabels = epLabels;
 
-          // nakanime: switch the session to VF when the season has VF player
-          // lists and the user did not explicitly force a language (VF-by-
-          // default policy, audit 8.3).
-          if (
-            isNakanimeUrl(selectedSeason.url) &&
-            !session.languageForcedByUser &&
-            Object.values(epLabels).some((l) => isNakanimeVfLabel(l.language))
-          ) {
-            if (!session.languages.includes("VF")) session.languages.push("VF");
-            session.selectedLanguage = "VF";
+          // nakanime: register VF as AVAILABLE (`.a vf` accepted) but never
+          // auto-select it — language labels are unreliable (audit 8.6).
+          if (isNakanimeUrl(selectedSeason.url)) {
+            if (
+              Object.values(epLabels).some((l) => isNakanimeVfLabel(l.language)) &&
+              !session.languages.includes("VF")
+            ) {
+              session.languages.push("VF");
+            }
           }
 
           const totalEpisodes = Math.max(...Object.values(eps).map(arr => arr.length));
@@ -1141,7 +1139,7 @@ const animeCommand: BotCommand = {
           const formattedEpisode = `E${String(epNum).padStart(2, "0")}`;
           const filename = sanitizeFilename(`${animeClean}_${lang}_1080P_${formattedSeason}_${formattedEpisode}`) + ".mp4";
 
-          const vidmolyUrl = getVidMolyUrl(session.episodes, epIndex);
+          const vidmolyUrl = getVidMolyUrl(session.episodes, epIndex, session.episodeListLabels, session.selectedLanguage);
 
           clearUserSession(sender);
           await context.react("✅");
@@ -1413,19 +1411,38 @@ const animeCommand: BotCommand = {
 };
 
 // Universal helper to locate the official VidMoly embed URL exclusively
-function getVidMolyUrl(episodes: Record<number, string[]> | undefined, epIndex: number): string {
+function getVidMolyUrl(
+  episodes: Record<number, string[]> | undefined,
+  epIndex: number,
+  labels?: Record<number, { host: string; language: string }>,
+  language?: string
+): string {
   if (!episodes) return "";
+  const isVidMolyLike = (u: string) => u.includes("vidmoly") || u.includes("ansembed");
+
+  // 0. Language-aware pick first: the card's player link must match the
+  // session language instead of blindly returning the first vidmoly list
+  // (audit 8.6 — the link used to contradict the downloaded file).
+  if (labels && language) {
+    const wantVf = language.toUpperCase() === "VF";
+    for (const listId of Object.keys(episodes).map(Number).sort((a, b) => a - b)) {
+      const candidate = episodes[listId]?.[epIndex] || "";
+      if (candidate && isVidMolyLike(candidate) && isNakanimeVfLabel(labels[listId]?.language || "") === wantVf) {
+        return candidate;
+      }
+    }
+  }
 
   // 1. Primary Check: List 2 is the official VidMoly player on the streaming catalog
   const eps2Url = episodes[2]?.[epIndex] || "";
-  if (eps2Url && (eps2Url.includes("vidmoly") || eps2Url.includes("ansembed"))) {
+  if (eps2Url && isVidMolyLike(eps2Url)) {
     return eps2Url;
   }
 
   // 2. Scan all other player lists specifically for VidMoly / ansembed mirrors
   for (const listId of Object.keys(episodes).map(Number)) {
     const candidate = episodes[listId]?.[epIndex] || "";
-    if (candidate && (candidate.includes("vidmoly") || candidate.includes("ansembed"))) {
+    if (candidate && isVidMolyLike(candidate)) {
       return candidate;
     }
   }
@@ -2061,7 +2078,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       // Fallback: Generate full batch episode directory with instant high-speed player streaming links exclusively via VidMoly
       const episodeLinksText = indices.map((idx) => {
         const epN = idx + 1;
-        const vUrl = getVidMolyUrl(session.episodes, idx);
+        const vUrl = getVidMolyUrl(session.episodes, idx, session.episodeListLabels, session.selectedLanguage);
         let line = `• 🎬 *Episode ${epN}:*\n`;
         if (vUrl) {
           line += `  📺 *Lecteur (${playerSourceLabel(vUrl)}):* ${vUrl}\n`;
@@ -2095,7 +2112,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
   const filenameBase = `${animeClean}_${lang}_${resolution}_${formattedSeason}_${formattedEpisode}`;
   const filename = sanitizeFilename(filenameBase) + ".mp4";
 
-  const vidmolyUrl = getVidMolyUrl(session.episodes, epIndex);
+  const vidmolyUrl = getVidMolyUrl(session.episodes, epIndex, session.episodeListLabels, session.selectedLanguage);
 
   // React to let the user know we are downloading the video
   await context.react("⏳");
