@@ -28,6 +28,7 @@ import {
   resolveAbsoluteUrl,
   robustFetchText,
   downloadWithAllMirrorsFallback,
+  fetchHlsTracksAndSizes,
   StreamQualityTrack
 } from "../services/animeStreamExtractor.js";
 import {
@@ -101,6 +102,15 @@ function setUserSession(sender: string, session: AnimeSession) {
     if (oldestKey) clearUserSession(oldestKey);
   }
   sessions.set(sender, session);
+}
+
+/** Display label for a player mirror URL (e.g. "ansembed.net"). */
+function playerSourceLabel(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "Lecteur";
+  }
 }
 
 function sanitizeFilename(name: string): string {
@@ -511,6 +521,7 @@ async function executeQuickDownloadPipeline(
           `• *Langue:* ${session.selectedLanguage}\n` +
           `• *Saison:* ${session.selectedSeason?.name}\n` +
           `• *Épisodes sélectionnés:* ${episodeSummary}\n\n` +
+          `⚠️ _Qualités réelles indisponibles (playlist protégée) — tailles estimées._\n` +
           `*Choisissez la qualité souhaitée:*\n` +
           `*r1.* 480P Qualité Moyenne (~75 MB - Rapide)\n` +
           `*r2.* 360P Qualité Légère (~45 MB - Instantané)\n` +
@@ -1001,7 +1012,8 @@ const animeCommand: BotCommand = {
             `• *Language:* ${session.selectedLanguage}\n` +
             `• *Season:* ${session.selectedSeason?.name}\n` +
             `• *Selected Episodes:* ${episodeSummary} (${selectedIndices.length} total)\n\n` +
-            `*Choose your preferred download quality (Fast offline modes first):*\n` +
+            `⚠️ _Real qualities unavailable (protected playlist) — sizes are estimates._\n` +
+            `*Choose your preferred download quality (adaptive attempt):*\n` +
             `*r1.* 480P Medium Quality (~75 MB - Fast download, direct video)\n` +
             `*r2.* 360P Mobile Quality (~45 MB - Instant download)\n` +
             `*r3.* 720P High Definition (~180 MB)\n` +
@@ -1054,7 +1066,7 @@ const animeCommand: BotCommand = {
             `📺 *Official Player Engine:* VidMoly\n` +
             `📄 *Filename:* \`${filename}\`\n\n` +
             `🔗 *Direct Streaming & Download:* \n` +
-            (vidmolyUrl ? `• 📺 *Play Ad-Free (VidMoly):* ${vidmolyUrl}\n` : "• 📺 *VidMoly Stream:* Direct HLS ready\n") +
+            (vidmolyUrl ? `• 📺 *Play Ad-Free (${playerSourceLabel(vidmolyUrl)}):* ${vidmolyUrl}\n` : "• 📺 *Stream:* Direct HLS ready\n") +
             `\n🌌 _Nebula Bot - Your ultimate media center_`
           );
         } else {
@@ -1462,7 +1474,7 @@ async function extractHlsUrlFromVidMoly(embedUrl: string): Promise<{ hlsUrl: str
     }
 
     // 2. Packed Dean Edwards JS unpacker (handle single or multi-layer packed scripts)
-    const packedRegex = /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?return p\}\((['"][\s\S]*?['"])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"][\s\S]*?['"])\.split\(['"]\|['"]\)\)/g;
+    const packedRegex = /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?return p\}\((['"][\s\S]*?['"])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"][\s\S]*?['"])\.split\(['"]\|['"]\)(?:\s*,\s*[^)]*)?\)/g;
     let match: RegExpExecArray | null;
     while ((match = packedRegex.exec(html)) !== null) {
       try {
@@ -1569,157 +1581,29 @@ export async function probeMediaHeaders(targetUrl: string, refererUrl: string, o
   }
 }
 
-// Validate whether an individual stream sub-playlist is alive and delivers valid media content
-async function validateVidMolyStreamVariant(streamUrl: string, refererUrl: string, originUrl: string): Promise<boolean> {
-  try {
-    if (!(await isPublicFetchTarget(streamUrl, "stream variant"))) return false;
-    const res = await axios.get(streamUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": refererUrl,
-        "Origin": originUrl,
-        "Range": "bytes=0-2048"
-      },
-      timeout: 4000,
-      validateStatus: (status) => status >= 200 && status < 400,
-      proxy: getAnimeProxyConfig()
-    });
-
-    const data = typeof res.data === "string" ? res.data : "";
-    if (data.includes("#EXTM3U") || data.includes("#EXTINF") || data.includes("#EXT-X-") || data.includes(".ts") || data.includes(".mp4")) {
-      return true;
-    }
-    return res.status >= 200 && res.status < 300;
-  } catch {
-    return false;
-  }
-}
-
-// Inspect and parse master HLS playlist exclusively from VidMoly, dynamically fetching and validating all available resolutions from stream metadata
+// Inspect the master HLS playlist via the shared extractor so resolutions and
+// sizes are the REAL ones served by the CDN. Returns [] when the manifest
+// cannot be read — callers then offer an adaptive-quality attempt instead of
+// fabricated resolutions (audit findings R8).
 async function inspectHlsStreams(hlsUrl: string, refererUrl: string, originUrl: string): Promise<HlsVariant[]> {
   try {
     if (!(await isPublicFetchTarget(hlsUrl, "HLS playlist"))) return [];
-    // 1. Fetch master playlist from VidMoly
-    const res = await axios.get(hlsUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": refererUrl,
-        "Origin": originUrl,
-        "Accept": "*/*"
-      },
-      timeout: 6000,
-      validateStatus: () => true,
-      proxy: getAnimeProxyConfig()
-    });
-
-    if (res.status === 200 && typeof res.data === "string" && (res.data.includes("#EXT") || res.data.includes("BANDWIDTH"))) {
-      const content = res.data;
-      const rawVariants: HlsVariant[] = [];
-      const lines = content.split(/\r?\n/);
-      const baseUrl = hlsUrl.substring(0, hlsUrl.lastIndexOf("/") + 1);
-
-      // Standard anime episode duration estimation (~24 minutes = 1440 seconds)
-      const ESTIMATED_DURATION_SEC = 1440;
-
-      // 2. Parse VidMoly master HLS stream variants (#EXT-X-STREAM-INF)
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (line.startsWith("#EXT-X-STREAM-INF:")) {
-          const inf = line.substring("#EXT-X-STREAM-INF:".length);
-          
-          // Extract BANDWIDTH
-          const bwMatch = inf.match(/BANDWIDTH=(\d+)/i);
-          const bandwidth = bwMatch ? parseInt(bwMatch[1], 10) : 1500000;
-
-          // Extract RESOLUTION (e.g. 1920x1080, 1280x720, 854x480, 640x360)
-          const resMatch = inf.match(/RESOLUTION=(\d+x\d+)/i);
-          const resolution = resMatch ? resMatch[1] : "Adaptive";
-
-          // Find next non-empty line for stream URI
-          let uri = "";
-          for (let j = i + 1; j < lines.length; j++) {
-            const nextLine = lines[j].trim();
-            if (nextLine && !nextLine.startsWith("#")) {
-              uri = nextLine;
-              break;
-            }
-          }
-
-          if (uri) {
-            const streamUrl = uri.startsWith("http") ? uri : (baseUrl + uri);
-            
-            let label = "720P";
-            if (resolution.includes("1080") || bandwidth > 2500000) label = "1080P";
-            else if (resolution.includes("720") || (bandwidth > 1200000 && bandwidth <= 2500000)) label = "720P";
-            else if (resolution.includes("480") || (bandwidth > 600000 && bandwidth <= 1200000)) label = "480P";
-            else if (resolution.includes("360") || bandwidth <= 600000) label = "360P";
-
-            const estimatedMB = Math.max(15, Math.round((bandwidth * ESTIMATED_DURATION_SEC) / (8 * 1024 * 1024)));
-
-            rawVariants.push({
-              label,
-              resolution,
-              bandwidth,
-              estimatedSizeMB: estimatedMB,
-              url: streamUrl,
-              isDirectWhatsAppFit: estimatedMB <= 100
-            });
-          }
-        }
-      }
-
-      // If variants found in master playlist, sort and return (prioritizing 480P / 360P lightweight streams first)
-      if (rawVariants.length > 0) {
-        rawVariants.sort((a, b) => {
-          const order: Record<string, number> = { "480P": 1, "360P": 2, "720P": 3, "1080P": 4 };
-          const rankA = order[a.label.toUpperCase()] || 5;
-          const rankB = order[b.label.toUpperCase()] || 5;
-          if (rankA !== rankB) return rankA - rankB;
-          return b.bandwidth - a.bandwidth;
-        });
-        return rawVariants;
-      }
-    }
+    const tracks = await fetchHlsTracksAndSizes(hlsUrl, refererUrl || hlsUrl, originUrl);
+    return tracks
+      .filter((t) => !!t.url)
+      .map((t) => ({
+        label: t.resolution,
+        resolution: t.resolution,
+        bandwidth: t.bandwidth || 800000,
+        estimatedSizeMB: t.fileSizeBytes ? Math.max(1, Math.round(t.fileSizeBytes / (1024 * 1024))) : 75,
+        url: t.url,
+        isDirectWhatsAppFit: !t.fileSizeBytes || t.fileSizeBytes / (1024 * 1024) <= 100,
+        headers: t.headers
+      }));
   } catch (err: any) {
-    console.warn("[NOVABOX] VidMoly master playlist inspection note:", err.message);
+    console.warn("[NOVABOX] HLS inspection note:", err.message);
+    return [];
   }
-
-  // Dynamic VidMoly structured sub-playlist resolution generation & validation (prioritizing 480p / 360p)
-  let isMasterTxt = false;
-  try {
-    isMasterTxt = !!hlsUrl && new URL(hlsUrl).pathname.endsWith("master.txt");
-  } catch {
-    isMasterTxt = !!hlsUrl && hlsUrl.includes("master.txt");
-  }
-
-  if (isMasterTxt) {
-    const candidateVariants: HlsVariant[] = [
-      { label: "480P", resolution: "854x480", bandwidth: 800000, estimatedSizeMB: 120, url: resolveAbsoluteUrl(hlsUrl, "index-f1-v1-a1.txt"), isDirectWhatsAppFit: false },
-      { label: "360P", resolution: "640x360", bandwidth: 450000, estimatedSizeMB: 65, url: resolveAbsoluteUrl(hlsUrl, "index-f1-v1-a1.txt"), isDirectWhatsAppFit: true },
-      { label: "720P", resolution: "1280x720", bandwidth: 1600000, estimatedSizeMB: 216, url: resolveAbsoluteUrl(hlsUrl, "index-f2-v1-a1.txt"), isDirectWhatsAppFit: false },
-      { label: "1080P", resolution: "1920x1080", bandwidth: 2800000, estimatedSizeMB: 486, url: resolveAbsoluteUrl(hlsUrl, "index-f3-v1-a1.txt"), isDirectWhatsAppFit: false }
-    ];
-
-    // Quickly validate primary 720p/1080p sub-playlists (candidate index 2 for 720p)
-    try {
-      const isValid = await validateVidMolyStreamVariant(candidateVariants[2].url, refererUrl, originUrl);
-      if (isValid) {
-        return candidateVariants;
-      }
-    } catch {
-      // Fallback
-    }
-
-    return candidateVariants;
-  }
-
-  // Resilient fallback quality variants when remote CDN restricts server-side playlist inspection (prioritizing 480p / 360p)
-  return [
-    { label: "480P", resolution: "854x480", bandwidth: 800000, estimatedSizeMB: 120, url: hlsUrl, isDirectWhatsAppFit: false },
-    { label: "360P", resolution: "640x360", bandwidth: 450000, estimatedSizeMB: 65, url: hlsUrl, isDirectWhatsAppFit: true },
-    { label: "720P", resolution: "1280x720", bandwidth: 1600000, estimatedSizeMB: 216, url: hlsUrl, isDirectWhatsAppFit: false },
-    { label: "1080P", resolution: "1920x1080", bandwidth: 2800000, estimatedSizeMB: 486, url: hlsUrl, isDirectWhatsAppFit: false }
-  ];
 }
 
 // Execute high-performance stream download using FFmpeg with safe process isolation
@@ -2091,9 +1975,9 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         const vUrl = getVidMolyUrl(session.episodes, idx);
         let line = `• 🎬 *Episode ${epN}:*\n`;
         if (vUrl) {
-          line += `  📺 *VidMoly (Official):* ${vUrl}\n`;
+          line += `  📺 *Lecteur (${playerSourceLabel(vUrl)}):* ${vUrl}\n`;
         } else {
-          line += `  📺 *VidMoly:* Stream ready in app\n`;
+          line += `  📺 *Lecteur:* Stream ready in app\n`;
         }
         return line.trim();
       }).join("\n\n");
@@ -2307,7 +2191,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         `📺 *Player Source:* ${activePlayerName}\n` +
         `📄 *Filename:* \`${filename}\`\n\n` +
         (tempDownloadLink ? `🚀 *Direct High-Speed Download (Browser/PC):*\n🔗 ${tempDownloadLink}\n⏳ _Valid for 2 Hours_\n\n` : "") +
-        (vidmolyUrl ? `• 📺 *Play Ad-Free (VidMoly):* ${vidmolyUrl}\n` : "") +
+        (vidmolyUrl ? `• 📺 *Play Ad-Free (${playerSourceLabel(vidmolyUrl)}):* ${vidmolyUrl}\n` : "") +
         `\n🌌 _Nebula Bot - Your ultimate media center_`;
 
       if (fileSizeMB <= 60) {
@@ -2363,7 +2247,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         `⚙️ *Resolution:* ${resolution}\n` +
         `📺 *Player Source:* ${activePlayerName}\n` +
         `📄 *Filename:* \`${filename}\`\n\n` +
-        (vidmolyUrl ? `• 📺 *Play Ad-Free (VidMoly):* ${vidmolyUrl}\n` : "") +
+        (vidmolyUrl ? `• 📺 *Play Ad-Free (${playerSourceLabel(vidmolyUrl)}):* ${vidmolyUrl}\n` : "") +
         `\n🌌 _Nebula Bot - Your ultimate media center_`;
       await context.reply(
         `❌ *Error sending downloaded file. Falling back to stream links:*\n\n` + fallbackCaption
@@ -2391,7 +2275,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       `⚙️ *Resolution:* ${resolution}\n` +
       `📺 *Player Source:* ${activePlayerName}\n` +
       `📄 *Filename:* \`${filename}\`\n\n` +
-      (vidmolyUrl ? `• 📺 *Play Ad-Free (VidMoly):* ${vidmolyUrl}\n` : "") +
+      (vidmolyUrl ? `• 📺 *Play Ad-Free (${playerSourceLabel(vidmolyUrl)}):* ${vidmolyUrl}\n` : "") +
       `\n🌌 _Nebula Bot - Your ultimate media center_`;
 
     // If download failed or file doesn't exist, fallback to sending streaming links

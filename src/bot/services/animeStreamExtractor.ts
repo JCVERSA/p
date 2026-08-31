@@ -114,7 +114,7 @@ export function decodeJsArrayLiteral(literal: string): string[] {
 export function unpackDeanEdwards(html: string): string {
   if (!html) return "";
   let result = html;
-  const packedRegex = /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?return\s+p;?\}\((?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")\.split\(['"]\|['"]\)\)/gi;
+  const packedRegex = /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?return\s+p;?\}\((?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")\.split\(['"]\|['"]\)(?:\s*,\s*[^)]*)?\)/gi;
   let match: RegExpExecArray | null;
   while ((match = packedRegex.exec(html)) !== null) {
     try {
@@ -139,6 +139,47 @@ export function unpackDeanEdwards(html: string): string {
   return result;
 }
 
+// embed4me / Lplayer — encrypted JSON API player used as "Lecteur 1" on
+// anime-sama since ~2025. The video source is served by
+// GET {origin}/api/v1/video?id=<id> as hex-encoded AES-128-CBC JSON.
+const EMBED4ME_AES_KEY = Buffer.from("kiemtienmua911ca", "utf8");
+const EMBED4ME_AES_IV = Buffer.from("1234567890oiuytr", "utf8");
+
+/**
+ * Decrypts an embed4me/Lplayer API response (hex AES-128-CBC JSON) and
+ * returns the video source URL (cfNative / cf / hls / source / url / file).
+ */
+export function decryptEmbed4MeResponse(hexBody: string): string | null {
+  try {
+    let hex = (hexBody || "").trim();
+    if (hex.startsWith('"') && hex.endsWith('"')) hex = hex.slice(1, -1);
+    if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 32 !== 0) return null;
+    const decipher = crypto.createDecipheriv("aes-128-cbc", EMBED4ME_AES_KEY, EMBED4ME_AES_IV);
+    const decrypted = Buffer.concat([decipher.update(Buffer.from(hex, "hex")), decipher.final()]).toString("utf8");
+    const data = JSON.parse(decrypted);
+    const source = data?.cfNative || data?.cf || data?.hls || data?.source || data?.url || data?.file;
+    return typeof source === "string" && source.length > 0 ? source : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mirror reliability order for the CURRENT anime-sama player ecosystem
+ * (2026-08): ansembed (plain m3u8) > embed4me (API + AES) > sibnet (direct
+ * mp4) > sendvid > vidmoly/vmpx > smoothpre legacy > anything else.
+ */
+export function hostPriority(url: string): number {
+  const l = (url || "").toLowerCase();
+  if (l.includes("ansembed")) return 1;
+  if (l.includes("embed4me") || l.includes("lpayer")) return 2;
+  if (l.includes("sibnet")) return 3;
+  if (l.includes("sendvid")) return 4;
+  if (l.includes("vidmoly") || l.includes("vmpx") || l.includes("topembed")) return 5;
+  if (l.includes("smoothpre") || l.includes("dramiyos")) return 6;
+  return 7;
+}
+
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -149,6 +190,41 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
   try {
     if (!playerUrl) return null;
     const lowerUrl = playerUrl.toLowerCase();
+
+    // 0. embed4me / Lplayer — encrypted JSON API player (current "Lecteur 1")
+    if (lowerUrl.includes("embed4me") || lowerUrl.includes("lpayer")) {
+      try {
+        const idMatch = playerUrl.match(/#([a-zA-Z0-9]+)/) || playerUrl.match(/[?&]id=([a-zA-Z0-9]+)/);
+        const originMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
+        const origin = originMatch ? originMatch[1] : "https://lpayer.embed4me.com";
+        if (idMatch && idMatch[1]) {
+          const apiUrl = `${origin}/api/v1/video?id=${idMatch[1]}&w=1920&h=1080&r=${origin}/`;
+          const resp = await axios.get(apiUrl, {
+            headers: { "User-Agent": DEFAULT_USER_AGENT, Referer: `${origin}/` },
+            timeout: 8000,
+            validateStatus: () => true,
+            proxy: getAnimeProxyConfig()
+          });
+          if (resp.status === 200 && typeof resp.data === "string") {
+            const rawSource = decryptEmbed4MeResponse(resp.data);
+            if (rawSource) {
+              const streamUrl = rawSource.startsWith("/") ? origin + rawSource : rawSource;
+              const streamHeaders = { "User-Agent": DEFAULT_USER_AGENT, Referer: `${origin}/`, Origin: origin };
+              const parsedTracks = await fetchHlsTracksAndSizes(streamUrl, `${origin}/`, origin);
+              return {
+                hostName: "Embed4me",
+                url: streamUrl,
+                type: streamUrl.split("?")[0].endsWith(".mp4") ? "direct_mp4" : "hls",
+                headers: streamHeaders,
+                availableTracks: parsedTracks
+              };
+            }
+          }
+        }
+      } catch (err: any) {
+        if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] Embed4me probe error:`, err.message);
+      }
+    }
 
     // 1. Smoothpre & generic Dean-Edwards packed players (Priority 1: Multi-quality HLS streams)
     if (lowerUrl.includes("smoothpre") || lowerUrl.includes("dramiyos") || lowerUrl.includes("embed") || lowerUrl.includes("player")) {
@@ -216,7 +292,9 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
           const match = html.match(/player\.src\(\[\{src:\s*["']([^"']+)["']/i) || html.match(/src:\s*["'](\/v\/[^"']+)["']/i);
           if (match && match[1]) {
             let streamPath = match[1];
-            if (streamPath.startsWith("/")) {
+            if (streamPath.startsWith("//")) {
+              streamPath = "https:" + streamPath;
+            } else if (streamPath.startsWith("/")) {
               streamPath = "https://video.sibnet.ru" + streamPath;
             }
             return {
@@ -363,6 +441,33 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
 }
 
 /**
+ * Sums #EXTINF segment durations of a variant playlist (null when the
+ * playlist cannot be read — master playlists return null too).
+ */
+async function resolvePlaylistDurationSeconds(
+  playlistUrl: string,
+  headers: Record<string, string>
+): Promise<number | null> {
+  try {
+    const resp = await axios.get(playlistUrl, {
+      headers,
+      timeout: 6000,
+      validateStatus: (st) => st === 200,
+      proxy: getAnimeProxyConfig()
+    });
+    const body = typeof resp.data === "string" ? resp.data : "";
+    if (!body.includes("#EXTINF")) return null;
+    let total = 0;
+    for (const m of body.matchAll(/#EXTINF:([\d.]+)/g)) {
+      total += parseFloat(m[1]);
+    }
+    return total > 0 ? total : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Parses HLS playlist to detect available bandwidths, sub-variant URLs, and estimate episode sizes
  */
 export async function fetchHlsTracksAndSizes(
@@ -400,8 +505,10 @@ export async function fetchHlsTracksAndSizes(
           const height = resMatch ? parseInt(resMatch[1], 10) : 0;
           const bandwidth = bwMatch ? parseInt(bwMatch[1], 10) : 800000;
 
-          // Estimate 24 minute anime episode size in bytes: (bandwidth bps * 1440 sec) / 8
-          const durationSeconds = 1440;
+          // Real size estimate: fetch this variant's playlist, sum its segment
+          // durations (#EXTINF) and compute bandwidth * duration / 8. Falls
+          // back to the 24-minute anime heuristic when the CDN refuses us.
+          const durationSeconds = (await resolvePlaylistDurationSeconds(streamUrl, reqHeaders)) ?? 1440;
           const fileSizeBytes = Math.round((bandwidth * durationSeconds) / 8);
 
           let label = "480P";
@@ -430,30 +537,9 @@ export async function fetchHlsTracksAndSizes(
     }
   }
 
-  // Ensure standard options exist
-  const has360 = tracks.some(t => t.resolution === "360P");
-  const lowestTrack = tracks.length > 0 ? tracks[0] : null;
-
-  if (tracks.length > 0) {
-    if (!has360 && lowestTrack) {
-      tracks.push({
-        resolution: "360P",
-        url: lowestTrack.url,
-        bandwidth: Math.round((lowestTrack.bandwidth || 600000) * 0.65),
-        fileSizeBytes: Math.round((lowestTrack.fileSizeBytes || 90 * 1024 * 1024) * 0.65),
-        type: "hls",
-        headers: reqHeaders
-      });
-    }
-  } else {
-    // Fallback defaults if master parsing returns empty
-    tracks.push(
-      { resolution: "480P", url: masterUrl, bandwidth: 700000, fileSizeBytes: 80 * 1024 * 1024, type: "hls", headers: reqHeaders },
-      { resolution: "360P", url: masterUrl, bandwidth: 400000, fileSizeBytes: 50 * 1024 * 1024, type: "hls", headers: reqHeaders },
-      { resolution: "720P", url: masterUrl, bandwidth: 1400000, fileSizeBytes: 180 * 1024 * 1024, type: "hls", headers: reqHeaders },
-      { resolution: "1080P", url: masterUrl, bandwidth: 2600000, fileSizeBytes: 350 * 1024 * 1024, type: "hls", headers: reqHeaders }
-    );
-  }
+  // No fabricated fallback: if the master could not be parsed we return an
+  // empty list so the UI says "qualité adaptative" instead of offering
+  // resolutions that cannot actually be downloaded (audit finding R8).
 
   // Sort: 480P, 360P, 720P, 1080P
   const orderMap: Record<string, number> = { "480P": 1, "360P": 2, "720P": 3, "1080P": 4, "ORIGINAL": 5 };
@@ -466,18 +552,7 @@ export async function fetchHlsTracksAndSizes(
  * Resolves best mirror stream among all player URLs for an episode
  */
 export async function resolveBestMirrorStream(mirrorUrls: string[], preferredRes: string = "480P"): Promise<ExtractedStreamResult> {
-  const sortedMirrors = [...mirrorUrls].sort((a, b) => {
-    // Prefer Smoothpre (clean HLS) > Sibnet > Sendvid > VidMoly for reliable direct downloads
-    const priority = (url: string) => {
-      const l = url.toLowerCase();
-      if (l.includes("smoothpre")) return 1;
-      if (l.includes("sibnet")) return 2;
-      if (l.includes("sendvid")) return 3;
-      if (l.includes("ansembed") || l.includes("vidmoly")) return 4;
-      return 5;
-    };
-    return priority(a) - priority(b);
-  });
+  const sortedMirrors = [...mirrorUrls].sort((a, b) => hostPriority(a) - hostPriority(b));
 
   for (const mirror of sortedMirrors) {
     const extracted = await extractMultiHostStream(mirror);
@@ -545,18 +620,8 @@ export async function downloadWithAllMirrorsFallback(
     return { success: false, hostName: "None", usedUrl: "" };
   }
 
-  // Sort mirrors by reliability: Smoothpre > Sibnet > Sendvid > VidMoly > other
-  const sortedMirrors = [...mirrorUrls].sort((a, b) => {
-    const priority = (url: string) => {
-      const l = url.toLowerCase();
-      if (l.includes("smoothpre")) return 1;
-      if (l.includes("sibnet")) return 2;
-      if (l.includes("sendvid")) return 3;
-      if (l.includes("ansembed") || l.includes("vidmoly")) return 4;
-      return 5;
-    };
-    return priority(a) - priority(b);
-  });
+  // Sort mirrors by current reliability order (see hostPriority)
+  const sortedMirrors = [...mirrorUrls].sort((a, b) => hostPriority(a) - hostPriority(b));
 
   for (let i = 0; i < sortedMirrors.length; i++) {
     const mirrorUrl = sortedMirrors[i];

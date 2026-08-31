@@ -115,7 +115,10 @@ export async function isSafeDownloadUrl(rawUrl: string): Promise<boolean> {
     "vmpx.org",
     "dramiyos.com",
     "streampre.com",
-    "smoothstream.com"
+    "smoothstream.com",
+    "embed4me.com",
+    "uqload.is",
+    "minochinos.com"
   ];
   if (trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h))) {
     return true;
@@ -154,7 +157,10 @@ async function resolvePinnedAddresses(hostname: string): Promise<Array<{ address
     "vmpx.org",
     "dramiyos.com",
     "streampre.com",
-    "smoothstream.com"
+    "smoothstream.com",
+    "embed4me.com",
+    "uqload.is",
+    "minochinos.com"
   ];
   const isTrusted = trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h));
 

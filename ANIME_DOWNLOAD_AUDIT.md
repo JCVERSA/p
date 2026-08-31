@@ -213,6 +213,27 @@ The trace (`internalContext.Rebuild`, `RunOnResolvePlugins`) is **Vite's dev-ser
 
 ---
 
+## 7. Fix log — second push (2026-08-31)
+
+Implemented after the VPS verification round (all unit-tested, 153/153 green):
+
+| Finding | Status | Change |
+|---|---|---|
+| **R1** player drift | **FIXED (main hosts)** | New **embed4me/Lplayer extractor** (`animeStreamExtractor.ts`): reads the video id from the URL fragment/`?id=`, calls `GET {origin}/api/v1/video?id=…`, decrypts the hex **AES-128-CBC** JSON (key `kiemtienmua911ca`, IV `1234567890oiuytr`) and returns the real stream (`cfNative/cf/hls/source/url/file`). uqload/minochinos are covered by the generic branch now that the packer regex is fixed. |
+| **R4** packer regex | **FIXED** | Both unpackers (`animeStreamExtractor.ts`, `novabox.ts`) now accept the canonical `.split('|'),0,{}))` tail. Regression test added with the canonical form. |
+| **R5** sibnet URL | **FIXED** | `//cdn.host/...` sources are prefixed with `https:` instead of the site origin. |
+| **R6** season fallback | **FIXED** | `resolveRequestedSeason` no longer maps a missing season onto a Film/OAV — index fallback applies only to entries that actually look like a season. |
+| **R8** fabricated qualities | **FIXED** | `fetchHlsTracksAndSizes` no longer invents 480/360/720/1080 tracks pointing at an unreachable master; it returns `[]` and the menus clearly say "real qualities unavailable (estimates)". `inspectHlsStreams` (novabox) now delegates to the shared extractor instead of duplicating fake variants. |
+| wrong file sizes | **FIXED** | Sizes are now computed from the **real variant playlist**: segment `#EXTINF` durations are summed and multiplied by the track bandwidth (falls back to the 24-min heuristic only if the CDN refuses). |
+| stale mirror order | **FIXED** | Single shared `hostPriority()`: ansembed > embed4me > sibnet > sendvid > vidmoly/vmpx > smoothpre > other (Smoothpre/Sendvid no longer tried first although retired). |
+| misleading labels | **FIXED** | "Play Ad-Free (VidMoly)" now shows the real host (e.g. `ansembed.net`). |
+| R10 (partial) | DONE | `urlSafety` trusted hosts refreshed: `embed4me.com`, `uqload.is`, `minochinos.com`. |
+| prod registry bug | **FIXED** | `npm start` now sets `NODE_ENV=production` — previously the registry tried to load `novabox.ts` from TypeScript source under plain Node and skipped it with `Cannot find module .../src/bot/types.js`. |
+
+**Not yet done:** R2 startup ffmpeg check, R9 enforced download timeout, R11 real panel retry, multi-layer language variants (vf1/vf2/vkr/…).
+
+---
+
 ## Appendix A — Reproductions (run with the repo's real code)
 
 ```

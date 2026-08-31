@@ -316,10 +316,16 @@ export function resolveRequestedSeason(
     }
   }
 
-  // 2. Fallback to 1-based index if within range
+  // 2. Fallback to 1-based index ONLY when the entry at that position is
+  // actually a season (not a film/OAV) — otherwise ".a <anime> s3" on a
+  // 2-season + film catalog would silently download the film (audit R6).
   const idx = requestedSeasonNumber - 1;
   if (idx >= 0 && idx < seasons.length) {
-    return { season: seasons[idx], index: idx };
+    const candidate = seasons[idx];
+    const looksLikeSeason = /saison|season/i.test(candidate.name) || /saison\d+|season\d+/i.test(candidate.subPath);
+    if (looksLikeSeason) {
+      return { season: candidate, index: idx };
+    }
   }
 
   return { season: null, index: -1 };
