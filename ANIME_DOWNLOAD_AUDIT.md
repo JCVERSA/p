@@ -1,0 +1,215 @@
+# Nebula Bot — Anime Download System (Novabox) — Full Audit
+
+**Repository:** `JCVERSA/p` · Branch `arena/01a05555-p` · Commit `31fe212`
+**Audit date:** 2026-08-31 · **Mode:** analysis + diagnostics — **the download pipeline source code was NOT modified**
+**Deliverable added:** `scripts/anime-doctor.ts` (run `npx tsx scripts/anime-doctor.ts --full` on the server that hosts the bot) + this report.
+
+---
+
+## Executive summary — why downloads are failing
+
+The anime command (`.a` / `.anime` / `.nv`) is a 6-stage scraping pipeline:
+
+```
+[1] search      POST https://anime-sama.to/template-php/defaut/fetch.php   (.asn-search-result)
+[2] seasons     GET  /catalogue/<slug>/          → panneauAnime("Saison 1","saison1/vostfr")
+[3] episodes    GET  /catalogue/<slug>/<season>/<lang>/episodes.js → var epsN = ['...']
+[4] extract     per-mirror player scraping (Smoothpre/Sibnet/Sendvid/VidMoly/Ansembed + generic)
+[5] download    Cat-Catch-style parallel HLS downloader → ffmpeg remux  (fallback: network ffmpeg)
+[6] delivery    WhatsApp video/document (≤100 MB) or temp-download link
+```
+
+**Stages 1–3 are still compatible with the live site** (verified against anime-sama.to on 2026-08-31 and cross-checked with three actively-maintained scrapers of the same site). **Stages 4–5 are where the system rots**, for a mix of external and code-level reasons:
+
+| # | Root cause | Type | Effect |
+|---|------------|------|--------|
+| **R1** | The player ecosystem rotated. Live `episodes.js` (2026-08-31) serves `lpayer.embed4me.com` (Lecteur 1), `ansembed.net`, `video.sibnet.ru`, `uqload.is`, `minochinos.com`. The bot has dedicated extractors only for **Smoothpre, Sibnet, Sendvid, VidMoly/Ansembed**. embed4me (the new primary player) is **provably unextractable** with the current code: its video id lives in the URL fragment (`#3maxc`, never sent to the server) and the real source comes from `https://lpayer.embed4me.com/api/v1/video?id=…` returning **hex-encoded AES-128-CBC JSON** (key `kiemtienmua911ca`, IV `1234567890oiuytr`) — none of which the bot implements. | Upstream drift | Most mirrors dead ⇒ "Stream unavailable" / "download temporarily unavailable" |
+| **R2** | **ffmpeg is a silent hard dependency.** Every HLS download ends in an ffmpeg remux. If the host has no system ffmpeg *and* `ffmpeg-static`'s postinstall could not fetch its binary (it downloads from `release-assets.githubusercontent.com`, which is blocked on many corporate/CI networks — reproduced in this audit sandbox: `npm install` **fails outright**), all downloads fail with no warning at startup. | Environment | 100% download failure while search still works |
+| **R3** | **Cloudflare / geo-blocking on anime-sama.to.** The site is behind Cloudflare and Arcom-blocked at French ISPs; it has rotated domains 7+ times (.fr→.org→.eu→.tv→.si→.to). The bot hardcodes `anime-sama.to` with plain axios (Chrome UA but Node TLS fingerprint). Maintainers of comparable scrapers added CF-challenge detection and TLS-fingerprint spoofing (`got-scraping`). If your server is in FR/EU or gets challenged, **stage 1 dies → every command replies "Aucun résultat trouvé"**. | Environment / anti-bot | Total outage, intermittent by server location |
+| **R4** | **Packer regex rejects the canonical Dean Edwards form.** Both unpackers (`animeStreamExtractor.ts:116`, `novabox.ts:1460`) require the packed script to end `.split('|'))` and do not accept the standard `.split('|'),0,{}))` tail. Reproduced: canonical form → **no match**. The repo's own test fixture uses the non-standard form, which masks the bug (tests green, live pages can fail). | Code bug | Packed players yield no m3u8 |
+| **R5** | **Sibnet protocol-relative URL bug** (`animeStreamExtractor.ts:216`): `src: "//db8.video.sibnet.ru/…"` is prefixed blindly → `https://video.sibnet.ru//db8.video.sibnet.ru/…` → 404. Active scrapers explicitly handle the `//` form. | Code bug | Sibnet mirror (priority 1 in the live mirror set) fails |
+| **R6** | `resolveRequestedSeason` falls back to **1-based index** (`quickAnimeParser.ts:320`) — `.a <anime> s3` on a 2-season show silently returns **"Film 1"** as "Saison 3". Reproduced. | Code bug | Wrong content downloaded / confusing UX |
+| **R7** | **Relative download links**: `tempDownloadManager.ts:157` builds `/api/media/download/<token>` when `APP_URL` is unset and the panel was never opened from a public host — unusable links pasted into WhatsApp for any file >100 MB and for all batch downloads. | Config / code | Batch users get dead links |
+| **R8** | **Fabricated quality options**: when the HLS master can't be parsed, `fetchHlsTracksAndSizes` (`animeStreamExtractor.ts:443`) invents 4 tracks (480/360/720/1080) that all point at the unreachable master URL — the bot confidently offers resolutions that cannot download, then fails. | Code bug | Misleading UX, guaranteed failure |
+| **R9** | `downloadHlsAppLevel` accepts `timeoutMs` but **never enforces it** (`hlsDownloader.ts:350` — parameter used zero times). Stalled segment fetches (10 s axios timeout × 5 retries × N segments × concurrency 8) can hang a batch far beyond intended limits. | Code bug | Batch jobs hang |
+| **R10** | `urlSafety.ts:169`: if DNS resolution fails for a "trusted" host, traffic is **pinned to 1.1.1.1** — a magic fallback that guarantees TLS failures and masks the real DNS error. The trusted list is also stale (embed4me/uqload/minochinos/vidmoly.biz absent). | Code smell | Confusing failures on DNS issues |
+| **R11** | Panel **Retry** for real batch jobs is a *simulation*: `batchDownloadManager.ts:261/519` replay fake progress and package **dummy text files as "episodes"** into a real ZIP presented to the user. | Design bug | Fake deliverables after retry |
+| **R12** | Misc: `DEBUG_MEDIA` polarity inconsistent (`hlsDownloader` logs only when `=true`, `prepareLocalHlsPlaylist` logs unless `=false`); duplicated unpacker code in two files; mirror priority list still ranks Smoothpre/Sendvid first though they no longer appear in live episode lists; `checkVfExists` HEAD-only (breaks if the site rejects HEAD); batch flow probes 2 concurrent episodes × 8 segment workers on weak VPS. | Robustness | Noise, maintenance drag |
+
+**Most probable single cause of "nothing works at all":** R3 (or the domain rotating again) — check with the doctor script in 60 seconds. **Most probable cause of "search works but no video ever arrives":** R1+R4+R5 combined with R2.
+
+---
+
+## 1. Verification performed
+
+| Check | Result |
+|---|---|
+| `npm install` (clean sandbox) | ❌ **fails** — `ffmpeg-static` postinstall: `unable to verify the first certificate` / `release-assets.githubusercontent.com` unreachable. With `--ignore-scripts` it succeeds but leaves `node_modules/ffmpeg-static/ffmpeg` **non-existent** while the module still returns its path → runtime spawn errors (R2). |
+| `npx vitest run` | ✅ 14 files, **138/138 tests pass** |
+| `npx tsc --noEmit` | ✅ clean (including the new doctor script) |
+| Live site probes (external fetch, 2026-08-31) | `anime-sama.to` **up and current** (homepage + catalog + episodes.js + a rendered ansembed player all serve content). `anime-sama.eu` DNS dead (old domain). GET on `fetch.php` → HTTP 500 (POST-only endpoint, expected). |
+| Ground-truth cross-check | Compared with 3 actively-maintained scrapers of the same site: `SertraFurr/Anime-Sama-Nakanime-Downloader`, `Mocha1530/consumet.ts` (AnimeSama provider + Lplayer/VidMoly/MoveArnPre extractors), `Gowaru/gowaru-nuvio-providers`. Their code documents the *current* player landscape and extraction requirements. |
+| Parser harness | Ran the repo's real `parseQuickDownloadParams`, `isExactAnimeMatch`, `resolveRequestedSeason`, `parseEpisodes` regex and `unpackDeanEdwards` against the live captured `episodes.js` and synthetic packer forms — outputs reproduced in Appendix A. |
+
+### What is verified **still working** (don't chase these)
+
+- `fetch.php` search endpoint + `.asn-search-result`/`.asn-search-result-title` markup — confirmed identical in `Gowaru`'s current extractor.
+- `panneauAnime("…","…")` season markup — confirmed by 3 external scrapers + live catalog page.
+- `var epsN = [...]` episodes.js format — **captured live**, parses correctly with the repo regex.
+- Domain `anime-sama.to` is the current canonical domain (Aug 2026; tracked by multiple domain-trackers).
+- `ansembed.net` embeds a plain absolute `.m3u8` URL in the player HTML (external extractors find it with a simple quoted-URL regex, no unpacking) → the bot's generic branch *should* extract Ansembed streams **if the request isn't blocked**.
+- Quick-command parser: all documented forms (`.a jjk s3 all r2`, `ep6`, `e1,2,3`, `2-9`, `720p`, bare `6`) parse correctly (harness output in Appendix A).
+
+---
+
+## 2. Live ground truth — the 2026-08-31 player landscape
+
+Captured from `https://anime-sama.to/catalogue/black-torch/saison1/vostfr/episodes.js` (a currently-airing show):
+
+| eps list | Host | Bot support | Verdict |
+|---|---|---|---|
+| eps1 (Lecteur 1) | `lpayer.embed4me.com/#<id>` | generic branch only | ❌ **Cannot work**: fragment-player; source = `GET /api/v1/video?id=<id>` → hex AES-128-CBC JSON (`kiemtienmua911ca` / `1234567890oiuytr`), then `hls`/`source` field. Bot implements none of this. |
+| eps2 (Lecteur 2) | `ansembed.net/embed-*.html` | branch 4 + generic grep | ⚠️ Should work when reachable; packed variant would hit R4 |
+| eps3 (Lecteur 3) | `video.sibnet.ru/shell.php?videoid=…` | branch 2 | ⚠️ Breaks on protocol-relative `//cdn…` src (R5) |
+| eps4 (Lecteur 4) | `uqload.is/embed-*.html` | generic branch only | ⚠️ Best-effort; m3u8 typically inside packed JS (R4) |
+| eps5 (Lecteur 5) | `minochinos.com/embed/*` | generic branch only | ⚠️ Best-effort, no referer handling |
+
+Hosts that appear on the site and have **no support at all**: `voe`, `filemoon` (bysesukior.com), `luluvdo`, `vidzy`, `oneupload`, `movearnpre`, `mivalyo`, `nakanime` (mirror site with XOR-encoded API). Meanwhile the bot still prioritizes **Smoothpre (1) and Sendvid (3)**, which no longer appear in the live lists, and ranks the two hosts that DO appear (`sibnet`=2, `ansembed`=4) with Sibnet first — and Sibnet has the R5 bug.
+
+> The mirror sort order (`downloadWithAllMirrorsFallback`) means the practical download path today is: broken Sibnet → maybe-working Ansembed → dead embed4me → maybe uqload/minochinos. With ffmpeg also missing (R2), the success rate collapses to ~0.
+
+---
+
+## 3. Root-cause details & fixes
+
+### R1 — Player ecosystem drift (High · upstream)
+**Evidence:** live episodes.js (above); `SertraFurr/…/extract_embed4me_video_source.py`, `Mocha1530/consumet.ts …/lplayer.ts`, `src/var.py` host registry.
+**Fix (recommended, in priority order):**
+1. Add an **embed4me/Lplayer extractor**: id = URL fragment or `?id=`; `GET {origin}/api/v1/video?id=<id>&w=1920&h=1080&r=<origin>`; hex-decode → `aes-128-cbc` decrypt (key `kiemtienmua911ca`, IV `1234567890oiuytr`, PKCS7) → JSON → take `hls || source || url || file`; resolve relative against the player origin. ~40 lines, no new deps (`crypto` only).
+2. Add a **uqload extractor**: normalize to `https://uqload.is/embed-<code>.html`, grep quoted m3u8, else unpack (fix R4 first).
+3. Make the **mirror priority list data-driven** (`extractMultiHostStream` + both sort lambdas in `animeStreamExtractor.ts` share one `HOST_PRIORITY` map) and reorder to what's live: ansembed/sibnet/embed4me/uqload first.
+4. Consider reading `getVidMolyUrl`'s "list 2" assumption: list 2 is Ansembed now, not VidMoly — behavior already OK (it matches `ansembed`), just rename/mind the logs.
+
+### R2 — ffmpeg silent dependency (High · environment)
+**Evidence:** this sandbox: `npm install` aborts on ffmpeg-static postinstall; with `--ignore-scripts`, `ffmpeg-static` default export = `…/node_modules/ffmpeg-static/ffmpeg` with `exists=false`. `novabox.ts`, `animeStreamExtractor.ts`, `hlsDownloader.ts` all resolve the path at module load and never verify existence.
+**Fix:** (a) install ffmpeg system-wide (`apt install ffmpeg`) — required for WhatsApp delivery anyway; (b) add a **startup check** that logs a loud one-time error when the resolved binary doesn't exist; (c) optionally add `ffmpeg-static` existence to the panel checkup endpoint; (d) pin `npm ci` in CI with `--ignore-scripts=false` and network access to GitHub releases.
+
+### R3 — Cloudflare / geo / domain rotation (High · environment)
+**Evidence:** consumet fork explicitly detects `Just a moment`/`cf_chl_opt` and uses `got-scraping` (TLS fingerprint spoofing); French ISPs Arcom-block the domain family; the site has changed TLD 7+ times, most recently → `.to` (all confirmed via domain trackers, Aug 2026). The bot uses hardcoded `anime-sama.to` + plain axios everywhere (novabox.ts:122 searchAnime, parseSeasons, parseEpisodes, all extractors).
+**Fix:** (1) make the domain configurable `NEBULA_ANIME_DOMAIN` with fallback probes (the doctor script already does this — port its logic); (2) run the doctor from the bot's server to confirm; (3) if challenged, add `got-scraping`/`curl-impersonate` support behind a flag, or a `HTTPS_PROXY` passthrough for scraper requests; (4) short-term operational relief: host/proxy via a non-FR region.
+
+### R4 — Packer regex rejects canonical form (Medium-High · code)
+**Evidence (reproduced, Appendix A):** `unpackDeanEdwards` matches the repo-fixture form `'…'.split('|'))` but NOT the canonical `'…'.split('|'),0,{}))`. External scrapers' patterns stop at `.split('|')` and ignore the tail.
+**Fix:** in both regexes change the ending `\.split\(['"]\|['"]\)\)` → `\.split\(['"]\|['"]\)(?:\s*,\s*[^)]*)?\)`. Verified to match both forms. Add the canonical form as a second fixture in `tests/animeExtractor.test.ts` / `tests/novaboxDecode.test.ts`.
+
+### R5 — Sibnet protocol-relative URL (Medium · code)
+**Evidence:** `animeStreamExtractor.ts:216-218` prefixes `https://video.sibnet.ru` onto any src starting with `/`; `//db8.…` becomes `https://video.sibnet.ru//db8.…`. External scraper explicitly handles `//` → `https:`.
+**Fix:** `if (s.startsWith("//")) s = "https:" + s; else if (s.startsWith("/")) s = "https://video.sibnet.ru" + s;`
+
+### R6 — Season fallback returns films (Medium · code)
+**Evidence:** reproduced — `resolveRequestedSeason(seasons, 3)` on [S1, S2, Film 1] returns Film 1 @ index 2; `.a jjk s3 …` would download the film while claiming "Saison 3".
+**Fix:** only apply the index fallback when the entry at `requestedSeasonNumber-1` actually looks like a season (name/subPath matches `/saison|season/i`); otherwise return null so the command replies "S3 introuvable".
+
+### R7 — Relative download links (Medium · config/code)
+**Evidence:** `tempDownloadManager.ts:157`.
+**Fix:** set `APP_URL` (documented in README); or default to refusing link-mode delivery and sending the file as a document; or fail loudly at registration time instead of emitting a relative URL.
+
+### R8 — Fabricated quality tracks (Medium · UX correctness)
+**Evidence:** `fetchHlsTracksAndSizes` else-branch pushes 4 fake tracks pointing at the master URL; `inspectHlsStreams` fallback does the same in novabox.ts.
+**Fix:** when the master can't be parsed, return **no tracks** and let the command say "qualités inconnues, tentative directe" instead of offering r1–r4.
+
+### R9 — Unenforced download timeout (Medium · code)
+**Evidence:** `timeoutMs` parameter occurs once (declaration) inside `downloadHlsAppLevel`.
+**Fix:** wrap the segment pool + ffmpeg tiers in a global `AbortController`-style deadline; check it inside the worker loop.
+
+### R10 — urlSafety 1.1.1.1 pin (Low-Medium · code)
+**Evidence:** `urlSafety.ts:169` returns `1.1.1.1` when a trusted host's DNS fails.
+**Fix:** remove the magic address; let DNS errors surface. Refresh the trusted list (add `embed4me.com`, `uqload.is`, `minochinos.com`, `vidmoly.biz`, `topembed.*`, and consider deriving it from the HOST_PRIORITY map).
+
+### R11 — Panel retry is simulated (Medium · design)
+**Evidence:** `retryBatchJob`/`retryEpisode`/`simulateBatchDownload` replay timers and `finalizeJobZip` writes text-file dummies ("Simulated video payload…") into a real ZIP and marks the job completed. A real failed batch, retried from the panel, produces a **fake** ZIP.
+**Fix:** wire retry to the real per-episode download path (`downloadWithAllMirrorsFallback`), or clearly mark simulated jobs and disable retry for real ones.
+
+### R12 — Misc (Low)
+- `DEBUG_MEDIA` polarity: make every check `=== "true"`.
+- Deduplicate `decodeJsStringLiteral`/`decodeJsArrayLiteral`/unpacker (novabox.ts ⇄ animeStreamExtractor.ts).
+- `checkVfExists`: fall back to GET with Range on HEAD failure; note the site now also exposes `vf1`, `vf2`, `va`, `vkr`, `vqc` language variants — the `/vostfr/ → /vf/` string replace misses them.
+- Batch: `CONCURRENCY_LIMIT=2` × segment workers `8` = up to 16 parallel CDN fetches; make it env-tunable.
+- `prepareLocalHlsPlaylist` logs unconditionally unless `DEBUG_MEDIA=false` (inverted default vs. the rest).
+
+---
+
+## 4. Diagnostic playbook (find *your* failure in ~1 minute)
+
+On the server that hosts the bot:
+
+```bash
+npx tsx scripts/anime-doctor.ts          # DNS, CF, search, seasons, episodes, mirrors, HLS
+npx tsx scripts/anime-doctor.ts --full   # + real 90 s segment download & ffmpeg remux probe
+NEBULA_ANIME_DOMAIN=anime-sama.si npx tsx scripts/anime-doctor.ts   # probe an alternate TLD
+```
+
+Reading the results:
+
+| Failing stage | Meaning | Go to |
+|---|---|---|
+| 0 ffmpeg | binary missing → all downloads fail silently | R2 |
+| 1 HTTPS (CF/403/reset) | server-side network blocked (Arcom/ISP/datacenter) | R3 |
+| 2 search | markup changed **or** stage 1 | R3 + `searchAnime` |
+| 3 seasons | catalog markup changed | `parseSeasons` |
+| 4 episodes | episodes.js format changed | `parseEpisodes` |
+| 5 specific mirrors | extractor gaps | R1, R4, R5 |
+| 6 tracks | CDN referer/403 or fabricated fallback | R8 |
+| 7 download/remux | ffmpeg or segments 403 | R2, R9 |
+
+For deeper tracing at runtime: `DEBUG_MEDIA=true npm run dev` — probe errors in `extractMultiHostStream` and `robustFetch*` are gated on it.
+
+---
+
+## 5. Prioritized fix plan
+
+| P | Work | Effort | Impact |
+|---|---|---|---|
+| **P0** | Run the doctor on the production host; fix environment (ffmpeg present, egress/CF, `APP_URL`, current domain) | 1 h | Restores whatever is environmentally dead |
+| **P1** | embed4me/Lplayer extractor + uqload extractor + shared HOST_PRIORITY reorder | ~0.5–1 day | Restores the majority of live mirrors |
+| **P1** | Packer regex tail fix (+ test fixture) and Sibnet `//` fix | 30 min | Un-breaks packed players & Sibnet |
+| **P2** | Domain configurability + CF detection logging; startup ffmpeg check; drop fake quality tracks; enforce download timeout | 0.5 day | Robustness & honest UX |
+| **P2** | Real (non-simulated) panel retry; remove 1.1.1.1 pin; refresh trusted hosts | 0.5 day | Correctness |
+| **P3** | Season fallback guard, VF variant languages, DEBUG polarity, dedupe unpackers, env-tunable concurrency | 0.5 day | Polish |
+
+---
+
+## Appendix A — Reproductions (run with the repo's real code)
+
+```
+$ tsx scripts/anime-audit-harness.mjs        (parser harness against live-captured data)
+
+parseEpisodes lists: { "1": [lpayer.embed4me.com…], "2": [ansembed.net…], "3": [sibnet…], "4": [uqload.is…], "5": [minochinos…] }
+mirror try order: sibnet (p2) → ansembed ×2 (p4) → embed4me ×2, uqload, minochinos (p5)
+.a jjk s3 all r2      => query="jjk" canon="Jujutsu Kaisen" S=3 eps=all(all) res=r2 quick=true
+.a jjk s3 ep6 r2      => S=3 eps=ep6(single) res=r2 ✓
+.a jjk s3 e1,2,3,5,7,8,9 r2 => list ✓   |   .a jjk s3 2-9 r2 => range ✓
+.a demon slayer s2 ep4 720p => res=720P ✓  |  .a jjk s3 6 r1 => single ✓
+resolveRequestedSeason(3) on [S1,S2,Film 1] => { season: "Film 1", index: 2 }   ← DEFECT C
+unpackDeanEdwards canonical(',0,{}') => NO MATCH (defect); reduced fixture form => matched
+
+$ tsx scripts/anime-audit-repro.mjs
+
+[A] canonical packer (',0,{}' tail)  -> NO MATCH — BUG CONFIRMED
+[A] reduced packer (repo fixture)    -> works
+[A] relaxed regex matches both forms -> true / true
+[B] sibnet '//db8.…' -> https://video.sibnet.ru//db8.video.sibnet.ru/…  ← broken
+[C] requested S3 of a 2-season show -> Film 1 @ index 2                  ← should be null
+[D] timeoutMs occurrences inside downloadHlsAppLevel: 1 (parameter only)
+[E] 1.1.1.1 fallback present in urlSafety.ts
+[F] live hosts with a dedicated extractor: ansembed.net, video.sibnet.ru only
+```
+
+## Appendix B — Live evidence log (2026-08-31)
+
+- `GET https://anime-sama.to/` → 200, current-season carousel (Black Torch, Tenmaku no Jaaduugar, …), catalogue links on `.to`.
+- `GET https://anime-sama.to/catalogue/black-torch/saison1/vostfr/episodes.js` → 5 `var epsN` lists, hosts as tabulated in §2.
+- `GET https://anime-sama.to/catalogue/solo-leveling/saison1/vostfr/` → language flags now include VA, VAR, VKR, VCN, VQC, VF1, VF2; player tabs "Lecteur 1/2/3".
+- `ansembed.net/embed-8fgve1livt6b.html` → renders a playing video ("Black Torch S1 01 VOSTFR", 23:45) — streams exist server-side.
+- `GET …/fetch.php?query=…` → HTTP 500 (POST-only; expected).
+- `anime-sama.eu` → NXDOMAIN (dead old domain); `.to`/`.tv`/`.si` resolve (Cloudflare).
