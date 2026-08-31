@@ -649,3 +649,25 @@ Fixes:
   OOM kill bypasses it — `/tmp/cat_catch_*` should be swept once after a kill.
 
 Suite: 217/217 (21 files).
+
+### 8.13 Fast-lane size guard — "480P" file at 403 MB (2026-08-31, fifteenth push)
+
+**User log (sequential 12-ep batch, no OOM this time):** ep5 delivered 88.8 MB
+but **ep6 delivered 403.53 MB labelled VOSTFR_480P** — a ~2.3 Mbps encode
+carrying a 480P label on that mirror. Exact-label matching trusted the CDN's
+naming; the fast lane (r1) exists to deliver WhatsApp-friendly files.
+
+Fix (`pickOptimalStream` + `resolveCanonicalQualityTrack`, shared guard):
+when the exact fast-lane track (480P/360P) has a KNOWN size above
+**FAST_LANE_MAX_BYTES (200 MB)**, the lightest ≤480p alternative is used
+instead and labelled honestly (`exact:false`, real resolution in quick mode).
+Normal exact matches (≤200 MB) are untouched, and non-fast-lane qualities
+(720P/1080P) never downgrade. Batch downloads get the same protection via
+`downloadWithAllMirrorsFallback` → `pickOptimalStream`.
+
+Note: `free -m` on that host shows 330 GB (host view); the container's real
+ceiling is the cgroup limit — check `cat /sys/fs/cgroup/memory.max` (v2) or
+`/sys/fs/cgroup/memory/memory.limit_in_bytes` (v1) before raising
+`NEBULA_BATCH_CONCURRENCY`.
+
+Suite: 221/221 (21 files, +4 fast-lane guard tests).

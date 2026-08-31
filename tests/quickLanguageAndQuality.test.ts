@@ -167,3 +167,38 @@ describe("resolveCanonicalQualityTrack (vidmoly-first early-exit, audit 8.5)", (
     expect(await resolveCanonicalQualityTrack([], "480P", async () => null)).toBeNull();
   });
 });
+
+describe("fast-lane size guard (audit 8.13)", () => {
+  const tr = (resolution: string, mb: number, url: string) =>
+    ({ resolution, url, fileSizeBytes: mb * 1048576, type: "hls" as const });
+
+  it("downgrades a pathological 480P (400 MB) to the lightest <=480 track", () => {
+    const tracks = [tr("480P", 400, "https://x/fat"), tr("360P", 90, "https://x/light")];
+    expect(pickOptimalStream(tracks, "480P").url).toBe("https://x/light");
+  });
+
+  it("keeps a normal 480P when its size is WhatsApp-fit", () => {
+    const tracks = [tr("480P", 88, "https://x/480"), tr("360P", 45, "https://x/360")];
+    expect(pickOptimalStream(tracks, "480P").url).toBe("https://x/480");
+  });
+
+  it("resolveCanonicalQualityTrack reports the lighter variant honestly", async () => {
+    const tracks = [tr("480P", 403, "https://x/fat"), tr("360P", 92, "https://x/light")];
+    const probe = async () => ({
+      hostName: "vidmoly",
+      url: "https://x/master.m3u8",
+      type: "hls" as const,
+      headers: {},
+      availableTracks: tracks
+    });
+    const match = await resolveCanonicalQualityTrack(["https://vidmoly.org/e/a"], "480P", probe);
+    expect(match?.url).toBe("https://x/light");
+    expect(match?.label).toBe("360P");
+    expect(match?.exact).toBe(false);
+  });
+
+  it("does not touch non-fast-lane qualities (720P stays exact however fat)", () => {
+    const tracks = [tr("720P", 500, "https://x/720"), tr("480P", 90, "https://x/480")];
+    expect(pickOptimalStream(tracks, "720P").url).toBe("https://x/720");
+  });
+});

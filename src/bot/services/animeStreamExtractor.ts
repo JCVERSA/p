@@ -975,6 +975,23 @@ function trackHeight(res: string | undefined): number {
   return m ? parseInt(m[1], 10) : 720;
 }
 
+// Fast lanes (r1=480P, r2=360P) exist to deliver WhatsApp-friendly files.
+// Some CDN encodes carry a "480P" label at ~2.3 Mbps (403 MB for 24 min,
+// audit 8.13) — an exact-label match on those is worse than a lighter
+// variant. When the exact fast-lane track exceeds this ceiling, the lightest
+// <=480p alternative wins.
+const FAST_LANE_MAX_BYTES = 200 * 1024 * 1024;
+
+function fastLaneDowngrade(tracks: StreamQualityTrack[], match: StreamQualityTrack): StreamQualityTrack | null {
+  const candidates = tracks.filter((t) => t.url && trackHeight(t.resolution) <= 480);
+  if (candidates.length === 0) return null;
+  const sizeKey = (t: StreamQualityTrack) => t.fileSizeBytes ?? Number.MAX_SAFE_INTEGER;
+  const sorted = [...candidates].sort((a, b) => sizeKey(a) - sizeKey(b));
+  const lightest = sorted[0];
+  if (!lightest || sizeKey(lightest) === Number.MAX_SAFE_INTEGER || lightest === match) return null;
+  return lightest;
+}
+
 export function pickOptimalStream(tracks: StreamQualityTrack[], requestedRes?: string): StreamQualityTrack {
   if (!tracks || tracks.length === 0) {
     return { resolution: "480P", url: "", type: "hls" };
@@ -983,7 +1000,22 @@ export function pickOptimalStream(tracks: StreamQualityTrack[], requestedRes?: s
   if (requestedRes) {
     const wanted = requestedRes.toUpperCase();
     const match = tracks.find(t => (t.resolution || "").toUpperCase() === wanted);
-    if (match) return match;
+    if (match) {
+      if (
+        (wanted === "480P" || wanted === "360P") &&
+        match.fileSizeBytes &&
+        match.fileSizeBytes > FAST_LANE_MAX_BYTES
+      ) {
+        const alt = fastLaneDowngrade(tracks, match);
+        if (alt) {
+          console.warn(
+            `[STREAM_EXTRACTOR] Fast-lane "${wanted}" track is ${(match.fileSizeBytes / 1048576).toFixed(0)} MB (>200 MB) - using lighter ${(alt.resolution || "").toUpperCase()} variant (${((alt.fileSizeBytes || 0) / 1048576).toFixed(0)} MB)`
+          );
+          return alt;
+        }
+      }
+      return match;
+    }
 
     // Requested quality missing on this mirror: prefer the tallest track that
     // is NOT taller than the request (fast lanes stay fast); if everything is
@@ -1065,6 +1097,25 @@ export async function resolveCanonicalQualityTrack(
 
     const exact = tracks.find((t) => t.url && (t.resolution || "").toUpperCase() === canonical.toUpperCase());
     if (exact) {
+      if (
+        (canonical.toUpperCase() === "480P" || canonical.toUpperCase() === "360P") &&
+        exact.fileSizeBytes &&
+        exact.fileSizeBytes > FAST_LANE_MAX_BYTES
+      ) {
+        const alt = fastLaneDowngrade(tracks, exact);
+        if (alt && alt.url) {
+          console.warn(
+            `[STREAM_EXTRACTOR] Quick "${canonical}" exact match is ${(exact.fileSizeBytes / 1048576).toFixed(0)} MB (>200 MB) - using lighter ${(alt.resolution || "").toUpperCase()} variant`
+          );
+          return {
+            url: alt.url,
+            headers: alt.headers || extracted.headers,
+            label: (alt.resolution || canonical).toUpperCase(),
+            exact: false,
+            mirror
+          };
+        }
+      }
       return {
         url: exact.url,
         headers: exact.headers || extracted.headers,
