@@ -495,7 +495,14 @@ async function executeQuickDownloadPipeline(
     // STRUCTURAL (slug suffix "-vf"), so the French dub is guaranteed by
     // construction — the honest VF-by-structure source nakanime cannot be
     // (audit 8.6/8.9). Disable with NEBULA_VOIRANIME_DISABLED=1.
-    if (quickParams.language === "VF" && process.env.NEBULA_VOIRANIME_DISABLED !== "1") {
+    // VF BY DEFAULT (user requirement, now reliable): when no language is
+    // specified, quick mode tries the voiranime VF entry first and falls back
+    // to nakanime VOSTFR when the title has no VF. Opt out with
+    // NEBULA_VF_DEFAULT=0 (or `.a ... vostfr` per command).
+    const wantsVfByDefault =
+      (quickParams.language === "VF" || (!quickParams.language && process.env.NEBULA_VF_DEFAULT !== "0")) &&
+      process.env.NEBULA_VOIRANIME_DISABLED !== "1";
+    if (wantsVfByDefault) {
       try {
         const vaResults = await voiranimeSearch(chosenAnime.title);
         const vfEntries = vaResults.filter((r) => r.isVf);

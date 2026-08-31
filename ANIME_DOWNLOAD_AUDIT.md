@@ -591,3 +591,19 @@ live; **VoirAnime (voir-anime.to)** won — verified from the production VPS:
 - Doctor stage 1 probes voir-anime.to.
 
 Suite: 217/217 (21 files, +9 voiranime tests).
+
+### 8.10 VF by default via voiranime — live-validated (2026-08-31, twelfth push)
+
+VPS validation of §8.9 (`voiranime-probe "sparks of tomorrow" 1 9 --dl`): search
+VF ✅, season ✅, episodes ✅, voembed player ✅, HLS variant 852x480 auto-
+selected, **92.28 MB in 5.5 s**. The "SEE [KO] ABOVE" banner was a probe-only
+cosmetic bug (`process.exitCode` undefined vs 0) — fixed.
+
+Quick mode now applies the user's original requirement: **VF by default**. When
+no language is given, voiranime's VF entry is tried first; titles without a VF
+entry fall back to nakanime VOSTFR (honest in both directions). Opt-outs:
+`.a ... vostfr` per command, `NEBULA_VF_DEFAULT=0` globally,
+`NEBULA_VOIRANIME_DISABLED=1` to bypass voiranime entirely. The interactive
+(`.a <q>` step-by-step) flow keeps its explicit language menu.
+
+Suite: 217/217 (21 files).

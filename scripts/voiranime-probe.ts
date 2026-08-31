@@ -37,6 +37,7 @@ try {
   }
 } catch {}
 
+process.exitCode = 0;
 const trunc = (s: string, n = 110): string =>
   s && s.length > n ? s.slice(0, n) + "..." : s || "(empty)";
 const hr = (t: string) => console.log(`\n===== [${t}] =====`);
