@@ -18,6 +18,13 @@ try {
 import { registerTempDownload } from "../tempDownloadManager.js";
 import { animeProxyOptions } from "../services/scrapingProxy.js";
 import { isNakanimeUrl, nakanimeSearch, nakanimeSeasons, nakanimeEpisodePlayers, nakanimeEpisodePlayersDetailed } from "../services/nakanimeClient.js";
+import {
+  franimeSearch,
+  franimeSeasons,
+  franimeSeasonInfo,
+  franimeEpisodePlayers,
+  parseFranimeSeasonRef
+} from "../services/franimeClient.js";
 import { isSafeDownloadUrl } from "../urlSafety.js";
 import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batchDownloadManager.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
@@ -63,6 +70,7 @@ interface AnimeSession {
   selectedSeason?: { name: string; subPath: string; url: string };
   episodes?: Record<number, string[]>;
   episodeListLabels?: Record<number, { host: string; language: string }>; // nakanime: host+lang per list
+  franimeRef?: { animeId: number; seasonIndex: number }; // franime.fr VF path (audit 8.7)
   selectedEpisodeIndex?: number;
   selectedEpisodeIndices?: number[]; // Multi-episode batch support
   isSeasonZipDownload?: boolean; // Full season download mode
@@ -326,6 +334,49 @@ export function splitMirrorsByLanguage(
   return { primary, secondary };
 }
 
+/**
+ * franime path: resolves player URLs for the given episode indices and merges
+ * them into session.episodes/episodeListLabels (same shape as nakanime lists,
+ * language VF by construction — franime's catalog is the source of truth).
+ */
+async function fillFranimePlayers(session: AnimeSession, indices: number[]): Promise<void> {
+  const ref = session.franimeRef;
+  if (!ref) return;
+  const lang: "vf" | "vo" = (session.selectedLanguage || "VF").toUpperCase() === "VOSTFR" ? "vo" : "vf";
+  const lists: Record<number, string[]> = session.episodes || {};
+  const labels = session.episodeListLabels || {};
+  const seasonLen = Object.values(lists)[0]?.length || indices.length;
+  const listKeys = new Map<string, number>();
+
+  for (const idx of indices) {
+    let players: Array<{ host: string; language: string; url: string }> = [];
+    try {
+      const res = await franimeEpisodePlayers(ref.animeId, ref.seasonIndex, idx, lang);
+      players = res.players;
+      if (res.challenged && players.length === 0) {
+        console.warn(`[NOVABOX] franime: episode ${idx + 1} players blocked by Cloudflare (FLARESOLVERR_URL not set/solved)`);
+      }
+    } catch (err: any) {
+      console.warn(`[NOVABOX] franime: episode ${idx + 1} lookup failed: ${err?.message || err}`);
+    }
+    for (const p of players) {
+      const key = `${p.host} (${p.language})`.toLowerCase();
+      if (!listKeys.has(key)) listKeys.set(key, listKeys.size + 1);
+      const n = listKeys.get(key)!;
+      if (!lists[n]) lists[n] = new Array(seasonLen).fill("");
+      lists[n][idx] = p.url;
+      labels[n] = { host: p.host, language: p.language };
+    }
+  }
+  // drop the placeholder empty list once real ones exist
+  for (const k of Object.keys(lists).map(Number)) {
+    if (k !== 1 || (lists[1] || []).some(Boolean)) continue;
+    if (listKeys.size > 0) delete lists[1];
+  }
+  session.episodes = lists;
+  session.episodeListLabels = labels;
+}
+
 async function executeQuickDownloadPipeline(
   sock: any,
   msg: any,
@@ -400,11 +451,49 @@ async function executeQuickDownloadPipeline(
 
     session.selectedSeason = targetSeason;
 
+    // 3b. FRANIME VF PATH (explicit `.a ... vf`): franime.fr carries a real
+    // French dub catalog (per-episode VF lecteurs in its public catalog API).
+    // We translate the franime season into the same session shape and resolve
+    // player URLs LAZILY for the requested episodes only (audit 8.7). Any
+    // failure falls through to the regular nakanime path below.
+    if (quickParams.language === "VF") {
+      try {
+        const frResults = await franimeSearch(chosenAnime.title, 3);
+        const frAnime = frResults[0];
+        const frSeasons = frAnime ? await franimeSeasons(frAnime.id) : [];
+        const frSeason = resolveRequestedSeason(frSeasons, targetSeasonNum).season || frSeasons[0];
+        const frRef = frSeason ? parseFranimeSeasonRef(frSeason.url) : null;
+        const frInfo = frRef ? await franimeSeasonInfo(frRef.animeId, frRef.seasonIndex) : null;
+        const hasVf = !!frInfo && frInfo.episodes.some((e) => e.lecteursVf.length > 0);
+        if (frAnime && frRef && frInfo && hasVf && frInfo.episodes.length > 0) {
+          session.animeUrl = frAnime.url;
+          session.seasons = frSeasons;
+          session.selectedSeason = frSeason;
+          session.languages = ["VF"];
+          session.selectedLanguage = "VF";
+          session.franimeRef = frRef;
+          session.episodeListLabels = {};
+          session.episodes = { 1: new Array(frInfo.episodes.length).fill("") };
+          console.log(`[NOVABOX] franime VF path: "${frAnime.title}" ${frSeason.name} (${frInfo.episodes.length} eps)`);
+        } else {
+          console.log(`[NOVABOX] franime has no VF for this title/season — using nakanime`);
+        }
+      } catch (err: any) {
+        console.warn(`[NOVABOX] franime VF path unavailable: ${err?.message || err} — falling back to nakanime`);
+      }
+    }
+
     // 4. Fetch episodes for target season
     const tPlayers = Date.now();
+    session.pipelineStartedAt = session.pipelineStartedAt || tPlayers;
+    let totalEpisodes = 0;
+    if (session.franimeRef) {
+      const frInfo = await franimeSeasonInfo(session.franimeRef.animeId, session.franimeRef.seasonIndex);
+      totalEpisodes = frInfo?.episodes.length || 0;
+      console.log(`[NOVABOX] franime season: ${totalEpisodes} episode(s) from catalog (players resolved per request)`);
+    } else {
     const jsUrl = targetSeason.url + "episodes.js";
     const { lists: eps, labels: epLabels } = await parseEpisodesDetailed(jsUrl);
-    session.pipelineStartedAt = session.pipelineStartedAt || tPlayers;
     if (!eps || Object.keys(eps).length === 0) {
       clearUserSession(context.sender);
       return context.reply("❌ *Erreur:* Aucun épisode disponible pour cette saison.");
@@ -424,8 +513,9 @@ async function executeQuickDownloadPipeline(
       }
     }
 
-    const totalEpisodes = Math.max(...Object.values(eps).map(arr => arr.length));
+    totalEpisodes = Math.max(...Object.values(eps).map(arr => arr.length));
     console.log(`[NOVABOX] Players fetched: ${Object.keys(eps).length} list(s), ${totalEpisodes} eps in ${((Date.now() - tPlayers) / 1000).toFixed(1)}s`);
+    }
 
     if (totalEpisodes <= 0) {
       clearUserSession(context.sender);
@@ -449,6 +539,29 @@ async function executeQuickDownloadPipeline(
     const episodeSummary = isMulti
       ? `${resolvedIndices.length} épisodes (Ép ${resolvedIndices[0] + 1} à Ép ${resolvedIndices[resolvedIndices.length - 1] + 1})`
       : `Épisode ${resolvedIndices[0] + 1}`;
+
+    // 5b. franime: resolve player URLs LAZILY for the requested episodes only
+    // (each episode costs one API call per lecteur — bounded by MAX_BATCH_EPISODES).
+    if (session.franimeRef) {
+      const tFr = Date.now();
+      const idxs = resolvedIndices.slice(0, MAX_BATCH_EPISODES);
+      if (resolvedIndices.length > idxs.length) {
+        console.warn(`[NOVABOX] franime: capping player lookups to ${idxs.length}/${resolvedIndices.length} episodes`);
+      }
+      await fillFranimePlayers(session, idxs);
+      console.log(`[NOVABOX] franime players resolved for ${idxs.length} ep(s) in ${((Date.now() - tFr) / 1000).toFixed(1)}s`);
+      const anyMirror = Object.values(session.episodes || {}).some((arr) => arr.some(Boolean));
+      if (!anyMirror) {
+        clearUserSession(context.sender);
+        return context.reply(
+          `❌ *VF indisponible technique:* franime.fr bloque le serveur avec un challenge Cloudflare.\n\n` +
+            `*Solution:* active FlareSolverr sur le VPS puis relance:\n` +
+            "```\ndocker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest\n```\n" +
+            `puis ajoute \`FLARESOLVERR_URL=http://localhost:8191/v1\` dans \`.env\` et redémarre.\n\n` +
+            `_(Sinon, la VOSTFR marche: \`.a <anime> s${targetSeasonNum} ep${resolvedIndices[0] + 1} r2\`)_`
+        );
+      }
+    }
 
     // 6. Resolution choice provided -> canonical quality + vidmoly-first
     // early-exit resolution (the FIRST mirror with usable tracks decides:

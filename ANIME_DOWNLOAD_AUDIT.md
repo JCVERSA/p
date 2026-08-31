@@ -516,3 +516,38 @@ per-host label trust (e.g. trust sibnet VF, ignore vidmoly VF) can safely
 restore a VF-by-default on nakanime.
 
 Suite: 201/201 (19 files).
+
+### 8.7 franime.fr — dedicated VF source with optional FlareSolverr (2026-08-31, tenth push)
+
+**Context:** nakanime's language labels proved unreliable (§8.6), so true VF
+needs a VF-first source. User suggested franime.fr; verified live from the
+production VPS:
+
+- `GET https://api.franime.fr/api/animes/` → **200, ~10.8 MB** JSON catalog,
+  no challenge. Per anime: seasons → episodes → `lang.vf.lecteurs[]` /
+  `lang.vo.lecteurs[]` (player names per language). Reliable VF ground truth.
+- `GET /api/anime/{id}/{s0}/{e0}/{vf|vo}/{lecteurIdx}` → player URL as text,
+  but fronted by a **Cloudflare managed challenge** on datacenter IPs
+  (verified: both probes returned "Just a moment..."). Referer + browser UA do
+  not bypass it.
+
+**Implementation**:
+- `src/bot/services/franimeClient.ts`: catalog fetch with 6 h disk cache
+  (`/tmp/franime-catalog.json`), local fuzzy title search (accent/punct
+  insensitive), seasons/season-info from the catalog, per-episode player URLs
+  (one call per lecteur, concurrency 4, ≤10 lecteurs), CF-challenge detection
+  (`isCloudflareChallenge`), and optional one-time challenge solving via
+  **FlareSolverr** (`FLARESOLVERR_URL`) caching `cf_clearance` + matching UA
+  for 30 min.
+- Quick flow (`.a <q> sN epN vf rN`): franime is tried FIRST for VF — the
+  season is translated into the standard session shape and player URLs are
+  resolved LAZILY for the requested episodes only (`fillFranimePlayers`,
+  capped at MAX_BATCH_EPISODES). Any failure (no VF, CF, network) falls back
+  to the nakanime path. If franime is CF-blocked with no solver, the user gets
+  an actionable message (docker one-liner + env) instead of a dead card.
+- `scripts/franime-probe.ts "<q>" [s] [ep] [--dl]`: one-shot VF-path diagnostic
+  (catalog, search, lecteurs, VF coverage, player URLs, extraction, download).
+- Doctor stage 1 now probes the franime catalog (PASS/WARN + solver hint).
+- `.env.example`: documented `FLARESOLVERR_URL`.
+
+Suite: 208/208 (20 files, +7 franime tests).
