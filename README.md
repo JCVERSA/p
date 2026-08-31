@@ -20,7 +20,18 @@ npm install
 npm run dev        # controller panel at http://localhost:3000
 ```
 
-Requirements: **Node.js 18+** (npm is the canonical package manager).
+Requirements: **Node.js 22+** (npm is the canonical package manager).
+
+## 🛰️ Deploying on a VPS / container
+
+Full step-by-step (French): **[docs/GUIDE_DEPLOIEMENT_VPS.md](docs/GUIDE_DEPLOIEMENT_VPS.md)** —
+zero-to-production install, Cloudflare Tunnel **with or without your own domain**,
+startup scripts + auto-start, WhatsApp pairing, anime-system doctor
+(`npm run anime:doctor`), daily operations and a troubleshooting table.
+Anime source notes: when anime-sama is unreachable from the host (Cloudflare 403),
+the bot falls back to the nakanime.tv mirror automatically; an egress proxy can be
+set with `NEBULA_ANIME_PROXY` (http/socks5). Details in
+[ANIME_DOWNLOAD_AUDIT.md](ANIME_DOWNLOAD_AUDIT.md).
 
 ## 🔑 Environment Variables
 
