@@ -47,9 +47,23 @@ export function parseProxyUrl(raw: string | undefined | null): AxiosProxyConfig 
   return cfg;
 }
 
+let warnedInvalidProxy = false;
+
 /** Axios `proxy` config for the anime pipeline (undefined = default egress). */
 export function getAnimeProxyConfig(): AxiosProxyConfig | undefined {
-  return parseProxyUrl(process.env[ANIME_PROXY_ENV]);
+  const raw = process.env[ANIME_PROXY_ENV];
+  if (raw && raw.trim() && !warnedInvalidProxy) {
+    const cfg = parseProxyUrl(raw);
+    if (!cfg) {
+      warnedInvalidProxy = true;
+      console.warn(
+        `[AnimeProxy] WARNING: ${ANIME_PROXY_ENV} is set but could not be parsed (${raw}). ` +
+          `It is being IGNORED — requests go out directly. 'http://user:pass@host:port' is a ` +
+          `TEMPLATE: replace user/pass/host/port with a REAL working proxy, or remove the variable.`
+      );
+    }
+  }
+  return parseProxyUrl(raw);
 }
 
 /** Human-readable description for logs / diagnostics. */
