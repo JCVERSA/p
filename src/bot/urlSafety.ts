@@ -87,6 +87,18 @@ export function isPrivateIpAddress(ip: string): boolean {
 }
 
 /**
+ * Positive/negative result cache for hostname validation.
+ *
+ * The HLS segment downloader calls isSafeDownloadUrl for EVERY segment
+ * (hundreds per episode, 6-8 concurrent). Without a cache each call performs
+ * a DNS lookup, and a single transient resolver hiccup would fail a segment
+ * — and with it the whole episode download. Validated hosts are re-checked
+ * at most every 5 minutes (also caps the cost of DNS-rebinding windows).
+ */
+const SAFE_HOST_CACHE_TTL_MS = 5 * 60 * 1000;
+const safeHostCache = new Map<string, { ok: boolean; at: number }>();
+
+/**
  * Returns true when the URL is safe for the server to fetch:
  * http/https scheme and a host that resolves to no private addresses.
  */
@@ -101,6 +113,15 @@ export async function isSafeDownloadUrl(rawUrl: string): Promise<boolean> {
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
 
   const hostname = url.hostname.toLowerCase();
+
+  const cached = safeHostCache.get(hostname);
+  if (cached && Date.now() - cached.at < SAFE_HOST_CACHE_TTL_MS) {
+    return cached.ok;
+  }
+  const remember = (ok: boolean) => {
+    safeHostCache.set(hostname, { ok, at: Date.now() });
+    return ok;
+  };
   
   // Whitelist known safe video streaming and hosting domains to prevent false-positive DNS/IP blocks.
   const trustedHosts = [
@@ -121,25 +142,25 @@ export async function isSafeDownloadUrl(rawUrl: string): Promise<boolean> {
     "minochinos.com"
   ];
   if (trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h))) {
-    return true;
+    return remember(true);
   }
 
   if (hostname === "localhost" || hostname.endsWith(".local") || hostname.endsWith(".internal")) {
-    return false;
+    return remember(false);
   }
 
   // Literal IP hosts can be checked without DNS.
   const isLiteralIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) || hostname.includes(":");
   if (isLiteralIp) {
-    return !isPrivateIpAddress(hostname);
+    return remember(!isPrivateIpAddress(hostname));
   }
 
   try {
     const addresses = await dns.lookup(hostname, { all: true });
-    if (addresses.length === 0) return false;
-    return addresses.every((addr) => !isPrivateIpAddress(addr.address));
+    if (addresses.length === 0) return remember(false);
+    return remember(addresses.every((addr) => !isPrivateIpAddress(addr.address)));
   } catch {
-    return false;
+    return remember(false);
   }
 }
 
