@@ -286,39 +286,39 @@ try {
   );
 }
 
-// franime.fr — VF-only source (explicit `.a ... vf`). The CATALOG is public
-// (200, ~11 MB); the episode-player endpoint sits behind a Cloudflare managed
-// challenge on datacenter IPs and needs FLARESOLVERR_URL to pass.
-try {
-  const res = await withTimeout(
-    axios.get("https://api.franime.fr/api/animes/", {
-      headers: { "User-Agent": UA, Referer: "https://franime.fr/" },
-      timeout: 12000,
-      validateStatus: () => true,
-      ...PROXY_OPTS,
-    }),
-    16000,
-    "franime",
-  );
-  const bytes = Number(res.headers?.["content-length"] || 0);
-  row(
-    "1",
-    "franime.fr catalog (VF source)",
-    res.status === 200 ? "PASS" : "WARN",
-    `HTTP ${res.status}${bytes ? ` (${(bytes / 1048576).toFixed(1)} MB)` : ""}`,
-    res.status === 200
-      ? "VF path available (`.a <q> vf ...`). Player URLs need FLARESOLVERR_URL (docker run -d -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest)."
-      : "VF source unreachable from this host — `.a vf` will fall back to nakanime.",
-  );
-} catch (e: any) {
-  row(
-    "1",
-    "franime.fr catalog (VF source)",
-    "WARN",
-    e.message,
-    "VF source unreachable — `.a vf` falls back to nakanime.",
-  );
-}
+// franime.fr — VF-only source (explicit `.a ... vf`). PARKED behind
+// NEBULA_FRANIME_ENABLED=1; only probed when explicitly enabled.
+if (process.env.NEBULA_FRANIME_ENABLED === "1")
+  try {
+    const res = await withTimeout(
+      axios.get("https://api.franime.fr/api/animes/", {
+        headers: { "User-Agent": UA, Referer: "https://franime.fr/" },
+        timeout: 12000,
+        validateStatus: () => true,
+        ...PROXY_OPTS,
+      }),
+      16000,
+      "franime",
+    );
+    const bytes = Number(res.headers?.["content-length"] || 0);
+    row(
+      "1",
+      "franime.fr catalog (VF source)",
+      res.status === 200 ? "PASS" : "WARN",
+      `HTTP ${res.status}${bytes ? ` (${(bytes / 1048576).toFixed(1)} MB)` : ""}`,
+      res.status === 200
+        ? "VF path available (`.a <q> vf ...`). Player URLs need FLARESOLVERR_URL (docker run -d -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest)."
+        : "VF source unreachable from this host — `.a vf` will fall back to nakanime.",
+    );
+  } catch (e: any) {
+    row(
+      "1",
+      "franime.fr catalog (VF source)",
+      "WARN",
+      e.message,
+      "VF source unreachable — `.a vf` falls back to nakanime.",
+    );
+  }
 
 // ---------------------------- Stage 2: search endpoint (P0) ----------------------------
 hr();

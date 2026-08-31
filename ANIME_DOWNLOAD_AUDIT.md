@@ -551,3 +551,12 @@ production VPS:
 - `.env.example`: documented `FLARESOLVERR_URL`.
 
 Suite: 208/208 (20 files, +7 franime tests).
+
+### 8.8 franime parked behind NEBULA_FRANIME_ENABLED (2026-08-31)
+
+User decision: drop the franime VF path for now (solver friction vs. value).
+The §8.7 implementation stays in the tree but is fully inert by default — the
+quick-flow branch and the doctor probe are gated behind `NEBULA_FRANIME_ENABLED=1`,
+so `.a ... vf` behaves exactly as in §8.6 (nakanime VF-labelled lists, honest
+VOSTFR default) with zero franime network calls. Re-enable any time by setting
+the flag (+ `FLARESOLVERR_URL` for player URLs).

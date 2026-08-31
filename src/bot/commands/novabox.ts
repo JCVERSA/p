@@ -451,12 +451,12 @@ async function executeQuickDownloadPipeline(
 
     session.selectedSeason = targetSeason;
 
-    // 3b. FRANIME VF PATH (explicit `.a ... vf`): franime.fr carries a real
-    // French dub catalog (per-episode VF lecteurs in its public catalog API).
-    // We translate the franime season into the same session shape and resolve
-    // player URLs LAZILY for the requested episodes only (audit 8.7). Any
-    // failure falls through to the regular nakanime path below.
-    if (quickParams.language === "VF") {
+    // 3b. FRANIME VF PATH (explicit `.a ... vf`) — PARKED behind
+    // NEBULA_FRANIME_ENABLED=1 (user decision 2026-08-31: dropped until a
+    // reliable way past the CF challenge exists). franime.fr carries a real
+    // French dub catalog; player URLs need FlareSolverr. Disabled by default:
+    // zero franime network calls, `.a vf` uses the nakanime VF lists as before.
+    if (quickParams.language === "VF" && process.env.NEBULA_FRANIME_ENABLED === "1") {
       try {
         const frResults = await franimeSearch(chosenAnime.title, 3);
         const frAnime = frResults[0];
