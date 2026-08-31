@@ -253,6 +253,39 @@ if (!domain) {
   console.log(`-> using https://${domain} for the following stages`);
 }
 
+// nakanime.tv mirror — the bot's AUTOMATIC fallback source when anime-sama is
+// blocked. If this answers 200, the anime command works end-to-end even with
+// every anime-sama domain 403 above.
+try {
+  const res = await withTimeout(
+    axios.get("https://nakanime.tv/", {
+      headers: { "User-Agent": UA },
+      timeout: 8000,
+      validateStatus: () => true,
+      ...PROXY_OPTS,
+    }),
+    12000,
+    "nakanime",
+  );
+  row(
+    "1",
+    "nakanime.tv (auto-fallback source)",
+    res.status === 200 ? "PASS" : "WARN",
+    `HTTP ${res.status}`,
+    res.status === 200
+      ? "Mirror reachable — the bot falls back to it AUTOMATICALLY when anime-sama is blocked, so the anime command works from this host."
+      : "Mirror not fully reachable — the anime command depends on the anime-sama domains above.",
+  );
+} catch (e: any) {
+  row(
+    "1",
+    "nakanime.tv (auto-fallback source)",
+    "FAIL",
+    e.message,
+    "Fallback mirror unreachable too — the anime command cannot fetch catalog data from this host.",
+  );
+}
+
 // ---------------------------- Stage 2: search endpoint (P0) ----------------------------
 hr();
 console.log("STAGE 2 - search endpoint (what `.a <name>` uses first)");
