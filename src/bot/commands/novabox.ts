@@ -538,6 +538,32 @@ async function executeQuickDownloadPipeline(
   }
 }
 
+/**
+ * Human-readable cause for a failed anime search. A bare "retry" message
+ * hides the two real failures we actually see in production: the host's IP
+ * being Cloudflare-blocked (403/503) and network egress issues.
+ */
+function searchFailureMessage(err: any): string {
+  const status = err?.response?.status;
+  if (status === 403 || status === 503) {
+    return (
+      `❌ *Site inaccessible depuis le serveur (HTTP ${status} — Cloudflare).*\n` +
+      `L'adresse IP de cet hébergeur est bloquée par anime-sama : aucune recherche ne peut aboutir, peu importe le code du bot.\n\n` +
+      `🔑 *Solutions :*\n` +
+      `• Configurer un proxy de sortie : \`NEBULA_ANIME_PROXY=http://host:port\` dans \`.env\` (puis relancer)\n` +
+      `• Ou héberger le bot sur un réseau non bloqué\n\n` +
+      `_Vérification sur le serveur : \`curl -sI -A "Mozilla/5.0" https://anime-sama.to | head -3\` → 403 = blocage confirmé._`
+    );
+  }
+  if (err?.code === "ECONNABORTED" || /timeout/i.test(err?.message || "")) {
+    return "❌ *Le serveur n'arrive pas à joindre anime-sama (délai dépassé).*\nVérifiez la connexion réseau / le pare-feu du serveur.";
+  }
+  if (err?.code === "ENOTFOUND" || err?.code === "EAI_AGAIN") {
+    return "❌ *Résolution DNS échouée pour anime-sama.*\nVérifiez le DNS du serveur (/etc/resolv.conf) ou le domaine a encore changé — relancez le doctor.";
+  }
+  return "❌ *Erreur:* Échec de la recherche anime. Veuillez réessayer.";
+}
+
 const animeCommand: BotCommand = {
   name: "anime",
   category: "Novabox",
@@ -1197,9 +1223,9 @@ const animeCommand: BotCommand = {
           );
         }
       } catch (err: any) {
-        console.error("[NOVABOX] Quick Search Error:", err);
+        console.error("[NOVABOX] Quick Search Error:", err?.response?.status || err?.code || err?.message);
         await context.react("❌");
-        return context.reply("❌ *Erreur:* Échec de la recherche anime. Veuillez réessayer.");
+        return context.reply(searchFailureMessage(err));
       }
     }
 
@@ -1316,9 +1342,9 @@ const animeCommand: BotCommand = {
       );
 
     } catch (err: any) {
-      console.error("[NOVABOX] Search Error:", err);
+      console.error("[NOVABOX] Search Error:", err?.response?.status || err?.code || err?.message);
       await context.react("❌");
-      return context.reply("❌ *Erreur:* Échec de la recherche.");
+      return context.reply(searchFailureMessage(err));
     }
   }
 };
