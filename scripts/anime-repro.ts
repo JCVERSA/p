@@ -83,7 +83,8 @@ async function main(): Promise<void> {
   // Imports are dynamic so --proxy/.env are applied before modules read env.
   const { searchAnime, parseSeasons, parseEpisodes } =
     await import("../src/bot/commands/novabox.js");
-  const { isNakanimeUrl } = await import("../src/bot/services/nakanimeClient.js");
+  const { isNakanimeUrl, nakanimeSeasonRefNumbers } =
+    await import("../src/bot/services/nakanimeClient.js");
   const { extractMultiHostStream, downloadWithAllMirrorsFallback, hostPriority } =
     await import("../src/bot/services/animeStreamExtractor.js");
   const { resolveRequestedSeason } = await import("../src/bot/utils/quickAnimeParser.js");
@@ -144,6 +145,14 @@ async function main(): Promise<void> {
   const jsUrl = season.url + "episodes.js";
   console.log(`episodes source: ${trunc(jsUrl, 120)}`);
   const eps = await parseEpisodes(jsUrl);
+  if (isNakanimeUrl(season.url)) {
+    try {
+      const nums = await nakanimeSeasonRefNumbers(season.url, seasonNum);
+      console.log(
+        `season episode refs: n=${nums.length}  first=[${nums.slice(0, 10).join(",")}]  last=[${nums.slice(-5).join(",")}]`,
+      );
+    } catch {}
+  }
   const listIds = Object.keys(eps || {})
     .map(Number)
     .sort((a, b) => a - b);

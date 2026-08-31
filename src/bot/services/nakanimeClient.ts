@@ -24,7 +24,9 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 /** Upper bound on per-season episode source lookups (guards "all" downloads). */
-const MAX_EPISODE_LOOKUPS = 40;
+// Covers full modern seasons (Re:ZERO s5 lists 80 episodes; 100+ exist as
+// cour bundles). Lookup cost stays bounded by LOOKUP_CONCURRENCY below.
+const MAX_EPISODE_LOOKUPS = 120;
 const LOOKUP_CONCURRENCY = 4;
 
 /** Derives the 32-byte XOR key for a given request path (incl. query string). */
@@ -223,8 +225,39 @@ export async function nakanimeSeasons(animeUrl: string): Promise<Array<{ name: s
   return index.numbers.map((n) => ({
     name: `Saison ${n}`,
     subPath: `season/${n}`,
-    url: `${NAKANIME_ORIGIN}/anime/${animeId}/season/${n}`
+    // Trailing slash so `season.url + "episodes.js"` builds a clean URL
+    // (novabox concatenates directly; anime-sama season URLs end with "/").
+    url: `${NAKANIME_ORIGIN}/anime/${animeId}/season/${n}/`
   }));
+}
+
+/**
+ * Normalizes raw episode refs for stable POSITIONAL indexing: valid numbers
+ * only, sorted ascending, deduplicated. anime-sama's epsN arrays are
+ * positional, so the bot's episode index must depend neither on the DOM
+ * order of nakanime's season script (newest-first listings produced empty
+ * low-number slots — audit §8.2) nor on number contiguity.
+ */
+export function normalizeNakanimeEpisodeRefs(refs: NakanimeEpisodeRef[]): NakanimeEpisodeRef[] {
+  const seen = new Set<number>();
+  const out: NakanimeEpisodeRef[] = [];
+  const sorted = (refs || []).slice().sort((a, b) => a.number - b.number);
+  for (const r of sorted) {
+    if (!Number.isFinite(r.number) || r.number <= 0) continue;
+    if (seen.has(r.number)) continue;
+    seen.add(r.number);
+    out.push(r);
+  }
+  return out;
+}
+
+/** Diagnostic helper (scripts/anime-repro.ts): sorted episode numbers of a season. */
+export async function nakanimeSeasonRefNumbers(animeUrl: string, season: number): Promise<number[]> {
+  const m = animeUrl.match(/\/anime\/(\d+)/);
+  if (!m) return [];
+  const index = await loadSeasonIndex(Number(m[1]));
+  if (!index) return [];
+  return normalizeNakanimeEpisodeRefs(index.episodesBySeason.get(season) || []).map((r) => r.number);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +327,10 @@ export async function nakanimeEpisodePlayers(seasonUrl: string): Promise<Record<
 
   const index = await loadSeasonIndex(animeId);
   if (!index) return {};
-  const eps = (index.episodesBySeason.get(season) || []).slice(0, MAX_EPISODE_LOOKUPS);
+  // Positional semantics (anime-sama parity): list slot i holds the player of
+  // the i-th episode of the season listing, NOT episode-number-1 — nakanime's
+  // script order is not guaranteed ascending (see normalizeNakanimeEpisodeRefs).
+  const eps = normalizeNakanimeEpisodeRefs(index.episodesBySeason.get(season) || []).slice(0, MAX_EPISODE_LOOKUPS);
   if (eps.length === 0) return {};
 
   const listKeys = new Map<string, number>(); // "host (lang)" -> list number
@@ -303,9 +339,9 @@ export async function nakanimeEpisodePlayers(seasonUrl: string): Promise<Record<
   let cursor = 0;
   const worker = async () => {
     while (cursor < eps.length) {
-      const ep = eps[cursor++];
+      const epIndex = cursor++;
+      const ep = eps[epIndex];
       const sources = await fetchEpisodePlayerUrls(animeId, season, ep);
-      const epIndex = ep.number - 1;
       for (const src of sources) {
         const key = `${src.host} (${src.language})`.toLowerCase();
         if (!listKeys.has(key)) listKeys.set(key, listKeys.size + 1);

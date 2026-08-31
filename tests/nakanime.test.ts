@@ -3,7 +3,8 @@ import {
   decodeNakanimeResponse,
   deriveNakanimeKey,
   parseNakanimeSeasonsScript,
-  isNakanimeUrl
+  isNakanimeUrl,
+  normalizeNakanimeEpisodeRefs
 } from "../src/bot/services/nakanimeClient.js";
 
 /**
@@ -78,5 +79,49 @@ describe("isNakanimeUrl", () => {
     expect(isNakanimeUrl("https://nakanime.tv/anime/5/code-geass")).toBe(true);
     expect(isNakanimeUrl("https://anime-sama.to/catalogue/x/")).toBe(false);
     expect(isNakanimeUrl("")).toBe(false);
+  });
+});
+
+describe("normalizeNakanimeEpisodeRefs (positional indexing fix, audit 8.2)", () => {
+  it("sorts newest-first listings ascending — the rezero s5 empty-slot bug", () => {
+    // nakanime listed season 5 episodes 80..1; with number-1 indexing the
+    // first 40 lookups filled slots 40..79 and episode 2 stayed empty.
+    const refs = Array.from({ length: 80 }, (_, i) => ({ number: 80 - i, id: 1000 + i }));
+    const out = normalizeNakanimeEpisodeRefs(refs);
+    expect(out.length).toBe(80);
+    expect(out[0].number).toBe(1);
+    expect(out[1].number).toBe(2); // the slot that was empty before the fix
+    expect(out[79].number).toBe(80);
+  });
+
+  it("deduplicates by number, keeping the first ref (id preferentially)", () => {
+    const out = normalizeNakanimeEpisodeRefs([
+      { number: 3, id: 33 },
+      { number: 1 },
+      { number: 3, id: 34 },
+      { number: 2, id: 22 }
+    ]);
+    expect(out.map((r) => r.number)).toEqual([1, 2, 3]);
+    expect(out[2].id).toBe(33);
+  });
+
+  it("drops invalid and non-positive numbers", () => {
+    const out = normalizeNakanimeEpisodeRefs([
+      { number: 0 },
+      { number: -2 },
+      { number: NaN },
+      { number: 5, id: 55 }
+    ] as any);
+    expect(out).toEqual([{ number: 5, id: 55 }]);
+  });
+
+  it("keeps non-contiguous numbering ordered (positional semantics)", () => {
+    const out = normalizeNakanimeEpisodeRefs([{ number: 26 }, { number: 31 }, { number: 27 }]);
+    expect(out.map((r) => r.number)).toEqual([26, 27, 31]);
+  });
+
+  it("handles empty input", () => {
+    expect(normalizeNakanimeEpisodeRefs([])).toEqual([]);
+    expect(normalizeNakanimeEpisodeRefs(undefined as any)).toEqual([]);
   });
 });

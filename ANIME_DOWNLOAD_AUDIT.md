@@ -354,3 +354,32 @@ registry) and the status after this push:
   per-mirror HTTP status + extraction result, optional `--dl` download) —
   `npx tsx scripts/anime-repro.ts rezero 5 2 --dl`. `searchAnime`,
   `parseSeasons`, `parseEpisodes` are now exported from novabox for it.
+
+### 8.2 Empty player slots — episode indexing vs DOM order (2026-08-31, fifth push)
+
+**Found by** `npx tsx scripts/anime-repro.ts rezero 5 2` on the live host:
+7 player lists of 75-80 entries each, but the entry for **ep2 was empty in
+every list** — hence "protected playlist" at the quality probe, `Player Source:
+Direct Stream`, no player link, and a failed download (empty mirror set).
+
+**Root cause** (two compounding defects in `nakanimeEpisodePlayers`):
+1. `lists[n][ep.number - 1] = url` indexed by EPISODE NUMBER while lookups ran
+   over the refs in DOM order. nakanime's season script lists episodes
+   newest-first (80..1), and the lookup cap kept only the first 40 refs — so
+   slots 40..79 got filled and slots 0..39 stayed empty (padded with "").
+2. `MAX_EPISODE_LOOKUPS = 40` silently truncated any season longer than 40
+   episodes (Re:ZERO s5 lists 80).
+
+**Fix** (`nakanimeClient.ts`):
+- `normalizeNakanimeEpisodeRefs()` (exported, unit-tested): valid numbers,
+  ascending sort, dedupe — DOM order and number contiguity no longer matter.
+- Player lists are now filled POSITIONALLY (slot i = i-th episode of the
+  listing), matching anime-sama's `epsN` array semantics the resolver expects.
+- `MAX_EPISODE_LOOKUPS` 40 → 120 (bounded by the existing concurrency of 4).
+- Season URLs now end with `/` so `season.url + "episodes.js"` no longer
+  produces `season/5episodes.js` (previously healed by accident inside
+  `parseEpisodes`).
+- `scripts/anime-repro.ts` prints the season's sorted episode ref numbers when
+  the source is nakanime; `nakanimeSeasonRefNumbers()` exported for it.
+
+Suite: 183/183 (18 files, +5 nakanime indexing tests).
