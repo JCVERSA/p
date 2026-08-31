@@ -174,10 +174,11 @@ export function hostPriority(url: string): number {
   // VidMoly first: stable two-quality HLS manifests (480P/1080P) with honest
   // sizes — the quality reference. Everything else is a fallback (audit 8.4).
   if (l.includes("vidmoly") || l.includes("vmpx") || l.includes("topembed")) return 1;
-  if (l.includes("ansembed")) return 2;
-  if (l.includes("embed4me") || l.includes("lpayer")) return 3;
-  if (l.includes("sibnet")) return 4;
-  if (l.includes("sendvid")) return 5;
+  if (l.includes("voembed")) return 2; // voiranime VF player host (audit 8.9)
+  if (l.includes("ansembed")) return 3;
+  if (l.includes("embed4me") || l.includes("lpayer")) return 4;
+  if (l.includes("sibnet")) return 5;
+  if (l.includes("sendvid")) return 6;
   if (l.includes("smoothpre") || l.includes("dramiyos") || l.includes("movearnpre") || l.includes("ovaltinecdn")) return 6;
   if (l.includes("uqload") || l.includes("vidzy") || l.includes("luluvdo") || l.includes("lulustream")) return 7;
   if (l.includes("oneupload") || l.includes("filemoon") || l.includes("bysesukior") || l.includes("mivalyo") || l.includes("dingtezuni")) return 8;

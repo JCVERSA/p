@@ -320,6 +320,39 @@ if (process.env.NEBULA_FRANIME_ENABLED === "1")
     );
   }
 
+// voir-anime.to — VF-by-structure source (explicit `.a ... vf`). HTML pages
+// verified reachable from datacenter IPs; VF entries carry the "-vf" slug
+// suffix. Players are hosted on voembed.net (generic packed-player probe).
+try {
+  const res = await withTimeout(
+    axios.get("https://voir-anime.to/", {
+      headers: { "User-Agent": UA, Referer: "https://voir-anime.to/" },
+      timeout: 8000,
+      validateStatus: () => true,
+      ...PROXY_OPTS,
+    }),
+    12000,
+    "voiranime",
+  );
+  row(
+    "1",
+    "voir-anime.to (VF source)",
+    res.status === 200 ? "PASS" : "WARN",
+    `HTTP ${res.status}`,
+    res.status === 200
+      ? "VF path available (`.a <q> ... vf ...`) — French dub guaranteed by the -vf entry structure."
+      : "VF source unreachable from this host — `.a vf` falls back to nakanime VF lists.",
+  );
+} catch (e: any) {
+  row(
+    "1",
+    "voir-anime.to (VF source)",
+    "WARN",
+    e.message,
+    "VF source unreachable — `.a vf` falls back to nakanime.",
+  );
+}
+
 // ---------------------------- Stage 2: search endpoint (P0) ----------------------------
 hr();
 console.log("STAGE 2 - search endpoint (what `.a <name>` uses first)");

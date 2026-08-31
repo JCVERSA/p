@@ -120,11 +120,13 @@ describe("hostPriority covers the nakanime player ecosystem", () => {
     expect(hostPriority("https://voe.sx/e/x")).toBeLessThan(hostPriority("https://totally-unknown.example/x"));
   });
 
-  it("puts VidMoly first (quality reference, audit 8.4)", () => {
+  it("puts VidMoly first, voembed second (quality references, audit 8.4/8.9)", () => {
     expect(hostPriority("https://vidmoly.org/embed-x.html")).toBe(1);
-    expect(hostPriority("https://ansembed.net/x")).toBe(2);
-    expect(hostPriority("https://video.sibnet.ru/x")).toBe(4);
+    expect(hostPriority("https://voembed.net/embed-x.html")).toBe(2);
+    expect(hostPriority("https://ansembed.net/x")).toBe(3);
+    expect(hostPriority("https://video.sibnet.ru/x")).toBe(5);
     expect(hostPriority("https://vidmoly.org/e/x")).toBeLessThan(hostPriority("https://ansembed.net/x"));
+    expect(hostPriority("https://voembed.net/e/x")).toBeLessThan(hostPriority("https://ansembed.net/x"));
   });
 });
 

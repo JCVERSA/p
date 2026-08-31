@@ -560,3 +560,34 @@ quick-flow branch and the doctor probe are gated behind `NEBULA_FRANIME_ENABLED=
 so `.a ... vf` behaves exactly as in §8.6 (nakanime VF-labelled lists, honest
 VOSTFR default) with zero franime network calls. Re-enable any time by setting
 the flag (+ `FLARESOLVERR_URL` for player URLs).
+
+### 8.9 voir-anime.to — VF-by-structure source, live from datacenter IPs (2026-08-31, eleventh push)
+
+**Selection:** franime parked (§8.8), Fluneo dropped (user). Candidates re-checked
+live; **VoirAnime (voir-anime.to)** won — verified from the production VPS:
+
+- HTML pages answer **200 from the datacenter IP** (only `/wp-json/` is CF-403,
+  unused). WordPress "Madara" theme, no challenge on content pages.
+- **VF is structural**: VF entries carry the `-vf` slug suffix (title " (VF)") —
+  the French dub is guaranteed by construction, unlike nakanime labels (§8.6).
+- Episodes: `/anime/<slug>/<ep-slug>-NN-vf/` links on the entry page (each
+  season is its own entry). Episode pages embed the player at
+  **voembed.net/embed-<code>.html** (real HLS qualities inside — the rendered
+  player shows Auto/1080p/480p).
+- animecat.net (Neko-Sama rebirth): dead from the VPS (000) — rejected.
+
+**Implementation:**
+- `src/bot/services/voiranimeClient.ts`: search (`/?s=` + Madara card parsing,
+  VF flagged by slug), episode list per entry (numbered `-NN-vf|vostfr/` +
+  film/OAV), episode-page player-iframe resolution, `resolveVoiranimeSeason()`
+  (season markers or trailing number in title/slug; s1 → first VF entry).
+- Quick flow: `.a <q> [sN] epN vf rN` tries voiranime FIRST (disable with
+  `NEBULA_VOIRANIME_DISABLED=1`); the VF entry's episodes become the session
+  list and the player embed is resolved LAZILY per requested episode
+  (`fillVoiranimePlayers`); any failure falls back to nakanime. voembed.net
+  added to urlSafety trusted lists and ranked priority 2 (after vidmoly) —
+  its `embed-<code>.html` shape is handled by the generic packed-player probe.
+- `scripts/voiranime-probe.ts "<q>" [s] [ep] [--dl]`: end-to-end VF diagnostic.
+- Doctor stage 1 probes voir-anime.to.
+
+Suite: 217/217 (21 files, +9 voiranime tests).

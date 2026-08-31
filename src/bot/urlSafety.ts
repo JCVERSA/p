@@ -152,7 +152,9 @@ export async function isSafeDownloadUrl(rawUrl: string): Promise<boolean> {
     "mivalyo.com",
     "dingtezuni.com",
     "filemoon.sx",
-    "bysesukior.com"
+    "bysesukior.com",
+    "voir-anime.to",
+    "voembed.net"
   ];
   if (trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h))) {
     return remember(true);
@@ -207,7 +209,9 @@ async function resolvePinnedAddresses(hostname: string): Promise<Array<{ address
     "mivalyo.com",
     "dingtezuni.com",
     "filemoon.sx",
-    "bysesukior.com"
+    "bysesukior.com",
+    "voir-anime.to",
+    "voembed.net"
   ];
   const isTrusted = trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h));
 

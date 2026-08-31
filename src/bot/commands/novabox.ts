@@ -25,6 +25,13 @@ import {
   franimeEpisodePlayers,
   parseFranimeSeasonRef
 } from "../services/franimeClient.js";
+import {
+  voiranimeSearch,
+  voiranimeEpisodes,
+  voiranimeEpisodePlayer,
+  resolveVoiranimeSeason,
+  type VoiranimeEpisode
+} from "../services/voiranimeClient.js";
 import { isSafeDownloadUrl } from "../urlSafety.js";
 import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batchDownloadManager.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
@@ -71,6 +78,8 @@ interface AnimeSession {
   episodes?: Record<number, string[]>;
   episodeListLabels?: Record<number, { host: string; language: string }>; // nakanime: host+lang per list
   franimeRef?: { animeId: number; seasonIndex: number }; // franime.fr VF path (audit 8.7)
+  voiranimeAnimeUrl?: string; // voir-anime.to VF path (audit 8.9)
+  voiranimeEpisodes?: VoiranimeEpisode[]; // positional episode list of the VF entry
   selectedEpisodeIndex?: number;
   selectedEpisodeIndices?: number[]; // Multi-episode batch support
   isSeasonZipDownload?: boolean; // Full season download mode
@@ -335,6 +344,36 @@ export function splitMirrorsByLanguage(
 }
 
 /**
+ * voiranime path: fetches each requested episode page and merges its player
+ * embed URL (voembed.net & friends) into session.episodes as list 1, labelled
+ * VF by construction (the entry slug ends with "-vf", audit 8.9).
+ */
+async function fillVoiranimePlayers(session: AnimeSession, indices: number[]): Promise<void> {
+  if (!session.voiranimeEpisodes || !session.voiranimeAnimeUrl) return;
+  const lists: Record<number, string[]> = session.episodes || { 1: new Array(session.voiranimeEpisodes.length).fill("") };
+  const labels = session.episodeListLabels || {};
+  let host = "voembed";
+  try {
+    for (const idx of indices) {
+      const ep = session.voiranimeEpisodes[idx];
+      if (!ep) continue;
+      const player = await voiranimeEpisodePlayer(ep.url);
+      if (player) {
+        lists[1][idx] = player;
+        try {
+          host = new URL(player).hostname;
+        } catch {}
+      }
+    }
+  } catch {}
+  if ((lists[1] || []).some(Boolean)) {
+    labels[1] = { host, language: "VF" };
+  }
+  session.episodes = lists;
+  session.episodeListLabels = labels;
+}
+
+/**
  * franime path: resolves player URLs for the given episode indices and merges
  * them into session.episodes/episodeListLabels (same shape as nakanime lists,
  * language VF by construction — franime's catalog is the source of truth).
@@ -451,6 +490,40 @@ async function executeQuickDownloadPipeline(
 
     session.selectedSeason = targetSeason;
 
+    // 3a. VOIRANIME VF PATH (explicit `.a ... vf`): voir-anime.to is reachable
+    // from datacenter IPs (HTML 200, verified) and its VF entries are
+    // STRUCTURAL (slug suffix "-vf"), so the French dub is guaranteed by
+    // construction — the honest VF-by-structure source nakanime cannot be
+    // (audit 8.6/8.9). Disable with NEBULA_VOIRANIME_DISABLED=1.
+    if (quickParams.language === "VF" && process.env.NEBULA_VOIRANIME_DISABLED !== "1") {
+      try {
+        const vaResults = await voiranimeSearch(chosenAnime.title);
+        const vfEntries = vaResults.filter((r) => r.isVf);
+        const vaSeason = resolveVoiranimeSeason(vfEntries, targetSeasonNum);
+        if (vaSeason) {
+          const vaEps = (await voiranimeEpisodes(vaSeason.url)).filter((e) => e.n > 0);
+          if (vaEps.length > 0) {
+            session.animeUrl = vaSeason.url;
+            session.seasons = vfEntries.map((e, i) => ({ name: e.title, subPath: `${i}`, url: e.url }));
+            session.selectedSeason = { name: vaSeason.title, subPath: "", url: vaSeason.url };
+            session.languages = ["VF"];
+            session.selectedLanguage = "VF";
+            session.voiranimeAnimeUrl = vaSeason.url;
+            session.voiranimeEpisodes = vaEps;
+            session.episodeListLabels = {};
+            session.episodes = { 1: new Array(vaEps.length).fill("") };
+            console.log(`[NOVABOX] voiranime VF path: "${vaSeason.title}" (${vaEps.length} eps)`);
+          } else {
+            console.log(`[NOVABOX] voiranime entry has no numbered episodes — using nakanime`);
+          }
+        } else {
+          console.log(`[NOVABOX] voiranime has no VF entry for s${targetSeasonNum} of this title — using nakanime`);
+        }
+      } catch (err: any) {
+        console.warn(`[NOVABOX] voiranime VF path unavailable: ${err?.message || err} — falling back`);
+      }
+    }
+
     // 3b. FRANIME VF PATH (explicit `.a ... vf`) — PARKED behind
     // NEBULA_FRANIME_ENABLED=1 (user decision 2026-08-31: dropped until a
     // reliable way past the CF challenge exists). franime.fr carries a real
@@ -487,7 +560,10 @@ async function executeQuickDownloadPipeline(
     const tPlayers = Date.now();
     session.pipelineStartedAt = session.pipelineStartedAt || tPlayers;
     let totalEpisodes = 0;
-    if (session.franimeRef) {
+    if (session.voiranimeAnimeUrl && session.voiranimeEpisodes) {
+      totalEpisodes = session.voiranimeEpisodes.length;
+      console.log(`[NOVABOX] voiranime season: ${totalEpisodes} episode(s) (players resolved per request)`);
+    } else if (session.franimeRef) {
       const frInfo = await franimeSeasonInfo(session.franimeRef.animeId, session.franimeRef.seasonIndex);
       totalEpisodes = frInfo?.episodes.length || 0;
       console.log(`[NOVABOX] franime season: ${totalEpisodes} episode(s) from catalog (players resolved per request)`);
@@ -539,6 +615,28 @@ async function executeQuickDownloadPipeline(
     const episodeSummary = isMulti
       ? `${resolvedIndices.length} épisodes (Ép ${resolvedIndices[0] + 1} à Ép ${resolvedIndices[resolvedIndices.length - 1] + 1})`
       : `Épisode ${resolvedIndices[0] + 1}`;
+
+    // 5a. voiranime: resolve the player embed (voembed.net) LAZILY for the
+    // requested episodes only (one episode-page fetch per episode).
+    if (session.voiranimeAnimeUrl && session.voiranimeEpisodes) {
+      const tVa = Date.now();
+      const idxs = resolvedIndices.slice(0, MAX_BATCH_EPISODES);
+      if (resolvedIndices.length > idxs.length) {
+        console.warn(`[NOVABOX] voiranime: capping player lookups to ${idxs.length}/${resolvedIndices.length} episodes`);
+      }
+      await fillVoiranimePlayers(session, idxs);
+      console.log(`[NOVABOX] voiranime players resolved for ${idxs.length} ep(s) in ${((Date.now() - tVa) / 1000).toFixed(1)}s`);
+      const anyMirror = Object.values(session.episodes || {}).some((arr) => arr.some(Boolean));
+      if (!anyMirror) {
+        clearUserSession(context.sender);
+        return context.reply(
+          `❌ *VF indisponible ici:* impossible de résoudre le lecteur sur voir-anime.to depuis le serveur.
+
+` +
+            `_(La VOSTFR marche: \`.a <anime> s${targetSeasonNum} ep${resolvedIndices[0] + 1} r2\`)_`
+        );
+      }
+    }
 
     // 5b. franime: resolve player URLs LAZILY for the requested episodes only
     // (each episode costs one API call per lecteur — bounded by MAX_BATCH_EPISODES).
