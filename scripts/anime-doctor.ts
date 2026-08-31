@@ -37,11 +37,16 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import dns from "dns/promises";
-import axios, { type AxiosProxyConfig } from "axios";
+import axios from "axios";
 import * as cheerio from "cheerio";
 import ffmpegStatic from "ffmpeg-static";
 import { isSafeDownloadUrl } from "../src/bot/urlSafety.js";
-import { parseProxyUrl, ANIME_PROXY_ENV } from "../src/bot/services/scrapingProxy.js";
+import {
+  parseProxyUrl,
+  animeProxyOptions,
+  describeAnimeProxy,
+  ANIME_PROXY_ENV,
+} from "../src/bot/services/scrapingProxy.js";
 import {
   extractMultiHostStream,
   fetchHlsTracksAndSizes,
@@ -54,11 +59,10 @@ const PROXY_ARG = (() => {
   return i !== -1 ? process.argv[i + 1] : undefined;
 })();
 // --proxy must also reach the repo's real code paths (stages 5-7), which read
-// the env var themselves via getAnimeProxyConfig().
+// the env var themselves via animeProxyOptions().
 if (PROXY_ARG) process.env[ANIME_PROXY_ENV] = PROXY_ARG;
-const PROXY: AxiosProxyConfig | undefined = parseProxyUrl(
-  PROXY_ARG ?? process.env[ANIME_PROXY_ENV],
-);
+const PROXY_PARSED = parseProxyUrl(PROXY_ARG ?? process.env[ANIME_PROXY_ENV]);
+const PROXY_OPTS = animeProxyOptions(PROXY_ARG ?? process.env[ANIME_PROXY_ENV]);
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -136,13 +140,9 @@ console.log("STAGE 0 - Runtime environment");
 hr();
 
 console.log(`node            : ${process.version}`);
-if (PROXY) {
-  console.log(
-    `proxy           : ${PROXY.protocol}://${PROXY.host}:${PROXY.port}${PROXY.auth ? " (with auth)" : ""}`,
-  );
-} else {
-  console.log(`proxy           : none (direct egress)`);
-}
+console.log(
+  `proxy           : ${PROXY_PARSED ? describeAnimeProxy(PROXY_ARG ?? process.env[ANIME_PROXY_ENV]) : "none (direct egress)"}`,
+);
 let ffmpegOk = false;
 let ffmpegDetail = "system `ffmpeg` on PATH";
 try {
@@ -202,7 +202,7 @@ for (const d of CANDIDATE_DOMAINS) {
         headers: { "User-Agent": UA },
         timeout: 10000,
         validateStatus: () => true,
-        proxy: PROXY,
+        ...PROXY_OPTS,
       }),
       15000,
       "http",
@@ -268,7 +268,7 @@ try {
       headers: { "User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded" },
       timeout: 10000,
       validateStatus: () => true,
-      proxy: PROXY,
+      ...PROXY_OPTS,
     }),
     15000,
     "search",
@@ -334,7 +334,7 @@ try {
       headers: { "User-Agent": UA },
       timeout: 10000,
       validateStatus: () => true,
-      proxy: PROXY,
+      ...PROXY_OPTS,
     }),
     15000,
     "catalog",
@@ -394,7 +394,7 @@ try {
       headers: { "User-Agent": UA },
       timeout: 10000,
       validateStatus: () => true,
-      proxy: PROXY,
+      ...PROXY_OPTS,
     }),
     15000,
     "episodes",

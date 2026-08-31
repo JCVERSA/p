@@ -16,7 +16,7 @@ try {
   resolvedFfmpegPath = ffmpegPath || "ffmpeg";
 }
 import { registerTempDownload } from "../tempDownloadManager.js";
-import { getAnimeProxyConfig } from "../services/scrapingProxy.js";
+import { animeProxyOptions } from "../services/scrapingProxy.js";
 import { isSafeDownloadUrl } from "../urlSafety.js";
 import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batchDownloadManager.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
@@ -141,7 +141,7 @@ async function searchAnime(query: string) {
       "Content-Type": "application/x-www-form-urlencoded"
     },
     timeout: 8000,
-    proxy: getAnimeProxyConfig()
+    ...animeProxyOptions()
   });
 
   const $ = cheerio.load(res.data);
@@ -167,7 +167,7 @@ async function parseSeasons(animeUrl: string) {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
     timeout: 8000,
-    proxy: getAnimeProxyConfig()
+    ...animeProxyOptions()
   });
 
   const html = res.data;
@@ -199,7 +199,7 @@ async function checkVfExists(url: string): Promise<boolean> {
     const res = await axios.head(url, {
       headers: { "User-Agent": "Mozilla/5.0" },
       timeout: 2000,
-      proxy: getAnimeProxyConfig()
+      ...animeProxyOptions()
     });
     return res.status === 200;
   } catch {
@@ -215,7 +215,7 @@ async function parseEpisodes(jsUrl: string) {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
     timeout: 8000,
-    proxy: getAnimeProxyConfig()
+    ...animeProxyOptions()
   });
 
   const jsContent = res.data;
@@ -1582,7 +1582,7 @@ export async function probeMediaHeaders(targetUrl: string, refererUrl: string, o
       timeout: 5000,
       maxRedirects: 5,
       validateStatus: () => true,
-      proxy: getAnimeProxyConfig()
+      ...animeProxyOptions()
     });
 
     const rawContentLength = res.headers["content-length"];

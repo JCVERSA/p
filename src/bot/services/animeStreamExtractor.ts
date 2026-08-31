@@ -7,7 +7,7 @@ import crypto from "crypto";
 import ffmpegPath from "ffmpeg-static";
 import { execSync } from "child_process";
 import { downloadHlsAppLevel, robustFetchText, robustFetchBuffer, resolveAbsoluteUrl, resolveMediaPlaylistUrl } from "./hlsDownloader.js";
-import { getAnimeProxyConfig } from "./scrapingProxy.js";
+import { animeProxyOptions } from "./scrapingProxy.js";
 
 let resolvedFfmpegPath = "ffmpeg";
 try {
@@ -203,7 +203,7 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
             headers: { "User-Agent": DEFAULT_USER_AGENT, Referer: `${origin}/` },
             timeout: 8000,
             validateStatus: () => true,
-            proxy: getAnimeProxyConfig()
+            ...animeProxyOptions()
           });
           if (resp.status === 200 && typeof resp.data === "string") {
             const rawSource = decryptEmbed4MeResponse(resp.data);
@@ -236,7 +236,7 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
           },
           timeout: 7000,
           validateStatus: () => true,
-    proxy: getAnimeProxyConfig()
+    ...animeProxyOptions()
         });
 
         if (resp.status === 200) {
@@ -285,7 +285,7 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
           },
           timeout: 6000,
           validateStatus: () => true,
-    proxy: getAnimeProxyConfig()
+    ...animeProxyOptions()
         });
         if (resp.status === 200) {
           const html = typeof resp.data === "string" ? resp.data : "";
@@ -339,7 +339,7 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
           },
           timeout: 6000,
           validateStatus: () => true,
-    proxy: getAnimeProxyConfig()
+    ...animeProxyOptions()
         });
         if (resp.status === 200) {
           const html = typeof resp.data === "string" ? resp.data : "";
@@ -388,7 +388,7 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
           },
           timeout: 6000,
           validateStatus: () => true,
-    proxy: getAnimeProxyConfig()
+    ...animeProxyOptions()
         });
         if (resp.status === 200) {
           const html = typeof resp.data === "string" ? resp.data : "";
@@ -453,7 +453,7 @@ async function resolvePlaylistDurationSeconds(
       headers,
       timeout: 6000,
       validateStatus: (st) => st === 200,
-      proxy: getAnimeProxyConfig()
+      ...animeProxyOptions()
     });
     const body = typeof resp.data === "string" ? resp.data : "";
     if (!body.includes("#EXTINF")) return null;
@@ -488,7 +488,7 @@ export async function fetchHlsTracksAndSizes(
     const resp = await axios.get(masterUrl, {
       headers: reqHeaders,
       timeout: 8000,
-      proxy: getAnimeProxyConfig()
+      ...animeProxyOptions()
     });
     const manifest = typeof resp.data === "string" ? resp.data : "";
     const lines = manifest.split("\n");
@@ -759,7 +759,7 @@ export async function executeDirectOrFfmpegDownload(
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         },
         timeout: timeoutMs,
-        proxy: getAnimeProxyConfig()
+        ...animeProxyOptions()
       });
 
       response.data.pipe(writer);
