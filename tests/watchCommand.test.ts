@@ -147,3 +147,42 @@ describe(".w — dedicated watch command", () => {
     expect(listSubscriptions(CHAT)).toHaveLength(0);
   });
 });
+
+describe(".w — pending pick hygiene (audit 8.32)", () => {
+  it("expires a pending pick after the 10-min TTL", async () => {
+    vi.useFakeTimers();
+    try {
+      (voiranimeSearch as any).mockResolvedValue([
+        { title: "A", url: "https://voir-anime.to/anime/a-vf/", slug: "a-vf", isVf: true },
+        { title: "B", url: "https://voir-anime.to/anime/b-vf/", slug: "b-vf", isVf: true }
+      ]);
+      await watchCommand.execute({} as any, msg(), ctx(["x"]).c);
+      vi.setSystemTime(Date.now() + 11 * 60 * 1000);
+      const { c, replies } = ctx(["1"]);
+      await watchCommand.execute({} as any, msg(), c);
+      expect(replies[0]).toContain("sélection en attente");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps the pending-pick map (oldest chat evicted beyond the cap)", async () => {
+    (voiranimeSearch as any).mockResolvedValue([
+      { title: "A", url: "https://voir-anime.to/anime/a-vf/", slug: "a-vf", isVf: true },
+      { title: "B", url: "https://voir-anime.to/anime/b-vf/", slug: "b-vf", isVf: true }
+    ]);
+    const firstChat = "1000@g.us";
+    await watchCommand.execute({} as any, msg(firstChat), ctx(["x"]).c);
+    for (let i = 1; i <= 210; i++) {
+      await watchCommand.execute({} as any, msg(i + "@g.us"), ctx(["x"]).c);
+    }
+    const { c, replies } = ctx(["1"]);
+    await watchCommand.execute({} as any, msg(firstChat), c); // oldest -> evicted
+    expect(replies[0]).toContain("sélection en attente");
+    // newest chat still has its pending list (subscribes entry 1)
+    (voiranimeEpisodes as any).mockResolvedValue([]);
+    const { c: c2, replies: r2 } = ctx(["1"]);
+    await watchCommand.execute({} as any, msg("210@g.us"), c2);
+    expect(r2[0]).toContain("Veille activée");
+  });
+});

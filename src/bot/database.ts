@@ -205,7 +205,9 @@ export const database = {
   /** Backup/restore support: replace all warnings (bounded). */
   replaceAllWarnings(entries: Record<string, UserWarning>): number {
     warningsCache.clear();
-    for (const [key, val] of Object.entries(entries || {})) {
+    // Defense in depth (audit 8.32): bound internally even if a caller forgets
+    // the route-level guard — mirrors the WARNINGS_CACHE_MAX used by addWarning.
+    for (const [key, val] of Object.entries(entries || {}).slice(0, WARNINGS_CACHE_MAX)) {
       warningsCache.set(key, {
         count: Math.min(Math.max(0, Number(val?.count) || 0), 10_000),
         reasons: Array.isArray(val?.reasons) ? val.reasons.map(String).slice(-WARNING_REASONS_MAX) : [],

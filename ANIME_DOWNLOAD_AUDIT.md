@@ -1236,3 +1236,48 @@ Suite: 307/307 (33 files, +8 tests: empty list, numbered pick + VF filter,
 selection subscribes the chosen entry with the right lastSeenEp, multiple
 watches, direct single-result subscribe, VF-only error, stale-pick hint,
 remove).
+
+### 8.32 Third expert-audit remediation — P1+P2 (2026-09-01, thirty-fourth push)
+
+**Context:** Phase-1 re-audit of `e6005a7` delivered; user approved all three
+plans but explicitly deferred the merge to `main`.
+
+**Retraction (evidence-first discipline):** the audit's M-new claim
+("warningsCache unbounded") was a FALSE POSITIVE — `WARNINGS_CACHE_MAX = 2000`
+with FIFO eviction already exists (database.ts:44/:167), verified in source
+before "fixing". Only a defense-in-depth bound was added: `replaceAllWarnings`
+now slices its input to the same cap internally (the route guard remains).
+
+**P1 — memory hygiene:**
+- `.w` `pendingPicks`: eager TTL sweep at every execution + hard cap of 200
+  entries (oldest evicted) — the lazy per-key expiry left the map unbounded in
+  theory. Tests: TTL expiry under fake timers; oldest-chat eviction beyond the
+  cap with the newest still selectable.
+- warnings bounds tests: 2010 addWarning → ≤2000 with newest kept;
+  replaceAllWarnings(2500) → 2000.
+
+**P2 — developer experience:**
+- `scripts/**` admitted to the eslint gate (removed from ignores): 0 errors,
+  23 warnings — consistent with the documented admission-period philosophy;
+  prettier already clean on those files.
+- README counts refreshed (311/34).
+- New permanent §9 backlog below — decisions now live in this file, never
+  only in chat (process fix following the S5 definition loss).
+
+### 9. Backlog permanent (living section — update instead of losing decisions)
+
+1. **Merge arena/01a05555-p → main** — owner decision, explicitly deferred
+   (2026-09-01). Post-merge steps, in order: verify CI green on main, switch
+   `scripts/install.sh` `BRANCH=` to `main`, tag `v2.9.x`. The old red CI run
+   on main predates the workflow and disappears on merge.
+2. **trace.moe live verification** — sandbox egress blocks it; verify on the
+   VPS with `.trace` + a real screenshot when convenient.
+3. **Status quo decisions (documented, do not re-litigate without need):**
+   M1 app.ts monolith (1 722 lines), M2 three HTTP stacks, M5 in-memory
+   registries (batch jobs, panel sessions, economy RAM-first by design).
+4. **Parked ideas:** `.solde` balance command / crediting others via `.rnyt`,
+   VOSTFR watch support (voiranime VF only for now), batch-registry
+   persistence on restart (S5 — declined by default, jobs are short).
+5. **Watchdog/update interplay** — documented §8.30; lock tested.
+
+**Suite:** 311/311 (34 files). tsc OK. eslint (now incl. scripts/) 0 errors.

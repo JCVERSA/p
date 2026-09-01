@@ -29,6 +29,30 @@ interface PendingPick {
 const pendingPicks = new Map<string, PendingPick>();
 const PENDING_TTL_MS = 10 * 60 * 1000; // a stale pick list expires
 const MAX_SHOWN = 8;
+const MAX_PENDING = 200; // audit 8.32: bound the map (one entry per chat)
+
+/**
+ * Expire stale entries eagerly and cap the map size (oldest first) so a busy
+ * or hostile multi-chat usage cannot grow it indefinitely.
+ */
+function sweepPending(): void {
+  const now = Date.now();
+  for (const [jid, p] of pendingPicks) {
+    if (now - p.ts > PENDING_TTL_MS) pendingPicks.delete(jid);
+  }
+  while (pendingPicks.size > MAX_PENDING) {
+    let oldestKey: string | null = null;
+    let oldestTs = Infinity;
+    for (const [jid, p] of pendingPicks) {
+      if (p.ts < oldestTs) {
+        oldestTs = p.ts;
+        oldestKey = jid;
+      }
+    }
+    if (!oldestKey) break;
+    pendingPicks.delete(oldestKey);
+  }
+}
 
 function freshPending(chatJid: string): PendingPick | null {
   const p = pendingPicks.get(chatJid);
@@ -83,6 +107,7 @@ const watchCommand: BotCommand = {
     const args = (context.args || []).map((a: string) => a.trim()).filter(Boolean);
     const firstArg = (args[0] || "").toLowerCase();
     const chatJid = msg.key.remoteJid!;
+    sweepPending();
 
     // ----- list -----
     if (args.length === 0 || firstArg === "list" || firstArg === "watchlist") {
