@@ -150,6 +150,12 @@ ok "Commande \`nebula\` installée → $BIN_DIR/nebula"
 if [ "${NEBULA_SKIP_BUILD:-0}" = "1" ]; then
   warn "NEBULA_SKIP_BUILD=1 — npm install + build sautés (mode test)."
 else
+  # ffmpeg système présent → ffmpeg-static saute son téléchargement de ~70 Mo
+  # (GitHub) et l'app utilise déjà le ffmpeg du PATH de toute façon.
+  if command -v ffmpeg >/dev/null 2>&1; then
+    FFMPEG_BIN="$(command -v ffmpeg)"; export FFMPEG_BIN
+    ok "ffmpeg système → FFMPEG_BIN=$FFMPEG_BIN (pas de téléchargement ffmpeg-static)"
+  fi
   bash "$INSTALL_DIR/manage.sh" setup || fail "Échec de setup (npm install / build). Consulte les messages ci-dessus."
   ok "Dépendances installées + build produit (dist/server.cjs)."
 fi

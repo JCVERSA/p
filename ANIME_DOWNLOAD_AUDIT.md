@@ -883,3 +883,32 @@ gets Nebula + the `nebula` command with zero manual steps.
   as command substitution).
 - README quick start and the French migration guide now lead with the
   one-liner.
+
+### 8.21 Installer verification round — symlink bug + ffmpeg-static hardening (2026-08-31, twenty-third push)
+
+**User instinct was right:** "vérifie encore ton travail avant Trace Moe" — the
+full re-test (this time THROUGH the installer-created `nebula` symlink, with
+build) caught two real issues that `--help`-only tests had missed.
+
+**Bug 1 (critical): symlinked `nebula` was broken for every real command.**
+`manage.sh` derived `APP_DIR` from `dirname(BASH_SOURCE)` without resolving
+symlinks, so as `/usr/local/bin/nebula` it pointed at `/usr/local/bin` and
+`status`/`update`/`doctor`/`env` all died with "must live in the git repo".
+Fixed: APP_DIR now resolves through the symlink chain (POSIX loop).
+
+**Bug 2 (reliability): `npm install` hard-fails when ffmpeg-static's
+postinstall cannot reach GitHub** (e.g. TLS-intercepting networks; observed in
+the sandbox: `UNABLE_TO_VERIFY_LEAF_SIGNATURE` on github.com while
+registry.npmjs.org is fine). Fix: `install.sh` and `manage.sh setup` now export
+`FFMPEG_BIN=$(command -v ffmpeg)` when a system ffmpeg exists — ffmpeg-static's
+installer then sees the binary as present and skips its ~70 MB GitHub download
+entirely, and the app ALREADY prefers system ffmpeg at runtime
+(`execSync("ffmpeg -version")` probe in hlsDownloader). Faster installs, no
+GitHub dependency. Also: installer now fails with clear messages instead of
+doomed root-only attempts (git/Node) when run non-root.
+
+**End-to-end evidence (fresh clone from GitHub in the sandbox):** 6/6 steps
+green, `dist/server.cjs` built, `.env` created by setup, `nebula` symlink
+works for `version`/`status` (repo resolved correctly), ffmpeg-static binary
+NOT downloaded (FFMPEG_BIN honored), re-run is idempotent (pull --ff-only,
+".env conservé").

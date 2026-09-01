@@ -266,6 +266,12 @@ cmd_setup() {
   require_repo
   command -v npm >/dev/null 2>&1 || die "npm introuvable — installe Node.js ≥ 18 (https://nodejs.org)"
   hdr "Installation des dépendances"
+  # ffmpeg système présent → ffmpeg-static saute son téléchargement (~70 Mo
+  # depuis GitHub) ; l'app préfère de toute façon le ffmpeg du PATH.
+  if command -v ffmpeg >/dev/null 2>&1; then
+    export FFMPEG_BIN="$(command -v ffmpeg)"
+    echo " ℹ️ ffmpeg système détecté → FFMPEG_BIN=${FFMPEG_BIN} (téléchargement ffmpeg-static évité)"
+  fi
   ( cd "${APP_DIR}" && npm install --no-audit --no-fund 2>&1 | tail -n 2 | sed 's/^/    /' ) || die "npm install a échoué"
   hdr "Fichier .env"
   if [ ! -f "${ENV_FILE}" ]; then
