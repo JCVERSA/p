@@ -803,3 +803,35 @@ the user expects VF by default for downloads generally.
 
 Suite: 237/237 (24 files, +7 interactive VF default tests with a mocked
 voiranime client).
+
+### 8.18 VPS management script — `manage.sh` (2026-08-31, twentieth push)
+
+**User request:** one script to rule the VPS deployment — start/restart/stop,
+clone, update, fill the .env, and the rest.
+
+**Delivered (`manage.sh`, repo root, executable, French UI):**
+- `start` (nohup + waits up to 45 s for the panel to answer, prints log tail
+  on failure), `stop` (SIGTERM → SIGKILL), `restart`, `status` (branch/rev,
+  dirty tree, PID/RSS vs cgroup cap, local panel + public APP_URL probe,
+  temp-store usage, staging debris count, disk), `logs [filter]`
+  (tail -f + optional grep), `version`.
+- `update`: `git config pull.ff only` (kills the divergence hint) +
+  `git pull --ff-only` + commit log, npm install ONLY when package*.json
+  changed in the range, `npm run build`, restart only if it was running.
+- `setup` (npm install + .env from example + build) and `clone [dir]`
+  (clone BRANCH → setup) for a fresh VPS.
+- `env`: interactive menu over the full key catalog (APP_URL, PANEL_TOKEN,
+  GEMINI_API_KEY, OWNER_NUMBER, all NEBULA_* flags) with per-key French
+  descriptions and masked secret values; plus `env list|set|get|unset|edit`.
+  Refuses to write NODE_ENV into .env (npm start sets it = production).
+- `clean`: purges cat_catch_*/batch_zip_* staging older than 60 min and
+  expired (3h+) temp-download files — mirrors the app's own sweep ages so a
+  download in flight is never touched.
+- `doctor`: node/npm/ffmpeg/git checks, branch + origin, .env keys, cgroup
+  RAM ceiling with the "tight" note, disk, build presence, process, panel +
+  public URL probes, debris count; exit 1 when blocking issues remain.
+
+Env key catalog built from the actual `process.env.*` reads in app/server/src
+(26 keys) — not hand-invented. Tested in the sandbox: syntax, help, env
+set/get/unset/list round-trip (incl. masking), status/doctor/clean graceful
+without a running bot; fixed a false-positive HTTP check found during test.
