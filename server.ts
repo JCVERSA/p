@@ -1,11 +1,49 @@
 import "dotenv/config";
 import path from "path";
 import fs from "fs";
+import { execSync } from "child_process";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import { createApp } from "./app.js";
 import { initRegistry } from "./src/bot/commandRegistry.js";
 import { addLog } from "./src/bot/botEngine.js";
+import ffmpegPath from "ffmpeg-static";
+
+/**
+ * R2 (audit follow-up 2026-09-01): verify ffmpeg is actually executable at
+ * boot and fail LOUDLY when it is not — every anime/video download needs it
+ * (HLS remux). The panel still starts so the operator can fix the host from
+ * the terminal; media commands will surface their own errors meanwhile.
+ */
+function verifyFfmpegAtBoot(): void {
+  const attempts: Array<{ label: string; run: () => void }> = [
+    { label: "ffmpeg on PATH", run: () => execSync("ffmpeg -version", { stdio: "ignore" }) },
+    {
+      label: `bundled ffmpeg-static (${ffmpegPath || "not installed"})`,
+      run: () => {
+        if (!ffmpegPath) throw new Error("ffmpeg-static binary missing");
+        execSync(`"${ffmpegPath}" -version`, { stdio: "ignore" });
+      }
+    }
+  ];
+  for (const attempt of attempts) {
+    try {
+      attempt.run();
+      console.log(`[BOOT] ✅ ffmpeg OK — ${attempt.label}`);
+      return;
+    } catch {
+      // try the next candidate
+    }
+  }
+  console.error(
+    "[BOOT] ⚠️  FFMPEG INTROUVABLE — les téléchargements anime/vidéo échoueront. " +
+      "Installe-le (apt-get install -y ffmpeg) ou vérifie FFMPEG_BIN dans l'environnement."
+  );
+  try {
+    addLog("[BOOT] ffmpeg manquant — téléchargements vidéo indisponibles");
+  } catch {}
+}
+
 
 // ---------------------------------------------------------------------------
 // Process-level resilience: a single failed background network promise (e.g.
@@ -30,6 +68,7 @@ process.on("unhandledRejection", (reason: unknown) => {
 async function startServer() {
   // Build the command registry (built-ins + commands on disk) before serving.
   await initRegistry();
+  verifyFfmpegAtBoot();
 
   const app = createApp();
   const PORT = Number(process.env.PORT || 3000);

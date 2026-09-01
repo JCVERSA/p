@@ -479,6 +479,26 @@ export async function downloadHlsAppLevel(
     let downloadedCount = 0;
     let hasFailed = false;
 
+    // R9 (audit follow-up 2026-09-01): hard global deadline so a stalling CDN
+    // can never hang a batch slot forever (per-segment fetches already time
+    // out at 15s, but retries × segments could still add up to hours).
+    // Env-tunable, default 10 minutes per episode download.
+    const DOWNLOAD_TIMEOUT_MS = Number(process.env.NEBULA_DOWNLOAD_TIMEOUT_MS || 10 * 60 * 1000);
+    const deadlineAt = Date.now() + DOWNLOAD_TIMEOUT_MS;
+    let deadlineLogged = false;
+    const deadlineReached = (): boolean => {
+      if (Date.now() <= deadlineAt) return false;
+      if (!deadlineLogged) {
+        deadlineLogged = true;
+        console.error(
+          `[CAT_CATCH_DOWNLOAD] Global download timeout (${Math.round(DOWNLOAD_TIMEOUT_MS / 1000)}s) reached — ` +
+            `${downloadedCount}/${segments.length} segments done. Aborting this mirror attempt.`
+        );
+      }
+      return true;
+    };
+
+
     // Helper for segment download worker
     const downloadSegment = async (segment: HlsSegment): Promise<boolean> => {
       let retries = 5;
@@ -491,7 +511,7 @@ export async function downloadHlsAppLevel(
         segmentHeaders["Range"] = `bytes=${segment.byteRange.offset}-${segment.byteRange.offset + segment.byteRange.length - 1}`;
       }
 
-      while (retries > 0 && !success && !hasFailed) {
+      while (retries > 0 && !success && !hasFailed && !deadlineReached()) {
         try {
           buffer = await robustFetchBuffer(segment.url, segmentHeaders);
           if (buffer && buffer.length > 0) {
