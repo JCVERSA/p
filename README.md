@@ -63,6 +63,10 @@ The interactive flow defaults to VF too — and never lies about the language ac
 | 🖥️ | **Web control panel** — live simulator, secrets manager (masked), command customizer, analytics, ZIP export |
 | 🛰️ | **One-command ops** — `manage.sh start/stop/update/doctor/env/logs/clean` on any VPS, behind a Cloudflare Tunnel |
 
+## 🎥 Preview
+
+![Nebula Bot preview](preview.gif)
+
 ## 🏗️ Architecture
 
 ```mermaid
