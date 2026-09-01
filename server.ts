@@ -7,7 +7,7 @@ import { createServer as createViteServer } from "vite";
 import { createApp } from "./app.js";
 import { initRegistry } from "./src/bot/commandRegistry.js";
 import { addLog } from "./src/bot/botEngine.js";
-import ffmpegPath from "ffmpeg-static";
+import { resolvedFfmpegPath } from "./src/bot/ffmpeg.js";
 
 /**
  * R2 (audit follow-up 2026-09-01): verify ffmpeg is actually executable at
@@ -16,20 +16,14 @@ import ffmpegPath from "ffmpeg-static";
  * the terminal; media commands will surface their own errors meanwhile.
  */
 function verifyFfmpegAtBoot(): void {
-  const attempts: Array<{ label: string; run: () => void }> = [
-    { label: "ffmpeg on PATH", run: () => execSync("ffmpeg -version", { stdio: "ignore" }) },
-    {
-      label: `bundled ffmpeg-static (${ffmpegPath || "not installed"})`,
-      run: () => {
-        if (!ffmpegPath) throw new Error("ffmpeg-static binary missing");
-        execSync(`"${ffmpegPath}" -version`, { stdio: "ignore" });
-      }
-    }
-  ];
-  for (const attempt of attempts) {
+  // Candidates: the shared resolver's pick (FFMPEG_BIN → PATH → dev-only
+  // ffmpeg-static), plus both defaults so the boot log states which one hit.
+  const candidates = new Set<string>(["ffmpeg", resolvedFfmpegPath]);
+  if (process.env.FFMPEG_BIN?.trim()) candidates.add(process.env.FFMPEG_BIN.trim());
+  for (const candidate of candidates) {
     try {
-      attempt.run();
-      console.log(`[BOOT] ✅ ffmpeg OK — ${attempt.label}`);
+      execSync(`"${candidate}" -version`, { stdio: "ignore" });
+      console.log(`[BOOT] ✅ ffmpeg OK — ${candidate === "ffmpeg" ? "on PATH" : candidate}`);
       return;
     } catch {
       // try the next candidate
