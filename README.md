@@ -183,7 +183,7 @@ Secrets can also be managed from the panel (**Settings &amp; Access → API Secr
 ## 🧪 Tests
 
 ```bash
-npm test — 263 tests / 26 files
+npm test           # vitest — 263 tests across 26 files
 npm run lint       # strict TypeScript typecheck
 npm run build      # production build (client + server)
 npm start          # serve the production build (capped V8 heap, gc exposed)
