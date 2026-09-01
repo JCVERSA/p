@@ -39,7 +39,6 @@ import path from "path";
 import dns from "dns/promises";
 import axios from "axios";
 import * as cheerio from "cheerio";
-import ffmpegStatic from "ffmpeg-static";
 import { isSafeDownloadUrl } from "../src/bot/urlSafety.js";
 import {
   parseProxyUrl,
@@ -149,12 +148,12 @@ try {
   execSync("ffmpeg -version", { stdio: "ignore" });
   ffmpegOk = true;
 } catch {
-  const p = (ffmpegStatic as unknown as string) || "";
+  const p = process.env.FFMPEG_BIN || "";
   if (p && fs.existsSync(p)) {
     ffmpegOk = true;
-    ffmpegDetail = `ffmpeg-static binary at ${p}`;
+    ffmpegDetail = `FFMPEG_BIN=${p}`;
   } else {
-    ffmpegDetail = `NOT FOUND (system PATH empty; ffmpeg-static path ${p || "unset"} exists=${p ? fs.existsSync(p) : false})`;
+    ffmpegDetail = `NOT FOUND (system PATH empty; FFMPEG_BIN ${p ? `set to ${p} but missing` : "unset"})`;
   }
 }
 row(
@@ -165,8 +164,7 @@ row(
   ffmpegOk
     ? undefined
     : "Every HLS download ends in an ffmpeg remux. Without the binary ALL downloads fail while search still works. " +
-        "Install ffmpeg (apt/yum/brew) or re-run `npm install` so ffmpeg-static's postinstall can fetch its binary " +
-        "(needs access to release-assets.githubusercontent.com).",
+        "Install ffmpeg (apt/yum/brew) or point FFMPEG_BIN to an existing binary.",
   true,
 );
 

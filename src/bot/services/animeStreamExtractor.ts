@@ -4,18 +4,10 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import crypto from "crypto";
-import ffmpegPath from "ffmpeg-static";
-import { execSync } from "child_process";
 import { downloadHlsAppLevel, robustFetchText, robustFetchBuffer, resolveAbsoluteUrl, resolveMediaPlaylistUrl } from "./hlsDownloader.js";
 import { animeProxyOptions } from "./scrapingProxy.js";
 
-let resolvedFfmpegPath = "ffmpeg";
-try {
-  execSync("ffmpeg -version", { stdio: "ignore" });
-  resolvedFfmpegPath = "ffmpeg";
-} catch {
-  resolvedFfmpegPath = ffmpegPath || "ffmpeg";
-}
+import { resolvedFfmpegPath } from "../ffmpeg.js";
 
 export interface StreamQualityTrack {
   resolution: string; // "360P", "480P", "720P", "1080P", "Original"

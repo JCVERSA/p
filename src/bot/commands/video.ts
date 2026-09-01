@@ -1,22 +1,12 @@
 import { BotCommand } from "../types.js";
 import ytdl from "ytdl-core";
 import ffmpeg from "fluent-ffmpeg";
-import ffmpegPath from "ffmpeg-static";
 import fs from "fs";
 import path from "path";
 import { isSafeDownloadUrl, safeFetch } from "../urlSafety.js";
+import { resolvedFfmpegPath } from "../ffmpeg.js";
 
-import { execSync } from "child_process";
-
-let resolvedFfmpegPath = "ffmpeg";
-try {
-  execSync("ffmpeg -version", { stdio: "ignore" });
-  resolvedFfmpegPath = "ffmpeg";
-} catch {
-  resolvedFfmpegPath = ffmpegPath || "ffmpeg";
-}
-
-if (resolvedFfmpegPath && resolvedFfmpegPath !== "ffmpeg") {
+if (resolvedFfmpegPath !== "ffmpeg") {
   ffmpeg.setFfmpegPath(resolvedFfmpegPath);
 }
 

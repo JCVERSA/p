@@ -6,16 +6,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { spawn } from "child_process";
-import ffmpegPath from "ffmpeg-static";
-import { execSync } from "child_process";
-
-let resolvedFfmpegPath = "ffmpeg";
-try {
-  execSync("ffmpeg -version", { stdio: "ignore" });
-  resolvedFfmpegPath = "ffmpeg";
-} catch {
-  resolvedFfmpegPath = ffmpegPath || "ffmpeg";
-}
+import { resolvedFfmpegPath } from "../ffmpeg.js";
 import { registerTempDownload } from "../tempDownloadManager.js";
 import { animeProxyOptions } from "../services/scrapingProxy.js";
 import { isNakanimeUrl, nakanimeSearch, nakanimeSeasons, nakanimeEpisodePlayers, nakanimeEpisodePlayersDetailed } from "../services/nakanimeClient.js";

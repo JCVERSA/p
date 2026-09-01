@@ -243,16 +243,32 @@ cmd_update() {
   ok "Code: ${old_rev} → ${new_rev}"
   ( cd "${APP_DIR}" && git log --oneline "${old_rev}..${new_rev}" 2>/dev/null | sed 's/^/    /' )
 
+  # Sur un conteneur ~1 Go, npm/vite en parallèle du bot vivant saturent la
+  # mémoire du cgroup → throttling → updates de 20-30 min (audit 8.29).
+  # On arrête le bot le temps d'installer/construire (~1 min) puis on le
+  # relance ; en cas d'échec, l'ancien build est relancé s'il existe encore.
+  update_fail() {
+    if [ "${was_running}" = "yes" ] && [ -f "${APP_DIR}/dist/server.cjs" ]; then
+      warn "Échec de l'étape — relance de l'ancien build…"
+      cmd_start >/dev/null 2>&1 || true
+    fi
+    die "$1"
+  }
+  if [ "${was_running}" = "yes" ]; then
+    info "Arrêt du bot pendant l'installation (redémarrage automatique ensuite)…"
+    cmd_stop || true
+  fi
+
   hdr "Dépendances"
   if ( cd "${APP_DIR}" && git diff --name-only "${old_rev}" "${new_rev}" -- package.json package-lock.json | grep -q . ); then
     info "package*.json modifié → npm install…"
-    ( cd "${APP_DIR}" && npm install --no-audit --no-fund 2>&1 | tail -n 2 | sed 's/^/    /' ) || die "npm install a échoué"
+    ( cd "${APP_DIR}" && npm install --no-audit --no-fund --prefer-offline 2>&1 | tail -n 2 | sed 's/^/    /' ) || update_fail "npm install a échoué"
   else
     ok "Aucune dépendance modifiée — npm install sauté."
   fi
 
   hdr "Build"
-  ( cd "${APP_DIR}" && npm run build 2>&1 | tail -n 6 | sed 's/^/    /' ) || die "Build échoué"
+  ( cd "${APP_DIR}" && npm run build 2>&1 | tail -n 6 | sed 's/^/    /' ) || update_fail "Build échoué"
 
   hdr "Redémarrage"
   if [ "${was_running}" = "yes" ]; then
@@ -266,13 +282,12 @@ cmd_setup() {
   require_repo
   command -v npm >/dev/null 2>&1 || die "npm introuvable — installe Node.js ≥ 18 (https://nodejs.org)"
   hdr "Installation des dépendances"
-  # ffmpeg système présent → ffmpeg-static saute son téléchargement (~70 Mo
-  # depuis GitHub) ; l'app préfère de toute façon le ffmpeg du PATH.
-  if command -v ffmpeg >/dev/null 2>&1; then
-    export FFMPEG_BIN="$(command -v ffmpeg)"
-    echo " ℹ️ ffmpeg système détecté → FFMPEG_BIN=${FFMPEG_BIN} (téléchargement ffmpeg-static évité)"
-  fi
-  ( cd "${APP_DIR}" && npm install --no-audit --no-fund 2>&1 | tail -n 2 | sed 's/^/    /' ) || die "npm install a échoué"
+  # ffmpeg système requis (remux HLS). L'ancienne dépendance npm ffmpeg-static
+  # téléchargeait ~70 Mo depuis GitHub à chaque install fraîche (source
+  # d'updates de 20-30 min) alors que le binaire système a toujours été
+  # préféré — elle a été retirée (audit 8.29).
+  command -v ffmpeg >/dev/null 2>&1 || warn "ffmpeg introuvable — apt install ffmpeg (sinon les téléchargements échoueront au remux)"
+  ( cd "${APP_DIR}" && npm install --no-audit --no-fund --prefer-offline 2>&1 | tail -n 2 | sed 's/^/    /' ) || die "npm install a échoué"
   hdr "Fichier .env"
   if [ ! -f "${ENV_FILE}" ]; then
     cp "${APP_DIR}/.env.example" "${ENV_FILE}" 2>/dev/null || true

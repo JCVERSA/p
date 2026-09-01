@@ -4,19 +4,11 @@ import fsp from "fs/promises";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import { spawn, execSync } from "child_process";
-import ffmpegPath from "ffmpeg-static";
+import { spawn } from "child_process";
 import { isSafeDownloadUrl } from "../urlSafety.js";
 import { animeProxyOptions } from "./scrapingProxy.js";
 
-// Resolve local FFmpeg binary path
-let resolvedFfmpegPath = "ffmpeg";
-try {
-  execSync("ffmpeg -version", { stdio: "ignore" });
-  resolvedFfmpegPath = "ffmpeg";
-} catch {
-  resolvedFfmpegPath = ffmpegPath || "ffmpeg";
-}
+import { resolvedFfmpegPath } from "../ffmpeg.js";
 
 /**
  * Resolves absolute URL based on parent playlist URL and relative path.

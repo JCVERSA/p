@@ -742,7 +742,6 @@ export function createApp(): express.Express {
       { name: "@whiskeysockets/baileys", label: "WhatsApp Multi-Device Engine" },
       { name: "@google/genai", label: "Gemini AI Official SDK" },
       { name: "fluent-ffmpeg", label: "FFmpeg Audio/Video Converter" },
-      { name: "ffmpeg-static", label: "Static FFmpeg Binary Wrapper" },
       { name: "node-webpmux", label: "WebP / Sticker Codec Tools" },
       { name: "mumaker", label: "Textmaker Graphics Generator" },
       { name: "@bochilteam/scraper", label: "Entertainment & Media Scrapers" },

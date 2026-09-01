@@ -1131,3 +1131,48 @@ between tests.
 **Deliberate:** unlimited repeats (explicit user request: "à chaque fois"),
 no cooldown — it is the owner's private economy; the native pipeline stays
 free of any coin mechanic.
+
+### 8.29 Slow `nebula update` (20-30 min) — root causes & fixes (2026-09-01, thirty-first push)
+
+**Complaint:** updates work but take 20-30 min, seemingly stuck at
+"Dépendances" / "Build".
+
+**Measurements & evidence:**
+- `npm run build` = **10 s** on a 2-core/4 GB idle sandbox — the build itself
+  is NOT the bottleneck.
+- `ffmpeg-static@5.3.0`'s install.js only skips its download when the binary
+  file already exists — the `FFMPEG_BIN` export in our own manage.sh/setup
+  did NOT prevent the ~70 MB GitHub-releases download. That message was a
+  placebo (my earlier claim was wrong; corrected here). Every fresh install
+  and every npm install after a package re-extract hit GitHub — on slow
+  GitHub routes that alone is 10-25 min.
+- The bot stayed RUNNING during npm install + vite build inside the ~953 MB
+  cgroup (bot ≈ 500-600 MB RSS + npm ≈ 300-500 MB) → memory throttling makes
+  every step crawl; vite also wipes dist/ mid-build.
+- package.json hadn't changed since 627a1ff, so recent updates skipped npm —
+  the historical 20-30 min pain concentrated in updates that crossed
+  dependency changes.
+
+**Fixes:**
+1. **Removed the ffmpeg-static dependency entirely.** The system binary
+   (apt-installed by scripts/install.sh, checked by `nebula doctor`) was
+   always preferred by every call site anyway. New shared resolver
+   `src/bot/ffmpeg.ts` (order: FFMPEG_BIN env → system PATH → best-effort
+   ffmpeg-static for dev boxes → plain "ffmpeg"); the four duplicated
+   resolution dances (video, novabox, animeStreamExtractor, hlsDownloader)
+   now import it. Panel dependency list + anime-doctor updated; the
+   FFMPEG_BIN placebo blocks in manage.sh/install.sh replaced with honest
+   comments and a setup-time ffmpeg guard.
+2. **`cmd_update` stops the bot during install+build** (~1 min downtime)
+   with automatic restart, and best-effort recovery of the previous build
+   when a step fails (vite wipes dist/, so recovery only when
+   dist/server.cjs exists).
+3. `npm install --prefer-offline` in update+setup (registry metadata served
+   from the local cache when possible).
+
+**Verification:** tsc OK, suite 299/299 (32 files, +3 resolver tests),
+build OK, `bash -n` on both shell scripts, and an end-to-end
+`./manage.sh update` executed in the dev sandbox through the real new code
+path (pull → npm install removing ffmpeg-static without any GitHub access →
+build). Expected effect on the VPS: dependency-touching updates drop from
+20-30 min to ~1-2 min with a ~1 min bot downtime.
