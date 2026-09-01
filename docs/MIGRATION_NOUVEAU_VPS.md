@@ -75,7 +75,18 @@ node -v   # doit afficher v20.x (ou plus)
 
 ---
 
-## 3. Installer l'application (3 min)
+## 3. Installer l'application (1 commande)
+
+Sur le nouveau conteneur, **tout en un** (git + Node ≥ 18 + ffmpeg + code + build
++ commande `nebula` + assistant `.env`) :
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/JCVERSA/p/arena/01a05555-p/scripts/install.sh" | sh
+# puis:
+nebula env      # si l'assistant n'a pas été lancé à la fin de l'installation
+```
+
+Le script est idempotent (le relancer = mise à jour). Équivalent manuel :
 
 ```bash
 git clone -b arena/01a05555-p https://github.com/JCVERSA/p /root/p

@@ -859,3 +859,27 @@ via Jikan (no API key) to make the anime flow visual and pro.
 
 Suite: 250/250 (25 files, +13 Jikan tests: normalization, matching, card
 formatting, cache single-network-hit, error paths).
+
+### 8.20 One-line installer — `scripts/install.sh` (2026-08-31, twenty-second push)
+
+**User request:** a free-claude-code-style install one-liner so a fresh VPS
+gets Nebula + the `nebula` command with zero manual steps.
+
+**Delivered (`scripts/install.sh`, POSIX sh, idempotent):**
+`curl -fsSL ".../arena/01a05555-p/scripts/install.sh" | sh`
+- Steps: Linux/arch checks → git (apt install if missing) → Node ≥ 18 (NodeSource
+  22.x when absent/too old, apt path only) → ffmpeg (best-effort, warns) →
+  clone the branch or `git pull --ff-only` when re-run → symlink
+  `nebula → manage.sh` into /usr/local/bin (root) or ~/.local/bin (user,
+  PATH line appended to the profile when needed) → `manage.sh setup`
+  (npm install + build; `NEBULA_SKIP_BUILD=1` test hook) → .env from the
+  example + optional interactive `nebula env` wizard.
+- Interactive prompts read from /dev/tty only when a TTY exists (the
+  free-claude-code pattern): `curl | sh` works non-interactively, and still
+  offers the wizard when run from a real terminal. `--dir`, `--skip-build`,
+  `--help` flags; non-root installs land in `~/nebula`.
+- Sandbox-tested end-to-end (clone + symlink + .env creation); fixed a
+  backtick-in-double-quotes bug the test caught (step title executed `nebula`
+  as command substitution).
+- README quick start and the French migration guide now lead with the
+  one-liner.
