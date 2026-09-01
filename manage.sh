@@ -15,7 +15,16 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 REPO_URL="https://github.com/JCVERSA/p"
 BRANCH="arena/01a05555-p"
-APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # le script vit dans le dépôt
+# Resolve the real script location THROUGH symlinks: the installer exposes
+# manage.sh as the `nebula` command (/usr/local/bin/nebula), so dirname of
+# BASH_SOURCE alone would point at the symlink's directory, not the repo.
+NEBULA_SRC="${BASH_SOURCE[0]}"
+while [ -L "${NEBULA_SRC}" ]; do
+  NEBULA_DIR="$(cd "$(dirname "${NEBULA_SRC}")" && pwd)"
+  NEBULA_SRC="$(readlink "${NEBULA_SRC}")"
+  case "${NEBULA_SRC}" in /*) ;; *) NEBULA_SRC="${NEBULA_DIR}/${NEBULA_SRC}" ;; esac
+done
+APP_DIR="$(cd "$(dirname "${NEBULA_SRC}")" && pwd)"   # le script vit dans le dépôt
 ENV_FILE="${APP_DIR}/.env"
 LOG_FILE="${LOG_FILE:-/root/bot.log}"
 TUNNEL_LOG="${TUNNEL_LOG:-/root/tunnel.log}"

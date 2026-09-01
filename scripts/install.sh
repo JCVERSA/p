@@ -70,6 +70,7 @@ APT=""
 command -v apt-get >/dev/null 2>&1 && APT="apt-get"
 if ! command -v git >/dev/null 2>&1; then
   [ -n "$APT" ] || fail "git est introuvable et apt-get absent — installe git manuellement."
+  [ "$(id -u)" -eq 0 ] || fail "git est introuvable — passe en root (apt install git) puis relance ce script."
   step "· Installation de git"
   DEBIAN_FRONTEND=noninteractive $APT update -qq >/dev/null 2>&1 || true
   DEBIAN_FRONTEND=noninteractive $APT install -y -qq git >/dev/null || fail "Installation de git impossible."
@@ -85,13 +86,13 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 if [ "$NODE_MAJOR" -lt 18 ]; then
-  if [ -n "$APT" ]; then
+  if [ -n "$APT" ] && [ "$(id -u)" -eq 0 ]; then
     warn "Node.js absent ou trop ancien (${NODE_MAJOR:-aucun}) — installation via NodeSource 22.x…"
     curl -fsSL https://deb.nodesource.com/setup_22.x | sh - >/dev/null || fail "Échec du setup NodeSource."
     DEBIAN_FRONTEND=noninteractive $APT install -y -qq nodejs >/dev/null || fail "Installation de nodejs impossible."
     NODE_MAJOR="$(node -v | tr -d 'v' | cut -d. -f1)"
   else
-    fail "Node.js >= 18 requis et apt-get absent. Installe-le manuellement: https://nodejs.org"
+    fail "Node.js >= 18 requis (root+apt indisponibles pour l'auto-install). Installe-le: https://nodejs.org puis relance."
   fi
 fi
 [ "$NODE_MAJOR" -ge 18 ] || fail "Node.js $NODE_MAJOR détecté — il faut >= 18."
