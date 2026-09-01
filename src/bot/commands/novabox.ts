@@ -2070,7 +2070,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       `📅 *Season:* ${session.selectedSeason?.name}\n` +
       `⚙️ *Resolution:* ${resolution}\n` +
       `📦 *Episodes to Process:* ${indices.length} episodes\n\n` +
-      `⏳ _Preparing direct links and stream packaging... Please wait a moment._`
+      `⏳ _Preparing direct episode links... Please wait a moment._`
     );
 
     // Create tracked batch job for live status component
@@ -2227,7 +2227,12 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
     let zipSizeMB = 0;
     let zipFilePath = "";
 
-    if (downloadedFilePaths.length > 1) {
+    // Season ZIP packaging is OFF by default (audit 8.16, user decision
+    // 2026-08-31): batches deliver one high-speed temp link per episode.
+    // Set NEBULA_BATCH_ZIP=1 to restore the all-in-one archive behaviour.
+    const batchZipEnabled = process.env.NEBULA_BATCH_ZIP === "1";
+
+    if (batchZipEnabled && downloadedFilePaths.length > 1) {
       updateJobStatus(batchJob.id, "packaging", `📦 Packaging ${downloadedFilePaths.length} episodes into ZIP archive...`);
       try {
         const episodeInputs = generatedLinks.map((item, idx) => ({
@@ -2275,7 +2280,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         `🗣️ *Language:* ${lang} | ${session.selectedSeason?.name}\n` +
         `⚙️ *Quality:* ${resolution}\n` +
         `📦 *Ready Episodes:* ${generatedLinks.length}/${indices.length}\n` +
-        `⏳ *Links Validity:* 3–4 Hours\n\n` +
+        `⏳ *Links Validity:* 2 Hours\n\n` +
         `📥 *Direct Episode Links:*\n\n` +
         `${linksText}\n\n`;
 

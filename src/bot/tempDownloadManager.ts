@@ -330,9 +330,60 @@ export function getTempStorageStats() {
   };
 }
 
+/**
+ * Startup purge (audit 8.16). The token registry lives in memory, so after a
+ * restart EVERY file in TEMP_DOWNLOAD_DIR is unreachable — including debris
+ * from OOM-killed runs (kernel kills bypass `finally` cleanup) that otherwise
+ * lingers up to 3h and saturates the 4 GB quota: a fresh batch then fails
+ * with "Temporary download storage quota reached" even though nothing valid
+ * is stored. Also removes cat_catch_* HLS staging dirs and batch_zip_* dirs
+ * from os.tmpdir(), which no other sweep covers. Safe with a single bot
+ * instance (the documented deployment); tokens of the previous process died
+ * with it, so the files are already unreachable.
+ */
+export function purgeStartupOrphans(): { cleanedItems: number; freedBytes: number } {
+  let cleanedItems = 0;
+  let freedBytes = 0;
+
+  try {
+    if (fs.existsSync(TEMP_DOWNLOAD_DIR)) {
+      for (const file of fs.readdirSync(TEMP_DOWNLOAD_DIR)) {
+        const fullPath = path.join(TEMP_DOWNLOAD_DIR, file);
+        try {
+          freedBytes += fs.statSync(fullPath).size;
+          fs.rmSync(fullPath, { recursive: true, force: true });
+          cleanedItems++;
+        } catch {}
+      }
+    }
+  } catch {}
+
+  try {
+    for (const entry of fs.readdirSync(os.tmpdir())) {
+      if (entry.startsWith("cat_catch_") || entry.startsWith("batch_zip_")) {
+        const fullPath = path.join(os.tmpdir(), entry);
+        try {
+          freedBytes += fs.statSync(fullPath).size;
+          fs.rmSync(fullPath, { recursive: true, force: true });
+          cleanedItems++;
+        } catch {}
+      }
+    }
+  } catch {}
+
+  if (cleanedItems > 0) {
+    console.log(
+      `[TempDownload] 🧹 Startup purge: ${cleanedItems} orphaned item(s) removed, ` +
+        `${(freedBytes / 1048576).toFixed(2)} MB freed.`
+    );
+  }
+  return { cleanedItems, freedBytes };
+}
+
 // Background cleanup task running every 5 minutes to guarantee ZIP files are cleaned up within 60 minutes
 const cleanupTimer = setInterval(sweepExpiredDownloads, 5 * 60 * 1000);
 cleanupTimer.unref();
 
-// Run immediate cleanup sweep on startup
+// Startup: purge unreachable debris first (audit 8.16), then the regular sweep
+purgeStartupOrphans();
 sweepExpiredDownloads();

@@ -737,3 +737,31 @@ as sound hardening for a 954 MB cgroup, but they were NOT the decisive fix —
 the deterministic killer was adm-zip's in-memory archive construction.
 
 Suite: 229/229 (23 files, +5 streaming zip tests +1 renamed count).
+### 8.16 No more season ZIP by default + startup debris purge (2026-08-31, eighteenth push)
+
+**User evidence:** 9/9 episodes downloaded with zero crashes (streaming zip
+writer held: 178 MB archived in 0.6s mid-run) — then
+`Error: Temporary download storage quota reached` at zip registration, and the
+bot fell back to per-episode temp links. The user preferred that output and
+decided: **drop the zipping, deliver one temp link per episode.**
+
+**Why the quota tripped:** the 4 GB `TEMP_MAX_TOTAL_BYTES` store was full of
+debris from the three OOM-killed runs — kernel kills bypass `finally` cleanup,
+orphans are only swept after 3h (`ORPHAN_MAX_AGE_MS`) and `cat_catch_*` HLS
+staging dirs in os.tmpdir() were covered by NO sweep at all. Since the token
+registry is in-memory, every file left by a previous process is unreachable
+anyway.
+
+**Changes:**
+- `novabox.ts`: season ZIP packaging gated behind `NEBULA_BATCH_ZIP=1`
+  (default OFF) — batch delivers per-episode high-speed temp links, exactly
+  like the user's paste. Intro card text no longer announces "stream
+  packaging"; validity label corrected to the real 120-minute TTL
+  ("2 Hours", was "3–4 Hours" — label coherence rule).
+- `tempDownloadManager.ts`: `purgeStartupOrphans()` runs at boot — clears ALL
+  files in `nebula_temp_downloads` (registry empty ⇒ all unreachable) and
+  removes `cat_catch_*` / `batch_zip_*` dirs from os.tmpdir(), logging freed
+  MB. The 5-min TTL sweep continues to handle live expiry.
+- The streaming zip writer (8.15) stays in place for `NEBULA_BATCH_ZIP=1`.
+
+Suite: 230/230 (24 files, +1 startup purge test).
