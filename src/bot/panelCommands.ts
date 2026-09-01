@@ -274,3 +274,8 @@ export function getPanelCommandSource(name: string): string | undefined {
 export function listPanelCommands(): Array<{ name: string; category: string; description: string }> {
   return store.map(({ name, category, description }) => ({ name, category, description }));
 }
+
+/** Backup support: full definitions (including source) for a lossless round-trip. */
+export function exportAllPanelCommands(): PanelCommandDefinition[] {
+  return store.map((d) => ({ ...d }));
+}

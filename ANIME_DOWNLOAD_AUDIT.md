@@ -1062,3 +1062,44 @@ aliases (tt/ttdl, ig/igdl, fb/fbdl, yt/ytdl).
 
 Suite: 285/285 (29 files, +8 tests: hostname matching incl. shorteners and
 rejection cases, usage rendering, native registration of all four).
+
+### 8.27 Second audit remediation (T1–T3) + CI (2026-09-01, twenty-ninth push)
+
+**Context:** second expert audit of the session approved for execution
+("approved"). Evidence-first findings, incremental fixes only.
+
+**T1a — R11 honest panel retry (`batchDownloadManager.ts`):** the panel retry
+buttons flipped episode/job statuses with NO worker behind them — for REAL
+WhatsApp-driven jobs that faked "downloading / 25%" forever. Jobs now carry a
+`simulated` flag (set by the simulator flow); `retryBatchJob`/`retryEpisode`
+REFUSE real jobs with a clear French pointer back to the WhatsApp command and
+keep working for simulator jobs.
+
+**T1b — B1 lossless backup (`app.ts` + stores):** the export emitted only
+config+aiUsage while the restore could apply six sections — panel backups were
+near-useless. Export now emits groups, warnings, stats, accessPolicies,
+panelCommands (full sources) and watchSubscriptions; restore applies the new
+watch section through `sanitizeWatchSubscriptions()` (bounded to the global
+cap, URL/jid/title validated, consecutiveErrors reset — never trusts the
+payload). Added `database.getAllGroups()/getAllWarnings()` and
+`panelCommands.exportAllPanelCommands()`.
+
+**T2 — preview.gif 10.4 MB → 4.5 MB (-57%):** 160f@60ms full-colour → 80f@120ms
+(12 fps) with a shared 96-colour palette, native 480×270 (resampling was
+REJECTED: LANCZOS noise grew the file to 7 MB). Integrity verified
+programmatically (Pillow decodes all 80 frames; per-frame luminance drift
+0.1/255 vs original — no vision available in-session, stated per checklist).
+
+**T3 — CI (`.github/workflows/ci.yml`):** push (arena branch + main) and PR →
+Node 22 + npm cache → `npm ci` → `tsc --noEmit` → `vitest run`. 10-min timeout.
+Note: the session's GitHub App token lacks the `workflows` permission, so the
+workflow file is committed by the owner via the GitHub web UI (same content,
+staged in this repo as `.github/workflows/ci.yml` in the working tree).
+
+**T4 (proxy for jikan/tracemoe) — deliberately skipped:** wiring an egress
+proxy into `fetch` requires undici dispatcher semantics for no measured need
+today (both APIs are CDN-fronted and best-effort by contract). Revisit if the
+bot ever runs behind a filtering proxy full-time.
+
+Suite: 291/291 (30 files, +6 tests: retry honesty real/simulated/unknown,
+watch sanitizer filtering/caps/non-array).

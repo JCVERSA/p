@@ -11,7 +11,7 @@ import { getBotState, startLiveBot, stopLiveBot, retryLiveConnection, clearSessi
 
 import { getCommandStats } from "./src/bot/commandStats.js";
 import { getAIClient, generateTextWithFallback } from "./src/bot/geminiClient.js";
-import { savePanelCommand, getPanelCommandSource } from "./src/bot/panelCommands.js";
+import { savePanelCommand, getPanelCommandSource, exportAllPanelCommands } from "./src/bot/panelCommands.js";
 import { replaceAllPanelCommands } from "./src/bot/panelCommands.js";
 import { replaceStats as replaceCommandStats } from "./src/bot/commandStats.js";
 import { replaceAllPolicies } from "./src/bot/groupAccessStore.js";
@@ -32,6 +32,7 @@ import { DEFAULT_GROUP_POLICY } from "./src/bot/accessControl.js";
 import { getAuditEvents, clearAudit, recordAudit } from "./src/bot/auditTrail.js";
 import { getBridgeLoadSummary } from "./src/bot/importedBridge.js";
 import { getAIUsageSummary } from "./src/bot/aiQuota.js";
+import { loadSubscriptions, saveSubscriptions, sanitizeWatchSubscriptions } from "./src/bot/services/episodeWatchService.js";
 import {
   getAllBatchJobs,
   getBatchJob,
@@ -590,6 +591,14 @@ export function createApp(): express.Express {
       exportedAt: new Date().toISOString(),
       config: cfg,
       aiUsage: getAIUsageSummary(),
+      // B1 fix (2026-09-01): the export used to omit every section the
+      // restore could apply — backups were near-useless. Now lossless for:
+      groups: database.getAllGroups(),
+      warnings: database.getAllWarnings(),
+      stats: getCommandStats(),
+      accessPolicies: listGroupPolicies(),
+      panelCommands: exportAllPanelCommands(),
+      watchSubscriptions: loadSubscriptions()
     });
   });
 
@@ -618,6 +627,11 @@ export function createApp(): express.Express {
       }
       if (body.accessPolicies && typeof body.accessPolicies === "object") {
         applied.push(`policies:${replaceAllPolicies(body.accessPolicies)}`);
+      }
+      if (Array.isArray(body.watchSubscriptions)) {
+        const clean = sanitizeWatchSubscriptions(body.watchSubscriptions);
+        saveSubscriptions(clean);
+        applied.push(`watch:${clean.length}`);
       }
       if (Array.isArray(body.panelCommands)) {
         const result = replaceAllPanelCommands(body.panelCommands);

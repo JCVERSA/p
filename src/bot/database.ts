@@ -179,6 +179,20 @@ export const database = {
   },
 
   /** Backup/restore support (validated upstream): replace all group settings. */
+  /** Backup support: dump every cached group's settings. */
+  getAllGroups(): Record<string, GroupSettings> {
+    const out: Record<string, GroupSettings> = {};
+    for (const [key, val] of groupsCache.entries()) out[key] = { ...val };
+    return out;
+  },
+
+  /** Backup support: dump every cached warning entry. */
+  getAllWarnings(): Record<string, UserWarning> {
+    const out: Record<string, UserWarning> = {};
+    for (const [key, val] of warningsCache.entries()) out[key] = { count: val.count, reasons: [...val.reasons] };
+    return out;
+  },
+
   replaceAllGroups(entries: Record<string, Partial<GroupSettings>>): number {
     groupsCache.clear();
     for (const [key, val] of Object.entries(entries || {})) {

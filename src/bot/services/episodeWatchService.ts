@@ -175,6 +175,31 @@ export function listSubscriptions(chatJid: string): WatchSubscription[] {
   return loadSubscriptions().filter((s) => s.chatJid === chatJid);
 }
 
+/** Backup/restore support: validate an untrusted payload into clean subscriptions. */
+export function sanitizeWatchSubscriptions(raw: unknown): WatchSubscription[] {
+  if (!Array.isArray(raw)) return [];
+  const out: WatchSubscription[] = [];
+  for (const item of raw.slice(0, WATCH_MAX_GLOBAL)) {
+    const r = item as any;
+    const seasonUrl = typeof r?.seasonUrl === "string" && /^https?:\/\//i.test(r.seasonUrl.trim()) ? r.seasonUrl.trim() : "";
+    const chatJid = typeof r?.chatJid === "string" ? r.chatJid.trim().slice(0, 64) : "";
+    const title = typeof r?.title === "string" ? r.title.trim().slice(0, 128) : "";
+    if (!seasonUrl || !chatJid || !title) continue;
+    out.push({
+      id: typeof r?.id === "string" && r.id.length <= 24 ? r.id : crypto.randomBytes(6).toString("hex"),
+      chatJid,
+      title,
+      seasonUrl,
+      lang: typeof r?.lang === "string" ? r.lang.slice(0, 8) : "VF",
+      lastSeenEp: Math.min(Math.max(0, Number(r?.lastSeenEp) || 0), 100000),
+      createdAt: Math.min(Math.max(0, Number(r?.createdAt) || Date.now()), Date.now()),
+      lastCheckedAt: Number(r?.lastCheckedAt) || undefined,
+      consecutiveErrors: 0 // restored subscriptions start with a clean error slate
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Watch cycle (dependency-injected for tests)
 // ---------------------------------------------------------------------------

@@ -50,6 +50,10 @@ export interface BatchDownloadJob {
   createdAt: number;
   updatedAt: number;
   error?: string;
+  /** True for panel-simulator jobs (driven by the simulation timer). Real
+   *  WhatsApp-driven jobs cannot be retried from the panel — the download
+   *  pipeline lives in the command session (R11 honesty fix, 2026-09-01). */
+  simulated?: boolean;
 }
 
 // In-memory store of batch download jobs (max 20 most recent)
@@ -231,6 +235,15 @@ export function retryBatchJob(id: string): { success: boolean; job?: BatchDownlo
     return { success: false, error: "Batch job not found" };
   }
 
+  // R11 honesty fix: real (WhatsApp-driven) jobs have no panel-side worker —
+  // flipping statuses here would fake progress forever. Refuse explicitly.
+  if (!job.simulated) {
+    return {
+      success: false,
+      error: "Ce téléchargement a été lancé depuis WhatsApp : relance-le là-bas (`.a <titre> s1 <épisodes> r1`). Le panneau ne peut re-jouer que les jobs du simulateur."
+    };
+  }
+
   // Clear previous top-level errors
   job.error = undefined;
   job.status = "downloading";
@@ -309,6 +322,14 @@ export function retryEpisode(jobId: string, epNum: number): { success: boolean; 
   const ep = job.episodes.find((e) => e.epNum === epNum);
   if (!ep) {
     return { success: false, error: `Episode ${epNum} not found in batch job` };
+  }
+
+  // R11 honesty fix: see retryBatchJob.
+  if (!job.simulated) {
+    return {
+      success: false,
+      error: `L'épisode ${epNum} fait partie d'un téléchargement lancé depuis WhatsApp : relance la commande là-bas (\`.a <titre> s1 ${epNum} r1\`).`
+    };
   }
 
   ep.status = "downloading";
@@ -510,6 +531,7 @@ export function simulateBatchDownload(options?: {
     resolution,
     language,
   });
+  job.simulated = true;
 
   job.status = "downloading";
   job.currentStatusText = `Initializing ${totalEpisodes} concurrent download streams...`;
