@@ -1,8 +1,8 @@
-import AdmZip from "adm-zip";
 import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
+import { writeZipArchiveStream, StreamingZipEntry } from "./streamingZipWriter.js";
 import { registerTempDownload, TempDownloadRecord } from "../tempDownloadManager.js";
 import { updateJobStatus, completeBatchJob } from "../batchDownloadManager.js";
 
@@ -292,7 +292,7 @@ export class BatchZipManager {
 
     try {
       fs.mkdirSync(zipTempDir, { recursive: true });
-      const zip = new AdmZip();
+      const entries: StreamingZipEntry[] = [];
 
       // 1. Add README manifest if requested
       if (includeManifest) {
@@ -322,7 +322,7 @@ export class BatchZipManager {
             .join("\n") +
           `\n\nDownloaded via Nebula WhatsApp Bot Media Center.`;
 
-        zip.addFile("README.txt", Buffer.from(manifestText, "utf-8"));
+        entries.push({ entryName: "README.txt", data: Buffer.from(manifestText, "utf-8") });
         archivedFiles.push("README.txt");
       }
 
@@ -345,13 +345,22 @@ export class BatchZipManager {
           resolution
         });
 
-        // Add file with the formatted zero-padded name
-        zip.addLocalFile(ep.filePath, "", entryName);
+        // Stage for the streaming writer (constant memory; audit 8.15 - adm-zip
+        // used to build the whole archive in RAM and OOM-kill the container).
+        entries.push({ entryName, filePath: ep.filePath });
         archivedFiles.push(entryName);
       }
 
-      // 3. Write final zip archive
-      zip.writeZip(zipLocalPath);
+      // 3. Stream the final zip archive to disk (STORE method: MP4 payloads do
+      // not compress, so we archive at disk-copy speed with flat memory usage).
+      const startedAt = Date.now();
+      const writeResult = await writeZipArchiveStream(zipLocalPath, entries, (entryName, bytes) => {
+        console.log(`[BatchZipManager] Archived ${entryName} (${(bytes / 1048576).toFixed(2)} MB)`);
+      });
+      console.log(
+        `[BatchZipManager] Streaming zip complete: ${writeResult.entryCount} entries, ` +
+          `${(writeResult.totalBytes / 1048576).toFixed(2)} MB in ${((Date.now() - startedAt) / 1000).toFixed(1)}s.`
+      );
 
       // Clean staging dir if created
       try {

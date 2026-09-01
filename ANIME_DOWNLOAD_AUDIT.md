@@ -699,3 +699,41 @@ verified by re-reading hlsDownloader/tempDownloadManager/app.ts/novabox.
 - Regression guard: `tests/startFlags.test.ts` fails if the flags disappear.
 
 Suite: 224/224 (22 files, +3 start-flag tests).
+
+### 8.15 The REAL batch killer — adm-zip builds the whole archive in RAM (2026-08-31, seventeenth push)
+
+**User evidence (decisive):** after the 8.14 redeploy, the SAME `Killed`
+reappeared at the SAME spot — right after `Sparks_of_Tomorrow_VF_480P_S01_E09`
+registration. And the bot answered `📦 Episodes to Process: 9 episodes` for a
+`1-12` request: **the anime only has 9 episodes**, so E09 was the LAST episode
+in both runs. The kill was never mid-download — it fires exactly when the last
+episode finishes and the flow enters `BatchZipManager.packageEpisodes`.
+
+**Root cause:** `adm-zip` (`addLocalFile` × 9 then `writeZip`) keeps every entry
+buffer in RAM **and** materialises the final archive as a second Buffer before
+writing: 9 × 92 MB ≈ 830 MB of entries + ~830 MB zip buffer ≈ **1.6 GB peak**
+inside the ~954 MB cgroup → deterministic kernel OOM kill. This also
+retro-explains 8.12/8.14: GC luck and concurrency only shifted how close to the
+zip step the process got; the zip step itself was always fatal once episodes
+accumulated enough bytes.
+
+**Fix — streaming STORE-only zip writer (`streamingZipWriter.ts`):**
+- Entries are streamed to disk with backpressure (`for await` + drain waits):
+  flat memory (a few MB of chunk buffers) regardless of batch size.
+- Method STORE (0): MP4 payloads are already compressed, deflate would burn
+  minutes for ~0% gain — packaging now runs at disk-copy speed.
+- Maximum compatibility layout: CRC32 + sizes in the LOCAL header (pre-pass
+  CRC, no data descriptors), UTF-8 name flag, Unix 0644 external attributes,
+  classic (non-ZIP64) limits enforced with an early clear error.
+- `batchZipManager.packageEpisodes` now stages entries (README manifest +
+  episodes) and streams them; same filenames, same `BatchZipResult` contract,
+  same cleanup/TTL/registration behaviour.
+- adm-zip is still used — in the TEST suite as an independent parser proving
+  round-trip byte-exactness, UTF-8 names, empty files, STORE method, CRCs, and
+  a 64 MB streamed-file regression guard.
+
+**8.14 verdict kept honest:** the V8-heap-cap + between-episode gc flags remain
+as sound hardening for a 954 MB cgroup, but they were NOT the decisive fix —
+the deterministic killer was adm-zip's in-memory archive construction.
+
+Suite: 229/229 (23 files, +5 streaming zip tests +1 renamed count).
