@@ -912,3 +912,28 @@ green, `dist/server.cjs` built, `.env` created by setup, `nebula` symlink
 works for `version`/`status` (repo resolved correctly), ffmpeg-static binary
 NOT downloaded (FFMPEG_BIN honored), re-run is idempotent (pull --ff-only,
 ".env conservé").
+
+### 8.22 `.trace` — anime identification from a screenshot (trace.moe) (2026-08-31, twenty-fourth push)
+
+**User request:** option 2 of the public-apis survey — "un alias et un exécuteur
+simple": send/quote a screenshot, get the anime + episode + timecode.
+
+**Delivered:**
+- `services/tracemoeClient.ts`: POST `api.trace.moe/search?anilistInfo=1`
+  with the raw image bytes (10 MB ceiling, `X-Trace-TTL: 3600`, 15 s timeout)
+  or the GET url= variant (trace.moe fetches it, we only validate ^https?://).
+  Best-effort contract: network/HTTP/429 failures resolve to a friendly French
+  error, never a crash. Pure helpers: `formatTimestamp` (95.3 → "1:35",
+  3675 → "1:01:15", invalid → "--:--"), `formatEpisode` (Ép. 7 / Ép. 3-5 /
+  Film), `pickBestTrace` (highest similarity), `formatTraceCard` (title EN/romaji
+  + native alt, episode, timecode, similarity %, adult flag, `.a <title>`
+  download hint, AniList link).
+- `commands/trace.ts` with aliases `tracemoe` and `whatanime` (native registry
+  alias support). Three input paths: image attached with `.trace` caption,
+  `.trace` as a reply to an image (both via `context.downloadMedia()`), or
+  `.trace <image url>`. Replies with the card + the matched scene thumbnail
+  (trace.moe hosts it); "aucun anime identifié" tips when similarity search
+  misses.
+- No API key, one request per user action (anonymous rate limit friendly).
+
+Suite: 263/263 (26 files, +13 trace.moe tests).
