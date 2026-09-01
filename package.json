@@ -27,8 +27,7 @@
     "@tailwindcss/vite": "^4.1.14",
     "@vitalets/google-translate-api": "^9.2.1",
     "@vitejs/plugin-react": "^5.0.4",
-    "@whiskeysockets/baileys": "^7.0.0-rc14",
-    "adm-zip": "^0.6.0",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "axios": "^1.20.0",
     "cheerio": "^1.2.0",
     "dotenv": "^17.2.3",
@@ -66,6 +65,7 @@
     "@types/react-dom": "^19.0.0",
     "@types/supertest": "^6.0.2",
     "@vitest/coverage-v8": "^3.2.7",
+    "adm-zip": "^0.6.0",
     "esbuild": "^0.25.12",
     "eslint": "^10.9.1",
     "eslint-plugin-react-hooks": "^7.1.1",
@@ -78,5 +78,10 @@
     "typescript": "~5.8.2",
     "typescript-eslint": "^8.68.0",
     "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "redstar": {
+      "minimatch": "^10.2.6"
+    }
   }
 }
