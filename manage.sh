@@ -497,18 +497,19 @@ cmd_version() {
 }
 
 cmd_help() {
+  local self; self="$(basename "$0")"
   cat <<EOF
 ${C_BOLD}${C_CYAN} ╔═══════════════════════════════════════════════════════════════╗
  ║   NEBULA BOT — Gestion VPS                                      ║
  ╚═══════════════════════════════════════════════════════════════╝${C_RESET}
-${C_BOLD}Usage:${C_RESET} ./manage.sh <commande> [arguments]
+${C_BOLD}Usage:${C_RESET} ${self} <commande> [arguments]
 
 ${C_BOLD}Cycle de vie${C_RESET}
    ${C_BOLD}start${C_RESET}      Démarre le bot (nohup) et vérifie que le panneau répond
    ${C_BOLD}stop${C_RESET}       Arrêt propre (SIGTERM puis SIGKILL si besoin)
    ${C_BOLD}restart${C_RESET}    stop + start
    ${C_BOLD}status${C_RESET}     État complet: process, RAM vs cgroup, panneau, tunnel, disque
-   ${C_BOLD}logs${C_RESET} [f]   Suit le log en direct (/root/bot.log); ex: ./manage.sh logs NOVABOX
+   ${C_BOLD}logs${C_RESET} [f]   Suit le log en direct (/root/bot.log); ex: nebula logs NOVABOX
 
 ${C_BOLD}Installation / mise à jour${C_RESET}
    ${C_BOLD}update${C_RESET}     git pull --ff-only + npm install (si besoin) + build + restart
@@ -526,7 +527,7 @@ ${C_BOLD}Maintenance${C_RESET}
    ${C_BOLD}doctor${C_RESET}     Diagnostic complet (node, ffmpeg, .env, RAM, disque, réseau…)
    ${C_BOLD}version${C_RESET}    Révision git du script + de l'app
 
-${C_DIM}Alias conseillé : alias nebula='bash /root/p/manage.sh'${C_RESET}
+${C_DIM}Installé via scripts/install.sh → commande « nebula » disponible partout.${C_RESET}
 EOF
 }
 
