@@ -1,6 +1,6 @@
 # Guide de migration — Nouveau VPS/conteneur + tunnel Cloudflare
 
-> Objectif : réinstaller **exactement** le setup actuel (`https://jcversaco.qzz.io`
+> Objectif : réinstaller **exactement** le setup actuel (`https://exemple.com`
 > sans préfixe) sur une machine neuve, sans se tromper dans le dashboard Cloudflare.
 > Durée : ~20 minutes. Document en français, étape par étape.
 >
@@ -18,18 +18,18 @@ le formulaire demande :
 | Champ | Que mettre |
 |---|---|
 | **Subdomain** | **RIEN — laisse le champ VIDE** (il est optionnel) |
-| **Domain** | `jcversaco.qzz.io` (à sélectionner dans la liste) |
+| **Domain** | `exemple.com` (à sélectionner dans la liste) |
 | **Path** | vide |
 | **Type** | `HTTP` |
 | **URL** | `localhost:3000` |
 
-- Subdomain **vide** + Domain `jcversaco.qzz.io` ⇒ l'hostname public est
-  **`https://jcversaco.qzz.io`** (le domaine nu, exactement comme maintenant).
+- Subdomain **vide** + Domain `exemple.com` ⇒ l'hostname public est
+  **`https://exemple.com`** (le domaine nu, exactement comme maintenant).
 - Si tu tapes `www`, `nebula`, `panel`… dans Subdomain, tu obtiens
-  `www.jcversaco.qzz.io` etc. — **ce n'est plus la même URL** que `APP_URL`, et
+  `www.exemple.com` etc. — **ce n'est plus la même URL** que `APP_URL`, et
   le panneau rejettera les requêtes (garde anti Host-header).
 - Ne tape **jamais** le domaine complet dans le champ Subdomain (ça donnerait
-  `jcversaco.qzz.io.jcversaco.qzz.io`).
+  `exemple.com.exemple.com`).
 - Si Cloudflare signale qu'un **enregistrement DNS existe déjà** à la racine
   (l'ancien CNAME du tunnel précédent), accepte le **remplacement** : c'est
   justement le pointage qu'on veut réécrire.
@@ -108,12 +108,12 @@ Vérifier les 3 clés vitales (`./manage.sh env list`) :
 
 | Clé | Valeur attendue |
 |---|---|
-| `APP_URL` | `https://jcversaco.qzz.io` — **exactement, sans slash final, sans sous-domaine** |
+| `APP_URL` | `https://exemple.com` — **exactement, sans slash final, sans sous-domaine** |
 | `PANEL_TOKEN` | ta clé de connexion au panneau |
 | `GEMINI_API_KEY` | ta clé Gemini |
 
 > Si tu repars d'un `.env` neuf : `./manage.sh env` (assistant interactif)
-> puis `./manage.sh env set APP_URL https://jcversaco.qzz.io`.
+> puis `./manage.sh env set APP_URL https://exemple.com`.
 
 ---
 
@@ -121,11 +121,11 @@ Vérifier les 3 clés vitales (`./manage.sh env list`) :
 
 ### Cas A — Réutiliser le MÊME tunnel (recommandé : zéro changement DNS)
 
-Le hostname public `jcversaco.qzz.io` reste configuré sur le tunnel existant ;
+Le hostname public `exemple.com` reste configuré sur le tunnel existant ;
 on installe juste un nouveau connecteur sur la nouvelle machine.
 
 1. Dashboard Cloudflare → **Zero Trust → Networks → Tunnels** → clique sur ton
-   tunnel (celui dont le hostname public est `jcversaco.qzz.io` → `HTTP://localhost:3000`).
+   tunnel (celui dont le hostname public est `exemple.com` → `HTTP://localhost:3000`).
 2. Onglet **Install and run a connector** (ou menu ⋯ → copier la commande) :
    copie le **jeton** affiché (long texte `eyJ…` dans la commande `cloudflared service install … --token …`).
 3. Sur le nouveau conteneur :
@@ -157,11 +157,11 @@ minutes ; le nouveau prend le relais. **Rien à changer côté DNS.**
 | Champ | Valeur |
 |---|---|
 | Subdomain | **(VIDE)** |
-| Domain | `jcversaco.qzz.io` |
+| Domain | `exemple.com` |
 | Type | `HTTP` |
 | URL | `localhost:3000` |
 
-4. Si Cloudflare indique que l'enregistrement `jcversaco.qzz.io` existe déjà
+4. Si Cloudflare indique que l'enregistrement `exemple.com` existe déjà
    (pointant vers l'ancien tunnel), accepte le **remplacement**.
 5. Vérifie dans **DNS** que la racine `@` est bien un **CNAME**
    `<id-nouveau-tunnel>.cfargotunnel.com`, proxy activé (orange).
@@ -174,10 +174,10 @@ minutes ; le nouveau prend le relais. **Rien à changer côté DNS.**
 cd /root/p
 ./manage.sh start        # démarre le bot + attend que le panneau réponde
 ./manage.sh doctor       # diagnostic complet (doit finir sur RIEN DE BLOQUANT)
-curl -s https://jcversaco.qzz.io/api/health   # → {"status":"ok",...}
+curl -s https://exemple.com/api/health   # → {"status":"ok",...}
 ```
 
-Puis ouvre `https://jcversaco.qzz.io` dans le navigateur et connecte-toi avec
+Puis ouvre `https://exemple.com` dans le navigateur et connecte-toi avec
 `PANEL_TOKEN`.
 
 ---
@@ -202,10 +202,10 @@ crontab -e   # ajouter les 3 lignes :
 
 | Symptôme | Cause probable | Correction |
 |---|---|---|
-| `https://jcversaco.qzz.io` injoignable | cloudflared arrêté / mauvais jeton | `tail -20 /root/tunnel.log` ; relancer §4 |
+| `https://exemple.com` injoignable | cloudflared arrêté / mauvais jeton | `tail -20 /root/tunnel.log` ; relancer §4 |
 | Tunnel OK mais erreur 400/502 sur le domaine | bot arrêté ou port ≠ 3000 | `./manage.sh status` puis `./manage.sh start` |
-| Erreur « Bad Host / requête rejetée » | `APP_URL` ≠ hostname réel (sous-domaine tapé dans le formulaire, slash final…) | `./manage.sh env set APP_URL https://jcversaco.qzz.io` puis `restart` |
-| Le panneau n'accepte pas la connexion (cookie) | accès en HTTP nu ou mauvais domaine | passer par `https://jcversaco.qzz.io` (HTTPS obligatoire pour le cookie de session) |
+| Erreur « Bad Host / requête rejetée » | `APP_URL` ≠ hostname réel (sous-domaine tapé dans le formulaire, slash final…) | `./manage.sh env set APP_URL https://exemple.com` puis `restart` |
+| Le panneau n'accepte pas la connexion (cookie) | accès en HTTP nu ou mauvais domaine | passer par `https://exemple.com` (HTTPS obligatoire pour le cookie de session) |
 | Bot démarre mais demande un QR WhatsApp | `nebula_auth_info/` non restauré | rescanner via le panneau, ou restaurer le dossier puis `restart` |
 | Le dashboard force un sous-domaine | le champ Subdomain a été rempli | vider le champ Subdomain (il est **optionnel**) et re-sélectionner le domaine |
 
@@ -214,8 +214,8 @@ crontab -e   # ajouter les 3 lignes :
 ## 8. Résumé en une ligne par brique
 
 - **Code** : `git clone -b main https://github.com/JCVERSA/nebula-p … && ./manage.sh setup`
-- **Config** : `.env` avec `APP_URL=https://jcversaco.qzz.io` + `PANEL_TOKEN`
+- **Config** : `.env` avec `APP_URL=https://exemple.com` + `PANEL_TOKEN`
 - **Session WhatsApp** : dossier `nebula_auth_info/` restauré
 - **Tunnel** : `cloudflared tunnel run --token <jeton>` ; hostname public =
-  Subdomain **vide** + Domain `jcversaco.qzz.io` → `http://localhost:3000`
-- **Vérif** : `./manage.sh doctor` + `curl https://jcversaco.qzz.io/api/health`
+  Subdomain **vide** + Domain `exemple.com` → `http://localhost:3000`
+- **Vérif** : `./manage.sh doctor` + `curl https://exemple.com/api/health`

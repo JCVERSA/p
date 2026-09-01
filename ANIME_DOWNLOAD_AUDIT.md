@@ -1311,3 +1311,16 @@ fast-forwarding (same history), so existing installs only need
 
 **Suite:** 311/311 (34 files), tsc/eslint/build green (numbers unchanged —
 fixtures edited in place).
+
+**Post-8.33 verification round (owner-requested pre-push audit):** the first
+genericization pass had MISSED 37 real-domain references across
+GUIDE_DEPLOIEMENT_VPS.md (16) and MIGRATION_NOUVEAU_VPS.md (21) — now
+genericized to `exemple.com`; `logs.txt` (tracked debug artifact: franime
+Cloudflare-challenge dumps + an old container hostname) removed from the
+tree; full-tree re-scan clean. HISTORY caveat: git history still contains
+pre-genericization versions (domain, 237-prefixed JIDs) and the profile-README
+commit — pushing this branch's full history to a public repo would expose
+them. Recommended for the public repo: orphan (fresh single-commit) history
+via `git checkout --orphan main`; existing VPS checkouts then re-align with
+`git fetch && git reset --hard origin/main` (runtime state is untracked:
+.env, database/, nebula_auth_info/ are gitignored — verified).

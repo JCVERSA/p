@@ -220,16 +220,16 @@ Ouvrez `TUNNEL_URL` dans votre navigateur → entrez le `PANEL_TOKEN`.
 
 ## 5. Tunnel Cloudflare — AVEC votre domaine (URL fixe)
 
-Exemple utilisé ici : `jcversaco.qzz.io` (sous-domaine gratuit, zone déjà gérée
+Exemple utilisé ici : `exemple.com` (sous-domaine gratuit, zone déjà gérée
 dans un compte Cloudflare). Remplacez par votre domaine. Résultat final :
-`https://nebula.jcversaco.qzz.io` (ou la racine du domaine, au choix).
+`https://nebula.exemple.com` (ou la racine du domaine, au choix).
 
 ### 5.0 Prérequis : le domaine doit être une zone Cloudflare Active
 
 1. Créez un compte sur <https://dash.cloudflare.com> (gratuit).
-2. **Add a domain** → votre domaine (ex. `jcversaco.qzz.io`) → plan **Free**.
+2. **Add a domain** → votre domaine (ex. `exemple.com`) → plan **Free**.
 3. Cloudflare affiche **2 nameservers** (ex. `ada.ns.cloudflare.com`).
-4. Chez votre registrar (DigitalPlat FreeDomain pour `qzz.io`, etc.), remplacez
+4. Chez votre registrar (votre registrar), remplacez
    les nameservers par ceux de Cloudflare.
 5. Attendez le statut **Active** dans le dashboard (quelques minutes à quelques heures).
 
@@ -255,31 +255,31 @@ Deux méthodes ensuite : **A (dashboard, la plus simple)** ou **B (CLI)**.
    sleep 5 && grep -i "Registered tunnel connection" /root/tunnel.log | head -2
    ```
 4. Dans le dashboard, onglet **Public hostname** du tunnel → *Add a public hostname* :
-   - Subdomain : `nebula` (ou vide pour la racine) — Domain : `jcversaco.qzz.io`
+   - Subdomain : `nebula` (ou vide pour la racine) — Domain : `exemple.com`
    - Service : `HTTP` → `localhost:3000`
    - Save. Attendez ~30 s (DNS + certificat).
 5. Déclarez l'URL dans le bot :
    ```bash
    cd /root/p
-   sed -i "s#^APP_URL=.*#APP_URL=https://nebula.jcversaco.qzz.io#" .env
-   grep APP_URL .env || echo "APP_URL=https://nebula.jcversaco.qzz.io" >> .env
+   sed -i "s#^APP_URL=.*#APP_URL=https://nebula.exemple.com#" .env
+   grep APP_URL .env || echo "APP_URL=https://nebula.exemple.com" >> .env
    pkill -f dist/server.cjs; sleep 1
    nohup npm start > /root/bot.log 2>&1 &
    ```
 
-Ouvrez `https://nebula.jcversaco.qzz.io` → token panneau. **L'URL est fixe pour
+Ouvrez `https://nebula.exemple.com` → token panneau. **L'URL est fixe pour
 toujours** — le script de démarrage (étape 6) n'a plus rien à mettre à jour.
 
 ### 5.B Méthode CLI — tunnel nommé local
 
 ```bash
 # 1. Authentification (une fois) : copiez le lien affiché, ouvrez-le sur votre
-#    téléphone/PC, connectez-vous et autorisez la zone jcversaco.qzz.io
+#    téléphone/PC, connectez-vous et autorisez la zone exemple.com
 cloudflared tunnel login
 
 # 2. Créer le tunnel + son entrée DNS
 cloudflared tunnel create nebula
-cloudflared tunnel route dns nebula jcversaco.qzz.io
+cloudflared tunnel route dns nebula exemple.com
 
 # 3. Configuration locale (le chemin du .json est affiché par "tunnel create")
 TUNNEL_JSON=$(ls /root/.cloudflared/*.json | grep -v cert | head -1)
@@ -287,7 +287,7 @@ cat > /root/.cloudflared/config.yml <<EOF
 tunnel: nebula
 credentials-file: $TUNNEL_JSON
 ingress:
-  - hostname: jcversaco.qzz.io
+  - hostname: exemple.com
     service: http://localhost:3000
   - service: http_status:404
 EOF
@@ -297,8 +297,8 @@ nohup cloudflared tunnel run nebula > /root/tunnel.log 2>&1 &
 
 # 5. APP_URL (comme en 5.A.5)
 cd /root/p
-sed -i "s#^APP_URL=.*#APP_URL=https://jcversaco.qzz.io#" .env
-grep APP_URL .env || echo "APP_URL=https://jcversaco.qzz.io" >> .env
+sed -i "s#^APP_URL=.*#APP_URL=https://exemple.com#" .env
+grep APP_URL .env || echo "APP_URL=https://exemple.com" >> .env
 pkill -f dist/server.cjs; sleep 1
 nohup npm start > /root/bot.log 2>&1 &
 ```
