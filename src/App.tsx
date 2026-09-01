@@ -73,6 +73,13 @@ import { BrowserIdentitySelector } from "./components/BrowserIdentitySelector";
 import { BatchDownloadStatus } from "./components/BatchDownloadStatus";
 import AccessControlPanel from "./components/AccessControlPanel";
 import SecurityExtras from "./components/SecurityExtras";
+import SpotlightCard from "./components/SpotlightCard";
+import ShinyText from "./components/ShinyText";
+import HeroChip from "./components/HeroChip";
+import HeroKbd from "./components/HeroKbd";
+import HeroSnippet from "./components/HeroSnippet";
+import HeroUser from "./components/HeroUser";
+import SystemDiagnostics from "./components/SystemDiagnostics";
 
 type TabId = NavTab;
 
@@ -107,32 +114,36 @@ const VALID_STATUSES: ConnectionStatus[] = ["disconnected", "connecting", "qr_re
 
 function StatCard({ icon: Icon, label, value, sub }: { icon: any; label: string; value: string; sub?: string }) {
   return (
-    <div className="bg-[#0b0b0c] rounded-2xl border border-white/10 p-4 sm:p-5 flex items-start gap-3.5 sm:gap-4 hover:border-white/20 transition-all shadow-sm">
-      <div className={`p-2.5 rounded-xl bg-white/5 text-amber-400 border border-white/5 shrink-0`}>
-        <Icon className="w-5 h-5" />
+    <SpotlightCard spotlightColor="rgba(245, 158, 11, 0.15)" className="h-full">
+      <div className="p-5 flex flex-col justify-between h-full">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">{label}</span>
+          <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/10 shrink-0">
+            <Icon className="w-4 h-4" />
+          </div>
+        </div>
+        <div className="mt-4">
+          <p className="text-2xl font-black text-white tracking-tight">{value}</p>
+          {sub && <p className="text-[11px] text-zinc-500 mt-1 truncate">{sub}</p>}
+        </div>
       </div>
-      <div className="min-w-0">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">{label}</p>
-        <p className="text-xl sm:text-2xl font-bold text-white tracking-tight truncate">{value}</p>
-        {sub && <p className="text-xs text-zinc-400 mt-0.5 truncate">{sub}</p>}
-      </div>
-    </div>
+    </SpotlightCard>
   );
 }
 
 function Card({ title, icon: Icon, action, children, className = "" }: { title?: string; icon?: any; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
-    <div className={`bg-[#0b0b0c] rounded-2xl border border-white/10 shadow-lg ${className}`}>
+    <div className={`bg-[#0e0e11] rounded-2xl border border-white/5 shadow-xl hover:shadow-2xl/10 transition-all duration-300 ${className}`}>
       {title && (
-        <div className="flex items-center justify-between px-4 sm:px-5 py-3.5 sm:py-4 border-b border-white/10">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
           <div className="flex items-center gap-2.5">
             {Icon && <Icon className="w-4 h-4 text-amber-400" />}
-            <h3 className="font-semibold text-white text-sm tracking-tight">{title}</h3>
+            <h3 className="font-bold text-white text-sm tracking-wide uppercase">{title}</h3>
           </div>
           {action}
         </div>
       )}
-      <div className="p-4 sm:p-5">{children}</div>
+      <div className="p-5">{children}</div>
     </div>
   );
 }
@@ -140,6 +151,7 @@ function Card({ title, icon: Icon, action, children, className = "" }: { title?:
 
 export default function App() {
   // ------------------------------------------------------------------ state
+  const bgContainerRef = useRef<HTMLDivElement>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -185,6 +197,150 @@ export default function App() {
   const [antiLink, setAntiLink] = useState(true);
   const [autonomousAi, setAutonomousAi] = useState(true);
   const [publicMode, setPublicMode] = useState(true);
+
+  // Liquid glass visual state controls
+  const [adaptiveMorphing, setAdaptiveMorphing] = useState(() => {
+    const saved = localStorage.getItem("adaptive-morphing");
+    return saved !== "false";
+  });
+  const [blurIntensity, setBlurIntensity] = useState(() => {
+    const saved = localStorage.getItem("backdrop-blur-intensity");
+    return saved ? parseFloat(saved) : 1.0;
+  });
+  const [animationDuration, setAnimationDuration] = useState(() => {
+    const saved = localStorage.getItem("blob-animation-duration");
+    return saved ? parseFloat(saved) : 16;
+  });
+  const [motionSensitivity, setMotionSensitivity] = useState(() => {
+    const saved = localStorage.getItem("motion-sensitivity");
+    return saved !== "false";
+  });
+
+  const [blobStyles, setBlobStyles] = useState([
+    { borderRadius: "40% 60% 70% 30% / 40% 50% 60% 50%", transform: "translate(0px, 0px) scale(1)" },
+    { borderRadius: "50% 50% 30% 70% / 50% 60% 40% 60%", transform: "translate(0px, 0px) scale(1)" },
+    { borderRadius: "60% 40% 50% 50% / 40% 40% 60% 60%", transform: "translate(0px, 0px) scale(1)" },
+  ]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--backdrop-blur-intensity", blurIntensity.toString());
+    localStorage.setItem("backdrop-blur-intensity", blurIntensity.toString());
+  }, [blurIntensity]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--blob-animation-duration", `${animationDuration}s`);
+    localStorage.setItem("blob-animation-duration", animationDuration.toString());
+  }, [animationDuration]);
+
+  useEffect(() => {
+    localStorage.setItem("motion-sensitivity", motionSensitivity.toString());
+  }, [motionSensitivity]);
+
+  // Mouse & Scroll velocity based organic scale feedback loop
+  useEffect(() => {
+    if (!motionSensitivity) {
+      if (bgContainerRef.current) {
+        bgContainerRef.current.style.transform = "scale(1)";
+      }
+      return;
+    }
+
+    let lastX = 0;
+    let lastY = 0;
+    let lastTime = Date.now();
+    let targetScale = 1;
+    let currentScale = 1;
+    let animationFrameId: number;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const now = Date.now();
+      const dt = now - lastTime;
+      if (dt > 0) {
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const speed = distance / dt;
+        // Map mouse movement speed smoothly into scale up to 1.15
+        targetScale = 1 + Math.min(speed * 0.04, 0.15);
+      }
+      lastX = e.clientX;
+      lastY = e.clientY;
+      lastTime = now;
+    };
+
+    let lastScrollTop = window.scrollY || document.documentElement.scrollTop;
+    const handleScroll = () => {
+      const now = Date.now();
+      const dt = now - lastTime;
+      if (dt > 0) {
+        const currentScroll = window.scrollY || document.documentElement.scrollTop;
+        const dy = Math.abs(currentScroll - lastScrollTop);
+        const speed = dy / dt;
+        // Map scrolling speed smoothly up to 1.2
+        targetScale = 1 + Math.min(speed * 0.06, 0.2);
+        lastScrollTop = currentScroll;
+      }
+      lastTime = now;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove, { passive: true });
+    window.addEventListener("scroll", handleScroll, { passive: true });
+
+    const updatePhysics = () => {
+      // Natural fluid deceleration (spring pull back to rest scale of 1.0)
+      targetScale += (1 - targetScale) * 0.04;
+      // Exponential dynamic lerping for absolute silk smoothness
+      currentScale += (targetScale - currentScale) * 0.08;
+      if (bgContainerRef.current) {
+        bgContainerRef.current.style.transform = `scale(${currentScale.toFixed(4)})`;
+      }
+      animationFrameId = requestAnimationFrame(updatePhysics);
+    };
+
+    animationFrameId = requestAnimationFrame(updatePhysics);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("scroll", handleScroll);
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [motionSensitivity]);
+
+  useEffect(() => {
+    if (!adaptiveMorphing) return;
+
+    const generateRandomBlobStyle = () => {
+      const rand = (min = 25, max = 75) => Math.floor(Math.random() * (max - min)) + min;
+      const radius = `${rand()}% ${rand()}% ${rand()}% ${rand()}% / ${rand()}% ${rand()}% ${rand()}% ${rand()}%`;
+      const tx = rand(-60, 60);
+      const ty = rand(-60, 60);
+      const scale = (rand(85, 125) / 100).toFixed(2);
+      return {
+        borderRadius: radius,
+        transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
+      };
+    };
+
+    setBlobStyles([
+      generateRandomBlobStyle(),
+      generateRandomBlobStyle(),
+      generateRandomBlobStyle(),
+    ]);
+
+    const interval = setInterval(() => {
+      setBlobStyles([
+        generateRandomBlobStyle(),
+        generateRandomBlobStyle(),
+        generateRandomBlobStyle(),
+      ]);
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [adaptiveMorphing]);
+
+  useEffect(() => {
+    localStorage.setItem("adaptive-morphing", adaptiveMorphing.toString());
+  }, [adaptiveMorphing]);
 
   // Audio transcription
   const [isRecording, setIsRecording] = useState(false);
@@ -1568,7 +1724,44 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-black text-zinc-100 font-sans" id="app_root">
+    <div className="flex h-screen w-full overflow-hidden bg-[#070709] text-zinc-100 font-sans relative" id="app_root">
+      {/* Liquid Glass Background Ambient Orbs */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none -z-50">
+        <div 
+          ref={bgContainerRef}
+          style={{
+            width: "100%",
+            height: "100%",
+            position: "relative",
+            pointerEvents: "none",
+            zIndex: -50,
+            willChange: "transform"
+          }}
+        >
+          <div 
+            className={`liquid-blob w-[450px] h-[450px] top-[-10%] left-[-5%] bg-[var(--color-blob-1,#d97706)] ${adaptiveMorphing ? 'liquid-blob-adaptive' : ''}`}
+            style={adaptiveMorphing ? {
+              borderRadius: blobStyles[0].borderRadius,
+              transform: blobStyles[0].transform
+            } : undefined}
+          />
+          <div 
+            className={`liquid-blob w-[600px] h-[600px] bottom-[-20%] right-[-10%] bg-[var(--color-blob-2,#ea580c)] ${adaptiveMorphing ? 'liquid-blob-adaptive' : ''}`}
+            style={adaptiveMorphing ? {
+              borderRadius: blobStyles[1].borderRadius,
+              transform: blobStyles[1].transform
+            } : undefined}
+          />
+          <div 
+            className={`liquid-blob w-[350px] h-[350px] top-[40%] left-[50%] bg-[var(--color-blob-1,#d97706)] ${adaptiveMorphing ? 'liquid-blob-adaptive' : ''}`}
+            style={adaptiveMorphing ? {
+              borderRadius: blobStyles[2].borderRadius,
+              transform: blobStyles[2].transform
+            } : { animationDelay: "-4s", animationDuration: "24s" }}
+          />
+        </div>
+      </div>
+
       {/* Reference Template Sidebar */}
       <Sidebar
         activeTab={activeTab}
@@ -1580,7 +1773,10 @@ export default function App() {
       />
 
       {/* Main Column */}
-      <div className="flex min-w-0 flex-1 flex-col bg-black">
+      <div 
+        className="flex min-w-0 flex-1 flex-col bg-black/45 relative z-10 border-l border-white/5"
+        style={{ backdropFilter: "blur(calc(var(--backdrop-blur-intensity, 1) * 24px))" }}
+      >
         {/* Reference Template Topbar */}
         <Topbar
           activeTab={activeTab}
@@ -1625,10 +1821,10 @@ export default function App() {
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeTab}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.15 }}
+                initial={{ opacity: 0, y: 15, scale: 0.995 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -15, scale: 0.995 }}
+                transition={{ type: "spring", stiffness: 380, damping: 28 }}
               >
                 {/* ============================================================ OVERVIEW */}
                 {activeTab === "overview" && (
@@ -2266,7 +2462,7 @@ export default function App() {
                     {/* System summary */}
                     <div className="flex flex-col md:flex-row gap-4 md:h-52 select-none" id="system_summary_container">
                       {/* 3D Minecraft Engine Ignition Torch */}
-                      <div className="bg-[#0b0b0c] border border-white/10 rounded-xl p-5 shadow-sm flex flex-col items-center justify-between text-center relative overflow-hidden group hover:border-amber-500/30 transition-all duration-500 w-full md:flex-1 h-48 md:h-full">
+                      <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 shadow-xl flex flex-col items-center justify-between text-center relative overflow-hidden group hover:border-amber-500/30 hover:scale-[1.015] transition-all duration-300 w-full md:flex-1 h-48 md:h-full">
                         <div className="flex items-center justify-between w-full">
                           <span className="text-[10px] font-bold font-mono uppercase tracking-wider text-amber-400/80">Engine Power</span>
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${status === "connected" ? "bg-emerald-950 text-emerald-300 border border-emerald-800" : "bg-zinc-900 text-zinc-400 border border-zinc-700"}`}>
@@ -2295,7 +2491,7 @@ export default function App() {
                       </div>
 
                       {/* Engine status card - accordion */}
-                      <div className="bg-[#0b0b0c] border border-white/10 rounded-xl p-5 shadow-sm flex flex-col justify-between hover:border-white/20 hover:border-amber-500/30 transition-all duration-500 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
+                      <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 shadow-xl flex flex-col justify-between hover:border-amber-500/30 hover:scale-[1.015] transition-all duration-300 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
                         {/* Collapsed State (Vertical layout on desktop) */}
                         <div className="hidden md:flex group-hover:md:hidden flex-col items-center justify-between h-full py-2">
                           <Cpu className="w-5 h-5 text-amber-400 animate-pulse" />
@@ -2318,7 +2514,7 @@ export default function App() {
                       </div>
 
                       {/* Intelligence status card - accordion */}
-                      <div className="bg-[#0b0b0c] border border-white/10 rounded-xl p-5 shadow-sm flex flex-col justify-between hover:border-white/20 hover:border-amber-500/30 transition-all duration-500 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
+                      <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 shadow-xl flex flex-col justify-between hover:border-amber-500/30 hover:scale-[1.015] transition-all duration-300 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
                         {/* Collapsed State (Vertical layout on desktop) */}
                         <div className="hidden md:flex group-hover:md:hidden flex-col items-center justify-between h-full py-2">
                           <Sparkles className="w-5 h-5 text-amber-400 animate-pulse" />
@@ -2343,7 +2539,7 @@ export default function App() {
                       </div>
 
                       {/* Prefix status card - accordion */}
-                      <div className="bg-[#0b0b0c] border border-white/10 rounded-xl p-5 shadow-sm flex flex-col justify-between hover:border-white/20 hover:border-amber-500/30 transition-all duration-500 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
+                      <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 shadow-xl flex flex-col justify-between hover:border-amber-500/30 hover:scale-[1.015] transition-all duration-300 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
                         {/* Collapsed State (Vertical layout on desktop) */}
                         <div className="hidden md:flex group-hover:md:hidden flex-col items-center justify-between h-full py-2">
                           <Smartphone className="w-5 h-5 text-amber-400 animate-pulse" />
@@ -2392,7 +2588,7 @@ export default function App() {
                       {/* Left: Box Accordion Column (Cyber Node Status) */}
                       <div className="lg:col-span-2 flex flex-col gap-3">
                         <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Node Cluster Status</span>
-                        <div className="bg-[#0b0b0c] border border-white/10 rounded-2xl p-5 h-64 flex flex-col justify-between">
+                        <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 h-64 flex flex-col justify-between shadow-xl hover:border-amber-500/10 hover:scale-[1.01] transition-all duration-300">
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-bold text-zinc-300">Live Active Clusters</span>
                             <span className="w-2 h-2 rounded-full bg-[#00ffeb] animate-pulse" />
@@ -2429,7 +2625,7 @@ export default function App() {
                       {/* Right: Git Commits / Engine Core Updates Timeline (3 Columns) */}
                       <div className="lg:col-span-3 flex flex-col gap-3">
                         <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Engine Repository Commits</span>
-                        <div className="bg-[#0b0b0c] border border-white/10 rounded-2xl p-5 h-64 overflow-y-auto scrollbar">
+                        <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 h-64 overflow-y-auto scrollbar shadow-xl hover:border-amber-500/10 hover:scale-[1.01] transition-all duration-300">
                           <div className="relative pl-6 before:absolute before:top-2 before:bottom-2 before:left-3 before:w-[2px] before:border-l-2 before:border-dashed before:border-zinc-800">
                             
                             {/* Commit 1 */}
@@ -2509,7 +2705,9 @@ export default function App() {
                           </span>
                           <span className="text-xs text-zinc-500 font-mono">Baileys WebSocket Multi-Device v6.7.x</span>
                         </div>
-                        <h2 className="text-xl font-bold text-white tracking-tight">WhatsApp Connection Command Center</h2>
+                        <h2 className="text-xl font-bold text-white tracking-tight">
+                          <ShinyText text="WhatsApp Connection Command Center" speed={4} />
+                        </h2>
                         <p className="text-xs text-zinc-400 max-w-xl">
                           Pair your WhatsApp account directly to the bot engine via 8-digit Pairing Code (no second phone needed) or QR Code Scanner.
                         </p>
@@ -2660,19 +2858,14 @@ export default function App() {
                             </form>
 
                             {pairingCode && (
-                              <div className="mt-4 p-5 bg-black border-2 border-amber-500/40 rounded-2xl space-y-3 text-center">
-                                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">Your Secure Pairing Code</span>
-                                <div className="text-3xl font-mono font-black text-white tracking-widest py-2 bg-white/5 rounded-xl border border-white/10 select-all">
-                                  {pairingCode}
+                              <div className="mt-4 p-5 bg-[#18181b]/90 border border-white/10 rounded-2xl space-y-3.5 text-center">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 block select-none">Your Secure Pairing Code</span>
+                                <div className="flex justify-center">
+                                  <HeroSnippet symbol="" size="lg" color="warning">
+                                    {pairingCode}
+                                  </HeroSnippet>
                                 </div>
                                 <div className="flex items-center justify-center gap-3">
-                                  <button
-                                    onClick={copyPairingCode}
-                                    className="px-4 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
-                                  >
-                                    {pairingCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                                    {pairingCopied ? "Copied!" : "Copy Code"}
-                                  </button>
                                   <span className="text-xs text-zinc-400 font-mono">Expires in {pairingTimeLeft}s</span>
                                 </div>
 
@@ -2792,22 +2985,18 @@ export default function App() {
                     {/* WhatsApp header mockup */}
                     <div className="bg-[#1f2c34] text-white px-5 py-3.5 flex items-center justify-between border-b border-white/10 shadow-md">
                       <div className="flex items-center gap-3">
-                        <div className="relative">
-                          <img src={config.botImage} alt={config.botName} className="w-10 h-10 rounded-full object-cover border-2 border-white/20 ring-2 ring-amber-500/20" />
-                          <span className={`absolute bottom-0 right-0 w-3 h-3 border-2 border-[#1f2c34] rounded-full ${status === "connected" ? "bg-emerald-400 animate-pulse" : "bg-zinc-500"}`} />
-                        </div>
-                        <div>
-                          <h3 className="font-bold text-sm tracking-tight text-zinc-100 flex items-center gap-2">
-                            {config.botName}
-                            <span className="text-[10px] font-normal px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-mono">Sandbox</span>
-                          </h3>
-                          <p className="text-[10px] text-zinc-400">{isSimulating ? "typing..." : "online · controller simulator"}</p>
-                        </div>
+                        <HeroUser
+                          name={config.botName}
+                          description={isSimulating ? "typing..." : "online · controller simulator"}
+                          avatarUrl={config.botImage}
+                        />
+                        <HeroChip variant="flat" color="warning" size="sm">
+                          Sandbox
+                        </HeroChip>
                       </div>
-                      <div className="flex items-center gap-2 text-zinc-300 text-xs bg-black/40 px-3 py-1.5 rounded-full border border-white/10">
-                        <Globe className="w-3.5 h-3.5 text-amber-400" />
-                        Prefix: <strong className="text-white font-mono">{config.prefix}</strong>
-                      </div>
+                      <HeroChip variant="bordered" color="primary" size="md">
+                        Prefix: <span className="font-mono font-bold text-white ml-1">{config.prefix}</span>
+                      </HeroChip>
                     </div>
 
                     {/* Search */}
@@ -2959,18 +3148,31 @@ export default function App() {
                     <BatchDownloadStatus onSimulateCommand={simulateCommandFromDoc} />
 
                     <Card title="Playground Info" icon={HelpCircle}>
-                      <ul className="space-y-2.5 text-xs text-zinc-400">
-                        {[
-                          `Commands run locally against the real engine — prefix: ${config.prefix}`,
-                          "You are simulated as the owner and a group admin, so every command is testable",
-                          "Media, reactions and AI images appear right in the chat",
-                          "Try: .menu · .ping · .roast me · .trivia · .download <url>",
-                        ].map((tip, i) => (
-                          <li key={i} className="flex items-start gap-2">
-                            <span className="mt-1 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-                            <span>{tip}</span>
-                          </li>
-                        ))}
+                      <ul className="space-y-3.5 text-xs text-zinc-400">
+                        <li className="flex items-start gap-2.5">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                          <div>
+                            <span>Commands run against the live engine using prefix: </span>
+                            <HeroChip variant="flat" color="warning" size="sm" className="ml-1 font-mono">{config.prefix}</HeroChip>
+                          </div>
+                        </li>
+                        <li className="flex items-start gap-2.5">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                          <span>You are simulated as the system Owner, enabling all high-privilege operations.</span>
+                        </li>
+                        <li className="flex items-start gap-2.5">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                          <span>Real-time attachments, voice notes, and downloads render directly.</span>
+                        </li>
+                        <li className="flex items-start gap-2.5">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                          <div className="flex items-center flex-wrap gap-1">
+                            <span>Press </span>
+                            <HeroKbd keys={["enter"]}>Send</HeroKbd>
+                            <span> or </span>
+                            <HeroKbd keys={["ctrl", "enter"]}>Submit</HeroKbd>
+                          </div>
+                        </li>
                       </ul>
                     </Card>
 
@@ -3603,6 +3805,11 @@ export default function App() {
                 </div>
               )}
 
+              {/* ============================================================ SYSTEM DIAGNOSTICS */}
+              {activeTab === "diagnostics" && (
+                <SystemDiagnostics />
+              )}
+
               {/* ============================================================ GEMINI COGNITIVE AI */}
               {activeTab === "gemini" && (
                 <div className="space-y-6">
@@ -3841,69 +4048,76 @@ export default function App() {
 
                   {/* Plugin Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                    {[
-                      { id: "baileys-core", name: "Baileys Multi-Device Core", category: "Core", desc: "WebSocket transport layer with auto-reconnect and auth state persistence.", latency: "12ms", author: "Nebula" },
-                      { id: "gemini-ai", name: "Gemini 2.5 Cognitive AI", category: "AI", desc: "Natural language conversations, image reasoning, and speech transcription.", latency: "420ms", author: "Google DeepMind" },
-                      { id: "media-downloader", name: "Media & Sticker Converter", category: "Utility", desc: "Convert images, videos, and GIFs into WhatsApp WebP animated stickers.", latency: "180ms", author: "FFmpeg" },
-                      { id: "group-guard", name: "Group Guard & Admin Suite", category: "Security", desc: "Welcome cards, farewell notifications, anti-link invites, and group broadcast.", latency: "15ms", author: "Nebula" },
-                      { id: "sticker-maker", name: "Universal Media Scraper", category: "Utility", desc: "Download high quality videos from YouTube, TikTok, Instagram, and Twitter.", latency: "650ms", author: "MediaAPI" },
-                      { id: "anti-spam", name: "Anti-Spam & Rate Limiter", category: "Security", desc: "Per-user token bucket rate limiter and blacklist phone number enforcement.", latency: "2ms", author: "SentryGuard" },
-                      { id: "voice-synthesis", name: "ElevenLabs / Gemini TTS", category: "AI", desc: "Transform responses into realistic voice audio notes sent directly to chats.", latency: "520ms", author: "ElevenLabs" },
-                      { id: "crypto-ticker", name: "Live Market & Crypto Ticker", category: "Utility", desc: "Real-time BTC, ETH, SOL, and Forex exchange rates with price alerts.", latency: "95ms", author: "CoinGecko" },
-                    ]
-                      .filter((p) => pluginFilter === "All" || p.category === pluginFilter)
-                      .map((plugin) => {
-                        const isEnabled = pluginStates[plugin.id] !== false;
-                        return (
-                          <div
-                            key={plugin.id}
-                            className="bg-[#0b0b0c] border border-white/10 rounded-2xl p-5 shadow-sm space-y-4 hover:border-white/20 transition flex flex-col justify-between"
-                          >
-                            <div className="space-y-3">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="flex items-center gap-2.5">
-                                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
-                                    <Package className="w-4 h-4" />
-                                  </div>
-                                  <div>
-                                    <h4 className="font-bold text-white text-sm tracking-tight">{plugin.name}</h4>
-                                    <div className="flex items-center gap-2 mt-0.5">
-                                      <span className="text-[10px] font-bold px-2 py-0.2 rounded bg-white/5 border border-white/10 text-zinc-400">
-                                        {plugin.category}
-                                      </span>
-                                      <span className="text-[10px] text-zinc-500 font-mono">{plugin.latency}</span>
+                    <AnimatePresence mode="popLayout">
+                      {[
+                        { id: "baileys-core", name: "Baileys Multi-Device Core", category: "Core", desc: "WebSocket transport layer with auto-reconnect and auth state persistence.", latency: "12ms", author: "Nebula" },
+                        { id: "gemini-ai", name: "Gemini 2.5 Cognitive AI", category: "AI", desc: "Natural language conversations, image reasoning, and speech transcription.", latency: "420ms", author: "Google DeepMind" },
+                        { id: "media-downloader", name: "Media & Sticker Converter", category: "Utility", desc: "Convert images, videos, and GIFs into WhatsApp WebP animated stickers.", latency: "180ms", author: "FFmpeg" },
+                        { id: "group-guard", name: "Group Guard & Admin Suite", category: "Security", desc: "Welcome cards, farewell notifications, anti-link invites, and group broadcast.", latency: "15ms", author: "Nebula" },
+                        { id: "sticker-maker", name: "Universal Media Scraper", category: "Utility", desc: "Download high quality videos from YouTube, TikTok, Instagram, and Twitter.", latency: "650ms", author: "MediaAPI" },
+                        { id: "anti-spam", name: "Anti-Spam & Rate Limiter", category: "Security", desc: "Per-user token bucket rate limiter and blacklist phone number enforcement.", latency: "2ms", author: "SentryGuard" },
+                        { id: "voice-synthesis", name: "ElevenLabs / Gemini TTS", category: "AI", desc: "Transform responses into realistic voice audio notes sent directly to chats.", latency: "520ms", author: "ElevenLabs" },
+                        { id: "crypto-ticker", name: "Live Market & Crypto Ticker", category: "Utility", desc: "Real-time BTC, ETH, SOL, and Forex exchange rates with price alerts.", latency: "95ms", author: "CoinGecko" },
+                      ]
+                        .filter((p) => pluginFilter === "All" || p.category === pluginFilter)
+                        .map((plugin) => {
+                          const isEnabled = pluginStates[plugin.id] !== false;
+                          return (
+                            <motion.div
+                              key={plugin.id}
+                              layout
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              exit={{ opacity: 0, scale: 0.9 }}
+                              transition={{ duration: 0.25, ease: "easeInOut" }}
+                              className="bg-[#0b0b0c] border border-white/10 rounded-2xl p-5 shadow-sm space-y-4 hover:border-white/20 transition flex flex-col justify-between"
+                            >
+                              <div className="space-y-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex items-center gap-2.5">
+                                    <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                                      <Package className="w-4 h-4" />
+                                    </div>
+                                    <div>
+                                      <h4 className="font-bold text-white text-sm tracking-tight">{plugin.name}</h4>
+                                      <div className="flex items-center gap-2 mt-0.5">
+                                        <span className="text-[10px] font-bold px-2 py-0.2 rounded bg-white/5 border border-white/10 text-zinc-400">
+                                          {plugin.category}
+                                        </span>
+                                        <span className="text-[10px] text-zinc-500 font-mono">{plugin.latency}</span>
+                                      </div>
                                     </div>
                                   </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setPluginStates((prev: Record<string, boolean>) => ({
+                                        ...prev,
+                                        [plugin.id]: !isEnabled,
+                                      }))
+                                    }
+                                    className={`w-10 h-5 flex items-center rounded-full p-0.5 transition duration-200 cursor-pointer ${
+                                      isEnabled ? "bg-amber-500 justify-end" : "bg-zinc-800 justify-start"
+                                    }`}
+                                  >
+                                    <span className={`w-4 h-4 rounded-full shadow-md ${isEnabled ? "bg-black" : "bg-zinc-400"}`} />
+                                  </button>
                                 </div>
 
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setPluginStates((prev: Record<string, boolean>) => ({
-                                      ...prev,
-                                      [plugin.id]: !isEnabled,
-                                    }))
-                                  }
-                                  className={`w-10 h-5 flex items-center rounded-full p-0.5 transition duration-200 cursor-pointer ${
-                                    isEnabled ? "bg-amber-500 justify-end" : "bg-zinc-800 justify-start"
-                                  }`}
-                                >
-                                  <span className={`w-4 h-4 rounded-full shadow-md ${isEnabled ? "bg-black" : "bg-zinc-400"}`} />
-                                </button>
+                                <p className="text-xs text-zinc-400 leading-relaxed">{plugin.desc}</p>
                               </div>
 
-                              <p className="text-xs text-zinc-400 leading-relaxed">{plugin.desc}</p>
-                            </div>
-
-                            <div className="pt-3 border-t border-white/5 flex items-center justify-between text-[11px] text-zinc-500">
-                              <span>Author: {plugin.author}</span>
-                              <span className={`font-semibold ${isEnabled ? "text-emerald-400" : "text-zinc-600"}`}>
-                                {isEnabled ? "Active" : "Disabled"}
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })}
+                              <div className="pt-3 border-t border-white/5 flex items-center justify-between text-[11px] text-zinc-500">
+                                <span>Author: {plugin.author}</span>
+                                <span className={`font-semibold ${isEnabled ? "text-emerald-400" : "text-zinc-600"}`}>
+                                  {isEnabled ? "Active" : "Disabled"}
+                                </span>
+                              </div>
+                            </motion.div>
+                          );
+                        })}
+                    </AnimatePresence>
                   </div>
                 </div>
               )}
@@ -4709,6 +4923,95 @@ export default function App() {
                           id="switch-public-mode"
                           name="publicMode"
                         />
+                      </div>
+                    </div>
+                  </Card>
+
+                  {/* Liquid Glass Aesthetic Customization */}
+                  <Card title="Liquid Glass Aesthetic" icon={Sparkles}>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="p-5 bg-black/40 rounded-xl border border-white/10 flex items-center justify-between gap-4">
+                        <div className="space-y-1">
+                          <p className="text-xs font-bold text-white">Adaptive Morphing</p>
+                          <p className="text-[10px] text-zinc-400">
+                            Uses JavaScript to randomize blob transition coordinates every 15s for organic liquidity
+                          </p>
+                        </div>
+                        <Switch
+                          checked={adaptiveMorphing}
+                          onChange={(checked) => setAdaptiveMorphing(checked)}
+                          id="switch-adaptive-morphing"
+                          name="adaptiveMorphing"
+                        />
+                      </div>
+
+                      <div className="p-5 bg-black/40 rounded-xl border border-white/10 flex items-center justify-between gap-4">
+                        <div className="space-y-1">
+                          <p className="text-xs font-bold text-white">Motion Sensitivity</p>
+                          <p className="text-[10px] text-zinc-400">
+                            Orgasmic scale adjustments on background orbs based on mouse movement and scroll speed
+                          </p>
+                        </div>
+                        <Switch
+                          checked={motionSensitivity}
+                          onChange={(checked) => setMotionSensitivity(checked)}
+                          id="switch-motion-sensitivity"
+                          name="motionSensitivity"
+                        />
+                      </div>
+
+                      <div className="p-5 bg-black/40 rounded-xl border border-white/10 space-y-3 flex flex-col justify-center">
+                        <div className="flex items-center justify-between">
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-white">Backdrop Blur Strength</p>
+                            <p className="text-[10px] text-zinc-400">
+                              Globally scale the depth-of-field glass blurring strength
+                            </p>
+                          </div>
+                          <span className="text-xs font-bold bg-white/5 border border-white/10 text-zinc-200 px-2.5 py-1 rounded-lg font-mono">
+                            {Math.round(blurIntensity * 100)}%
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-[10px] text-zinc-500 font-bold font-mono">0%</span>
+                          <input
+                            type="range"
+                            min="0"
+                            max="2"
+                            step="0.1"
+                            value={blurIntensity}
+                            onChange={(e) => setBlurIntensity(parseFloat(e.target.value))}
+                            className="flex-1 accent-[var(--theme-primary,#f59e0b)] bg-zinc-800 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                          <span className="text-[10px] text-zinc-500 font-bold font-mono">200%</span>
+                        </div>
+                      </div>
+
+                      <div className="p-5 bg-black/40 rounded-xl border border-white/10 space-y-3 flex flex-col justify-center">
+                        <div className="flex items-center justify-between">
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-white">Blob Animation Speed</p>
+                            <p className="text-[10px] text-zinc-400">
+                              Adjust morphing speed of background elements in real-time
+                            </p>
+                          </div>
+                          <span className="text-xs font-bold bg-white/5 border border-white/10 text-zinc-200 px-2.5 py-1 rounded-lg font-mono">
+                            {animationDuration}s
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-[10px] text-zinc-500 font-bold font-mono">4s (Fast)</span>
+                          <input
+                            type="range"
+                            min="4"
+                            max="40"
+                            step="1"
+                            value={animationDuration}
+                            onChange={(e) => setAnimationDuration(parseFloat(e.target.value))}
+                            className="flex-1 accent-[var(--theme-primary,#f59e0b)] bg-zinc-800 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                          <span className="text-[10px] text-zinc-500 font-bold font-mono">40s (Chill)</span>
+                        </div>
                       </div>
                     </div>
                   </Card>

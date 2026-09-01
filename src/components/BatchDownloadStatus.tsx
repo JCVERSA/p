@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import HeroChip from "./HeroChip";
 import {
   Download,
   FolderArchive,
@@ -288,21 +289,23 @@ export const BatchDownloadStatus: React.FC<BatchDownloadStatusProps> = ({
             <div className="flex items-center gap-2">
               <h3 className="font-bold text-xs text-white tracking-tight">Batch Download Monitor</h3>
               {activeJob && (
-                <span
-                  className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border ${
+                <HeroChip
+                  variant="dot"
+                  size="sm"
+                  color={
                     activeJob.status === "completed"
-                      ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-300"
+                      ? "success"
                       : activeJob.status === "failed"
-                      ? "bg-rose-500/20 border-rose-500/40 text-rose-300 animate-pulse"
+                      ? "danger"
                       : activeJob.status === "packaging"
-                      ? "bg-purple-500/20 border-purple-500/30 text-purple-300 animate-pulse"
+                      ? "secondary"
                       : activeJob.status === "downloading"
-                      ? "bg-amber-500/20 border-amber-500/30 text-amber-300 animate-pulse"
-                      : "bg-zinc-800 border-zinc-700 text-zinc-400"
-                  }`}
+                      ? "warning"
+                      : "default"
+                  }
                 >
                   {activeJob.status.toUpperCase()}
-                </span>
+                </HeroChip>
               )}
             </div>
             <p className="text-[10px] text-zinc-400">

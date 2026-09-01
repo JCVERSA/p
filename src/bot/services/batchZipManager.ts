@@ -111,6 +111,7 @@ export interface BatchZipResult {
 export function sanitizeFilename(name: string): string {
   if (!name) return "unnamed_file";
   return name
+    // eslint-disable-next-line no-control-regex
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_") // Windows & Unix illegal chars
     .replace(/\.\.+/g, ".")                // Prevent path traversal dots
     .replace(/__+/g, "_")                  // Collapse multiple underscores

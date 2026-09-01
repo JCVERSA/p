@@ -24,6 +24,11 @@ export function getBridgeLoadSummary(): BridgeLoadSummary {
 }
 
 export function loadImportedCommands(): BotCommand[] {
+  if (process.env.NEBULA_ENABLE_LEGACY !== "true") {
+    console.log("[Bridge] Legacy CJS commands are quarantined and disabled by default (NEBULA_ENABLE_LEGACY !== 'true').");
+    return [];
+  }
+
   const commandsList: BotCommand[] = [];
   const skippedFiles: string[] = [];
   const baseDir = path.join(process.cwd(), "src/bot/imported/commands");

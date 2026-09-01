@@ -1,7 +1,9 @@
-import { useState } from "react";
-import { ChevronDown, Zap, RotateCcw, Power, Activity, X as CloseIcon } from "lucide-react";
+import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
+import { ChevronDown, Zap, RotateCcw, Power, Activity, Palette, X as CloseIcon } from "lucide-react";
 import { NavTab } from "./Sidebar";
 import { ConnectionStatus } from "../lib/types";
+import ShinyText from "./ShinyText";
 
 interface TopbarProps {
   activeTab: NavTab;
@@ -14,6 +16,14 @@ interface TopbarProps {
   onOpenCheckup?: () => void;
 }
 
+const THEMES = [
+  { id: "amber", name: "Cyber Amber", color: "#f59e0b" },
+  { id: "sapphire", name: "Sapphire Ocean", color: "#3b82f6" },
+  { id: "emerald", name: "Emerald Matrix", color: "#10b981" },
+  { id: "amethyst", name: "Amethyst Void", color: "#a855f7" },
+  { id: "rose", name: "Rose Catalyst", color: "#ef4444" },
+];
+
 const TAB_TITLES: Record<NavTab, string> = {
   overview: "Overview",
   connect: "WhatsApp Connect",
@@ -24,6 +34,7 @@ const TAB_TITLES: Record<NavTab, string> = {
   groups: "Group Tools",
   security: "Security & Antilink",
   analytics: "Usage & Analytics",
+  diagnostics: "System Diagnostics",
   secrets: "API Keys & Secrets",
   logs: "System Logs",
   settings: "Settings",
@@ -42,11 +53,63 @@ export default function Topbar({
   onOpenCheckup,
 }: TopbarProps) {
   const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  
+  const [currentTheme, setCurrentTheme] = useState(() => localStorage.getItem("app-theme") || "amber");
+  const [isThemeOpen, setIsThemeOpen] = useState(false);
+
+  // Initialize and load saved theme on mount
+  useEffect(() => {
+    const savedTheme = localStorage.getItem("app-theme") || "amber";
+    setCurrentTheme(savedTheme);
+    document.documentElement.classList.remove("theme-sapphire", "theme-emerald", "theme-amethyst", "theme-rose");
+    if (savedTheme !== "amber") {
+      document.documentElement.classList.add(`theme-${savedTheme}`);
+    }
+  }, []);
+
+  const handleThemeChange = (theme: string) => {
+    setCurrentTheme(theme);
+    localStorage.setItem("app-theme", theme);
+    document.documentElement.classList.remove("theme-sapphire", "theme-emerald", "theme-amethyst", "theme-rose");
+    if (theme !== "amber") {
+      document.documentElement.classList.add(`theme-${theme}`);
+    }
+  };
+
+  const searchItems = [
+    { label: "Overview Dashboard", desc: "View bot connection status, server metrics and summaries", tab: "overview", keys: ["overview", "status", "dashboard", "home", "stats"] },
+    { label: "WhatsApp Connect", desc: "Link WhatsApp via QR Code or Pair Code", tab: "connect", keys: ["qr", "pair", "connect", "link", "whatsapp", "phone"] },
+    { label: "Commands Registry", desc: "Browse, configure, and sandbox bot commands", tab: "commands", keys: ["command", "prefix", "list", "registry", "sandbox", "trigger"] },
+    { label: "Bot Simulator", desc: "Simulate and test incoming messages in the chat console", tab: "simulator", keys: ["chat", "simulator", "sandbox", "test", "incoming"] },
+    { label: "Gemini AI Assistant", desc: "Configure server-side AI model, context, and prompts", tab: "gemini", keys: ["ai", "gemini", "google", "intelligence", "prompt"] },
+    { label: "Plugins Engine", desc: "Enable community-authored add-on scripts and features", tab: "plugins", keys: ["plugin", "add-on", "extension", "market", "npm"] },
+    { label: "Group Tools & Management", desc: "Configure broadcast tools, auto-welcome, and anti-spam", tab: "groups", keys: ["group", "broadcast", "welcome", "admin", "kick", "promote"] },
+    { label: "Security & Antilink", desc: "Protect groups with links filter and automated antibot", tab: "security", keys: ["security", "antilink", "antibot", "spam", "ban", "protection"] },
+    { label: "Usage & Analytics", desc: "Real-time message volume and system load analytics", tab: "analytics", keys: ["analytics", "chart", "graph", "metric", "volume", "cpu"] },
+    { label: "System Diagnostics", desc: "Real-time CPU, RAM and Network resource line charts with Light/Dark themes", tab: "diagnostics", keys: ["diagnostics", "resource", "cpu", "memory", "ram", "network", "speed", "theme"] },
+    { label: "API Keys & Secrets", desc: "Manage Gemini keys, environment variables and configuration", tab: "secrets", keys: ["key", "secret", "env", "token", "api", "gemini_api_key"] },
+    { label: "System Logs", desc: "Real-time server terminal and backend stderr/stdout streams", tab: "logs", keys: ["log", "terminal", "console", "stderr", "stdout", "stream"] },
+    { label: "Settings", desc: "Adjust layout density, theme, and local session preferences", tab: "settings", keys: ["setting", "config", "layout", "pref", "theme"] },
+    { label: "Documentation", desc: "Browse complete guide on commands, flags, and installation", tab: "docs", keys: ["doc", "help", "guide", "readme", "instruction"] },
+    { label: "Run System Checkup", desc: "Perform deep diagnosis checkup", action: onOpenCheckup, keys: ["checkup", "diagnostic", "test", "fix", "error"] },
+    { label: "Reset Session Engine", desc: "Purge active session data and trigger handshake", action: onResetSession, keys: ["reset", "purge", "clear", "cookie", "reconnect"] },
+    { label: "Toggle Bot Engine", desc: "Start or stop active WhatsApp bot loop", action: onToggleBot, keys: ["start", "stop", "toggle", "run", "offline", "online"] },
+  ];
+
+  const filteredItems = searchQuery.trim() === "" 
+    ? [] 
+    : searchItems.filter(item => 
+        item.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.desc.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.keys.some(k => k.toLowerCase().includes(searchQuery.toLowerCase()))
+      );
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-black px-4 select-none">
-      {/* Breadcrumb path */}
-      <div className="flex items-center gap-2 text-sm text-zinc-300 min-w-0">
+    <header className="relative z-40 flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-[#0e0e11] px-4 select-none">
+      {/* Left section: Brand/Breadcrumb & Preline-style Search */}
+      <div className="flex items-center gap-4 text-sm text-zinc-300 min-w-0 flex-1">
         <div className="flex items-center px-1">
           {/* Waveform SVG brand icon from reference template */}
           <svg
@@ -64,20 +127,91 @@ export default function Topbar({
             <path d="M2 18 Q 10 14, 16 18 T 30 18" />
           </svg>
         </div>
-        <span className="text-zinc-600">/</span>
+
+        {/* Separator & Breadcrumb */}
+        <span className="text-zinc-600 hidden sm:inline">/</span>
         <button
           onClick={() => setActiveTab("overview")}
-          className="flex items-center gap-2 rounded-xl px-2 py-1 text-zinc-200 hover:bg-white/5 transition-colors cursor-pointer"
+          className="hidden sm:flex items-center gap-1.5 rounded-lg px-2 py-1 text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-all cursor-pointer"
         >
-          <Zap size={14} className="text-amber-400" />
-          <span className="font-medium hidden sm:inline">Nebula Production</span>
-          <span className="font-medium sm:hidden">Nebula</span>
-          <ChevronDown size={14} className="text-zinc-500" />
+          <Zap size={13} className="text-amber-400" />
+          <span className="font-semibold text-xs tracking-wide">
+            <ShinyText text="NEBULA" speed={4} />
+          </span>
+          <ChevronDown size={12} className="text-zinc-500" />
         </button>
         <span className="text-zinc-600">/</span>
-        <span className="px-2 py-1 font-semibold text-white truncate">
+        <span className="font-bold text-xs text-white tracking-wide uppercase px-2 py-0.5 rounded bg-white/5 border border-white/5 truncate max-w-[120px] sm:max-w-none">
           {TAB_TITLES[activeTab] || "Dashboard"}
         </span>
+
+        {/* Search Input bar from Preline Admin Layout, placed after breadcrumbs */}
+        <div className="hidden lg:block relative max-w-xs w-full ml-6">
+          <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+            <svg className="h-4 w-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </div>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => setIsSearchFocused(true)}
+            onBlur={() => setTimeout(() => setIsSearchFocused(false), 220)}
+            placeholder="Search commands, logs, features..."
+            className="w-full bg-[#141416] border border-white/5 rounded-lg py-1.5 pl-9 pr-3 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500/50 transition-colors"
+          />
+
+          {/* Real-time Search overlay dropdown */}
+          {isSearchFocused && (
+            <div className="absolute top-full left-0 right-0 mt-1.5 bg-[#0e0e11] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50 py-1.5 min-w-[280px]">
+              {filteredItems.length > 0 ? (
+                <div className="max-h-64 overflow-y-auto">
+                  {filteredItems.map((item, idx) => (
+                    <button
+                      key={idx}
+                      onMouseDown={() => {
+                        if (item.tab) {
+                          setActiveTab(item.tab as any);
+                        } else if (item.action) {
+                          item.action();
+                        }
+                        setSearchQuery("");
+                      }}
+                      className="w-full text-left px-3.5 py-2 hover:bg-white/5 transition-colors flex flex-col cursor-pointer"
+                    >
+                      <span className="text-xs font-semibold text-zinc-100">{item.label}</span>
+                      <span className="text-[10px] text-zinc-500 mt-0.5">{item.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : searchQuery.trim() !== "" ? (
+                <div className="px-3.5 py-3 text-center">
+                  <p className="text-xs text-zinc-400">No matching features found.</p>
+                  <p className="text-[10px] text-zinc-600 mt-0.5">Try searching 'gemini', 'reset' or 'logs'</p>
+                </div>
+              ) : (
+                <div className="px-3.5 py-2">
+                  <p className="text-[10px] font-bold text-amber-400 uppercase tracking-wider mb-1.5">Quick Actions</p>
+                  <div className="grid grid-cols-2 gap-1">
+                    {searchItems.slice(0, 4).map((item, idx) => (
+                      <button
+                        key={idx}
+                        onMouseDown={() => {
+                          if (item.tab) setActiveTab(item.tab as any);
+                          setSearchQuery("");
+                        }}
+                        className="text-left px-2 py-1.5 rounded-lg hover:bg-white/5 transition-colors text-[10px] font-semibold text-zinc-300 truncate cursor-pointer"
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Right Controls */}
@@ -85,7 +219,7 @@ export default function Topbar({
         {/* Status Indicator */}
         <div
           onClick={() => setActiveTab("connect")}
-          className={`hidden md:flex items-center gap-2 px-3 py-1 rounded-xl text-xs font-semibold border cursor-pointer transition-all ${
+          className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer transition-all ${
             botStatus === "connected"
               ? "bg-emerald-950/60 border-emerald-800/80 text-emerald-300 hover:bg-emerald-900/60"
               : botStatus === "connecting"
@@ -124,9 +258,9 @@ export default function Topbar({
           <button
             onClick={onOpenCheckup}
             title="Run complete commands and backend diagnostic checkup"
-            className="hidden sm:flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-amber-300 hover:bg-white/10 transition cursor-pointer"
+            className="hidden sm:flex items-center gap-1.5 rounded-xl border border-white/5 bg-[#141416] hover:bg-[#18181b] px-3 py-1.5 text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
           >
-            <Activity className="w-3.5 h-3.5 text-amber-400" />
+            <Activity className="w-3.5 h-3.5" />
             <span>Checkup</span>
           </button>
         )}
@@ -136,10 +270,10 @@ export default function Topbar({
           onClick={onResetSession}
           disabled={isResetting}
           title="Purge session directory & initiate fresh handshake"
-          className="hidden sm:flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-white/10 hover:text-white transition cursor-pointer"
+          className="hidden sm:flex items-center gap-1.5 rounded-xl border border-white/5 bg-[#141416] hover:bg-[#18181b] px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
         >
           <RotateCcw className={`w-3.5 h-3.5 ${isResetting ? "animate-spin text-amber-400" : ""}`} />
-          <span>{isResetting ? "Resetting..." : "Reset Session"}</span>
+          <span>{isResetting ? "Resetting..." : "Reset"}</span>
         </button>
 
         {/* Primary Amber Action Button from template */}
@@ -158,9 +292,70 @@ export default function Topbar({
             className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-1.5 text-xs font-bold text-black hover:bg-amber-400 transition cursor-pointer shadow-sm"
           >
             <Zap className="w-3.5 h-3.5 fill-black" />
-            <span>Connect WhatsApp</span>
+            <span>Connect</span>
           </button>
         )}
+
+        {/* Real-time Theme Palette Selector */}
+        <div className="relative">
+          <button
+            onClick={() => setIsThemeOpen((prev) => !prev)}
+            title="Switch color palette themes"
+            className="flex items-center justify-center p-2 rounded-xl border border-white/5 bg-[#141416]/90 hover:bg-[#1c1c1e] text-zinc-400 hover:text-white transition cursor-pointer"
+          >
+            <Palette className="w-4 h-4" />
+          </button>
+
+          {isThemeOpen && (
+            <>
+              {/* Backing dismiss overlay */}
+              <div 
+                className="fixed inset-0 z-40" 
+                onClick={() => setIsThemeOpen(false)} 
+              />
+              
+              {/* Theme Dropdown Pane */}
+              <div className="absolute right-0 mt-2 w-48 rounded-2xl bg-[#0a0a0c]/95 border border-white/10 shadow-2xl z-50 p-2.5 backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-200">
+                <p className="text-[10px] font-extrabold uppercase tracking-widest text-zinc-500 px-2 pb-2 border-b border-white/5">
+                  Select Theme
+                </p>
+                <div className="space-y-1 mt-1.5">
+                  {THEMES.map((theme) => {
+                    const isSelected = currentTheme === theme.id;
+                    return (
+                      <button
+                        key={theme.id}
+                        onClick={() => {
+                          handleThemeChange(theme.id);
+                          setIsThemeOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                          isSelected
+                            ? "bg-white/5 text-white"
+                            : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.02]"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span 
+                            className="w-2.5 h-2.5 rounded-full shadow-inner" 
+                            style={{ backgroundColor: theme.color }}
+                          />
+                          <span>{theme.name}</span>
+                        </div>
+                        {isSelected && (
+                          <span 
+                            className="w-1.5 h-1.5 rounded-full animate-pulse" 
+                            style={{ backgroundColor: theme.color }}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
 
         {/* Profile Avatar / Bot Identity */}
         <div
@@ -173,9 +368,9 @@ export default function Topbar({
       </div>
 
       {/* Luminous Design About Project Popup */}
-      {isAboutOpen && (
+      {isAboutOpen && createPortal(
         <div 
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-300"
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-300"
           onClick={(e) => {
             if (e.target === e.currentTarget) setIsAboutOpen(false);
           }}
@@ -738,7 +933,8 @@ export default function Topbar({
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </header>
   );

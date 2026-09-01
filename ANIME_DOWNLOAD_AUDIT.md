@@ -1006,3 +1006,36 @@ curl -s "https://crt.name/v1/search?apex=vmnow.online"     # Voe alt
 
 If one day a mirror's hosts stop resolving, compare this list against the
 hosts in the bot logs before suspecting our extractor.
+
+### 8.25 Panel redesign integration from `oo-oo` snapshot (2026-09-01, twenty-seventh push)
+
+**User action:** published a "new version" at JCVERSA/oo-oo (fresh 2-commit
+history, no inherited git history) and asked to check + merge it into this repo.
+
+**Verification performed before merging:** full tree diff (oo-oo vs our tip
+`ed747fc`) — oo-oo contained ALL our latest files (no missing features) plus
+exactly 20 paths: 7 new UI components (HeroChip, HeroKbd, HeroSnippet,
+HeroUser, ShinyText, SpotlightCard, SystemDiagnostics), 9 reworked UI files
+(App.tsx, Sidebar, Topbar, MobileDock/Drawer, Switch, BatchDownloadStatus,
+index.css) and 4 tooling files (.env.example, eslint ignores, .prettierignore,
+batchZipManager lint comment). Secrets scan on new components: clean.
+No test depends on the changed backend path.
+
+**Behaviour change adopted (deliberate, from oo-oo):** the vendored 145-file
+legacy command corpus is now QUARANTINED by default — `loadImportedCommands()`
+returns [] unless `NEBULA_ENABLE_LEGACY=true` (.env.example documents it,
+README + manage.sh env catalog updated; honest command count now 33 native +
+opt-in corpus). Rationale: the legacy CJS files predate the ACL bridge and
+carry recurring import-time network side effects.
+
+**Sandbox incident handled:** between turns the local repo had been reset to
+the session base commit `31fe212` (41 of our pushed files showed as
+untracked). Fixed per the documented procedure: `git fetch origin
+arena/01a05555-p` (remote tip `ed747fc` intact) + `git reset --mixed` — after
+which status showed exactly the 20 oo-oo files pending. Working tree was
+never at risk.
+
+**Validation:** npm install (FFMPEG_BIN bypass for the sandbox's
+TLS-intercepted GitHub), `tsc --noEmit` OK, vitest 277/277 (28 files),
+`npm run build` OK (server bundle 534.6 kB; same known harmless
+import.meta/esbuild warning).
