@@ -32,6 +32,7 @@ import {
   resolveVoiranimeSeason,
   type VoiranimeEpisode
 } from "../services/voiranimeClient.js";
+import { bestAnimeMatch, formatAnimeCard } from "../services/jikanClient.js";
 import { isSafeDownloadUrl } from "../urlSafety.js";
 import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batchDownloadManager.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
@@ -1033,6 +1034,23 @@ const animeCommand: BotCommand = {
           session.step = "season";
           session.seasons = filteredSeasons;
           const seasonsList = filteredSeasons.map((s, i) => `*s${i + 1}.* ${s.name}`).join("\n");
+
+          // Jikan poster enrichment (audit 8.19) — best-effort MyAnimeList
+          // card (poster + score + episodes); never blocks or breaks the flow.
+          if (process.env.NEBULA_JIKAN_DISABLED !== "1") {
+            void (async () => {
+              try {
+                const info = await bestAnimeMatch(chosen.title);
+                if (info?.posterUrl) {
+                  await sock.sendMessage(
+                    msg.key.remoteJid,
+                    { image: { url: info.posterUrl }, caption: formatAnimeCard(info, true) },
+                    { quoted: msg }
+                  );
+                }
+              } catch {}
+            })();
+          }
 
           await context.react("📂");
           return context.reply(

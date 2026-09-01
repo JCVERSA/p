@@ -9,7 +9,7 @@
 [![Version](https://img.shields.io/badge/version-1.1.0-8b5cf6?style=flat-square)](./package.json)
 [![Node](https://img.shields.io/badge/Node.js-%E2%89%A518-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](./tsconfig.json)
-[![Tests](https://img.shields.io/badge/tests-237%2F237%20passing-brightgreen?style=flat-square)](#-tests)
+[![Tests](https://img.shields.io/badge/tests-250%2F250%20passing-brightgreen?style=flat-square)](#-tests)
 [![WhatsApp](https://img.shields.io/badge/WhatsApp-Baileys%20multi--device-25D366?style=flat-square&logo=whatsapp&logoColor=white)](https://github.com/WhiskeySockets/Baileys)
 [![ffmpeg](https://img.shields.io/badge/ffmpeg-HLS%20%2B%20remux-007EC7?style=flat-square&logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
 [![Panel](https://img.shields.io/badge/panel-React%20%2B%20Express-61DAFB?style=flat-square&logo=react&logoColor=black)](./app.ts)
@@ -51,7 +51,7 @@ The interactive flow defaults to VF too — and never lies about the language ac
 
 | | Feature |
 |---|---|
-| 📺 | **Anime VF downloader** — voir-anime.to (VF-first) with nakanime fallback, VidMoly/Voe HLS mirrors, cat-catch style segment downloader, honest quality+size labels, WhatsApp-friendly files (~90 MB/ep) |
+| 📺 | **Anime VF downloader** — voir-anime.to (VF-first) with nakanime fallback, VidMoly/Voe HLS mirrors, cat-catch style segment downloader, honest quality+size labels, WhatsApp-friendly files (~90 MB/ep), MyAnimeList info cards (`.anime`, Jikan) |
 | 🗣️ | **VF by default** — quick mode *and* interactive menus; `.a vostfr` switches back; honest "VF non disponible" when a title has no dub |
 | 📦 | **Batch episodes** — `1-12` ranges, sequential pipeline hardened for ~1 GB containers, per-episode temp links (2 h TTL), optional season ZIP via `NEBULA_BATCH_ZIP=1` |
 | 🤖 | **Gemini AI** — chat, image generation, audio transcription, voice conversations with TTS, per-user daily budget + global concurrency cap |
@@ -174,7 +174,7 @@ Secrets can also be managed from the panel (**Settings &amp; Access → API Secr
 ## 🧪 Tests
 
 ```bash
-npm test           # vitest — 237 tests across 24 files
+npm test           # vitest — 250 tests across 25 files
 npm run lint       # strict TypeScript typecheck
 npm run build      # production build (client + server)
 npm start          # serve the production build (capped V8 heap, gc exposed)

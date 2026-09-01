@@ -835,3 +835,27 @@ Env key catalog built from the actual `process.env.*` reads in app/server/src
 (26 keys) — not hand-invented. Tested in the sandbox: syntax, help, env
 set/get/unset/list round-trip (incl. masking), status/doctor/clean graceful
 without a running bot; fixed a false-positive HTTP check found during test.
+
+### 8.19 Jikan (MyAnimeList) integration — `.anime` cards + `.a` poster (2026-08-31, twenty-first push)
+
+**Context:** user picked option 1 from the public-apis survey — MAL info cards
+via Jikan (no API key) to make the anime flow visual and pro.
+
+**Delivered:**
+- `services/jikanClient.ts`: `/v4/anime?q=…&sfw=true` search with 8 s timeout,
+  10-minute response cache (Jikan is rate-limited ~3 req/s), best-effort
+  contract (HTTP/network/malformed failures resolve to `[]`). Pure exported
+  helpers: `normalizeTitle` (lowercase, accents/punctuation stripped, VF/
+  VOSTFR/season-noise tokens dropped), `pickBestMatch` (exact normalized
+  > substring > MAL relevance fallback), `formatAnimeCard` (French card, full
+  + compact variants, word-boundary synopsis trimming).
+- `commands/anime.ts`: `.anime <titre>` — poster image + card (score, votes,
+  episodes, type, year, status, genres, synopsis, MAL link); graceful
+  not-found message.
+- Novabox season screen: fire-and-forget poster message (compact card) sent
+  alongside "Select Season" when a MAL match is found — never blocks or breaks
+  the flow; `NEBULA_JIKAN_DISABLED=1` opts out.
+- README badges/test counts updated (250/250).
+
+Suite: 250/250 (25 files, +13 Jikan tests: normalization, matching, card
+formatting, cache single-network-hit, error paths).
