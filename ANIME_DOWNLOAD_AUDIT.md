@@ -1208,3 +1208,31 @@ lock intact, no process); stale 20-min lock → cleaned then start proceeds;
 update-under-lock → refused with holder PID; menu renders
 `(défaut: 3000)` / `(défaut: 23-7)`. `bash -n` clean. Doc updated
 (MIGRATION_NOUVEAU_VPS.md explains the lock in the watchdog section).
+
+### 8.31 `.w` — dedicated episode-watch command (2026-09-01, thirty-third push)
+
+**User report:** `.a watch` searched for an anime named "watch". Root cause
+verified in source: the watch action is only intercepted when
+`session.step === "episode"` inside an interactive `.a` flow — with no active
+session the word "watch" fell through to the plain search path.
+
+**Fix:** new dedicated command `src/bot/commands/watch.ts` (`.w`, aliases
+`watch`/`veille`/`watchlist`, category Anime):
+- `.w <titre>` → voiranime search, VF entries only (honest error otherwise)
+  → numbered pick list (≤8, 10-min TTL) → `.w <n>` subscribes immediately;
+  a single VF result subscribes directly.
+- Subscription counts the currently available episodes first
+  (`lastSeenEp` = max episode number) so the first cycle announces only
+  genuinely NEW episodes instead of replaying the backlog; if the episode
+  list cannot be read the command aborts with a retry hint.
+- `.w` / `.w list` → this chat's watches; `.w rm <titre>` stops one. Multiple
+  anime per chat supported (existing caps: 20/chat, 200 global).
+- Bonus over the old hook: when voiranime lists several VF seasons the user
+  picks WHICH one to watch (the `.a` hook silently watched season 1 only).
+- `.a watch|unwatch|watchlist` without an active session now replies with a
+  redirect to `.w` instead of searching "watch" (in-flow handler unchanged).
+
+Suite: 307/307 (33 files, +8 tests: empty list, numbered pick + VF filter,
+selection subscribes the chosen entry with the right lastSeenEp, multiple
+watches, direct single-result subscribe, VF-only error, stale-pick hint,
+remove).

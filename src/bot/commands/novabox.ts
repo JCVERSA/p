@@ -954,6 +954,20 @@ const animeCommand: BotCommand = {
       }, SESSION_TIMEOUT);
     };
 
+    // Episode watcher has its own dedicated command (audit 8.31): a bare
+    // `.a watch` used to fall through to a literal search for the word
+    // "watch". Inside an active flow (episode step) the handler below
+    // still applies.
+    if (!sessions.has(sender) && ["watch", "unwatch", "watchlist"].includes(firstArg.toLowerCase())) {
+      return context.reply(
+        "🔔 *La veille épisodes a sa propre commande :* `.w`\n\n" +
+        "• Créer : `.w <titre>` _(_`.w solo leveling`_) puis_ `.w <numéro>`\n" +
+        "• Liste : `.w`\n" +
+        "• Arrêter : `.w rm <titre>`\n\n" +
+        "_Tu peux suivre plusieurs anime à la fois — tu seras notifié ici dès qu'un nouvel épisode sort._"
+      );
+    }
+
     // If no args and no active session, show usage
     if (args.length === 0 && !sessions.has(sender)) {
       await context.react("🎬");

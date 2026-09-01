@@ -32,6 +32,7 @@ import helpCommand from "./commands/help.js";
 import swebCommand from "./commands/sweb.js";
 import videoCommand from "./commands/video.js";
 import renewYouTubeCommand from "./commands/renewYouTube.js";
+import watchCommand from "./commands/watch.js";
 import animeCommand from "./commands/novabox.js";
 import accessCommand from "./commands/access.js";
 import { getCompiledPath } from "./commandCompiler.js";
@@ -115,6 +116,7 @@ const defaultCommands = [
   swebCommand,
   videoCommand,
   renewYouTubeCommand,
+  watchCommand,
   animeCommand,
   accessCommand,
 ];
