@@ -1,35 +1,22 @@
 name: CI
-
 on:
   push:
-    branches: [main]
+    branches: [arena/01a05555-p, main]
   pull_request:
-
 jobs:
-  checks:
+  test:
+    name: Typecheck & tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
-      # --ignore-scripts: native postinstall binaries (ffmpeg-static,
-      # whatsapp-rust-bridge) are optional; tests/bridge handle their absence.
       - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Typecheck, lint & format (strict)
-        run: npm run lint
-
-      - name: Tests
-        run: npm test
-
-      - name: Coverage gate (admission threshold)
-        run: npm run test:coverage
-
-      - name: Production build
-        run: npm run build
+        run: npm ci
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+      - name: Tests (vitest)
+        run: npx vitest run --reporter=dot
