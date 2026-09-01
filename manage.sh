@@ -56,6 +56,40 @@ bot_pids() { pgrep -f "${NODE_PATTERN}" 2>/dev/null || true; }
 
 is_running() { [ -n "$(bot_pids)" ]; }
 
+# --- Verrou de mise à jour (audit 8.30) -------------------------------------
+# Un watchdog cron (*/5 * * * * manage.sh start, voir docs/MIGRATION_NOUVEAU_VPS.md)
+# ne doit PAS relancer le bot pendant `nebula update` (install/build) : cela
+# réintroduirait la contention mémoire que l'update est justement censé éviter.
+UPDATE_LOCK_DIR="${TMPDIR:-/tmp}/nebula-update.lock"
+UPDATE_LOCK_STALE_MIN=15    # au-delà: verrou considéré comme débris (update planté)
+
+update_lock_held() {        # 0 = un update FRAIS est en cours
+  [ -d "${UPDATE_LOCK_DIR}" ] || return 1
+  local age=$(( ( $(date +%s) - $(stat -c %Y "${UPDATE_LOCK_DIR}" 2>/dev/null || echo 0) ) / 60 ))
+  if [ "${age}" -ge "${UPDATE_LOCK_STALE_MIN}" ]; then
+    warn "Verrou d'update >${UPDATE_LOCK_STALE_MIN} min (update interrompu ?) — nettoyé."
+    rm -rf "${UPDATE_LOCK_DIR}"
+    return 1
+  fi
+  return 0
+}
+
+update_lock_acquire() {
+  if update_lock_held; then
+    die "Une mise à jour est déjà en cours (PID $(cat "${UPDATE_LOCK_DIR}/pid" 2>/dev/null || echo '?')) — réessaie dans quelques minutes."
+  fi
+  mkdir -p "${UPDATE_LOCK_DIR}" 2>/dev/null || die "Impossible de créer le verrou (${UPDATE_LOCK_DIR})."
+  echo "$$" > "${UPDATE_LOCK_DIR}/pid"
+  date -Is > "${UPDATE_LOCK_DIR}/since"
+}
+
+update_lock_release() { rm -rf "${UPDATE_LOCK_DIR}" 2>/dev/null || true; }
+
+# Valeur par défaut documentée dans .env.example (pour l'affichage du menu env)
+env_example_default() {
+  grep -E "^${1}=" "${APP_DIR}/.env.example" 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/^"//; s/"$//'
+}
+
 require_repo() {
   [ -d "${APP_DIR}/.git" ] || die "Ce script doit vivre dans le dépôt git (${APP_DIR}). Utilise: ./manage.sh clone"
   command -v git >/dev/null 2>&1 || die "git est introuvable (apt install git)"
@@ -111,6 +145,13 @@ wait_http() { # $1 = URL, $2 = timeout s → 0 si répondu
 # ---------------------------------------------------------------------------
 cmd_start() {
   require_repo
+  # Ne pas relancer le bot pendant une mise à jour (verrou posé par cmd_update).
+  # Exit 0 pour que le watchdog cron reste silencieux. Le flag interne
+  # UPDATE_IN_PROGRESS autorise les redémarrages de récupération de cmd_update.
+  if [ "${UPDATE_IN_PROGRESS:-0}" != "1" ] && update_lock_held; then
+    warn "Mise à jour en cours — démarrage différé (le bot redémarrera à la fin de l'update)."
+    exit 0
+  fi
   if is_running; then
     warn "Le bot tourne déjà (PID: $(bot_pids | tr '\n' ' ')). Utilise ./manage.sh restart."
     exit 0
@@ -225,6 +266,9 @@ cmd_status() {
 # ---------------------------------------------------------------------------
 cmd_update() {
   require_repo
+  update_lock_acquire
+  trap update_lock_release EXIT   # libéré même en cas de die()
+  UPDATE_IN_PROGRESS=1            # autorise cmd_start/cmd_restart internes
   hdr "Mise à jour du dépôt"
   local was_running="no"; is_running && was_running="yes"
   local old_rev; old_rev="$(git -C "${APP_DIR}" rev-parse --short HEAD 2>/dev/null || echo '?')"
@@ -396,8 +440,13 @@ cmd_env() {
         echo
         local i=1
         for line in "${ENV_KEYS[@]}"; do
-          local k desc; k="${line%%|*}"; desc="${line#*|}"
-          printf " ${C_BOLD}%2d)${C_RESET} %-28s %s\n" "${i}" "${k}" "$(env_masked "${k}")"
+          local k desc dflt; k="${line%%|*}"; desc="${line#*|}"
+          if [ -z "$(env_value "${k}")" ] && [ -n "$(env_example_default "${k}")" ]; then
+            dflt="$(env_example_default "${k}")"
+            printf " ${C_BOLD}%2d)${C_RESET} %-28s ${C_DIM}(défaut: %s)${C_RESET}\n" "${i}" "${k}" "${dflt}"
+          else
+            printf " ${C_BOLD}%2d)${C_RESET} %-28s %s\n" "${i}" "${k}" "$(env_masked "${k}")"
+          fi
           i=$((i+1))
         done
         echo "  0) Terminer"

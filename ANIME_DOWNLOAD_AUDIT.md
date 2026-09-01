@@ -1183,3 +1183,28 @@ build). Expected effect on the VPS: dependency-touching updates drop from
 `was_running` false positive during the sandbox E2E came from the
 validation command itself containing the literal NODE_PATTERN string, not
 from manage.sh.
+
+### 8.30 Update lock (watchdog-safe updates) + env menu defaults (2026-09-01, thirty-second push)
+
+**Problem:** docs/MIGRATION_NOUVEAU_VPS.md installs a watchdog cron
+`*/5 * * * * manage.sh start`. With 8.29's stop-during-install sequence, that
+cron would restart the bot mid-update — reintroducing exactly the memory
+contention the fix removes.
+
+**Fix (manage.sh):** lock directory `/tmp/nebula-update.lock` (atomic mkdir).
+`cmd_update` acquires it (trap-release on exit, holder PID recorded) and sets
+an internal `UPDATE_IN_PROGRESS` flag; `cmd_start` refuses to launch while a
+FRESH lock exists (exit 0 so the cron stays quiet), while the update's own
+recovery/restart paths bypass the guard. Locks older than 15 min are treated
+as debris (crashed update) and auto-cleaned. A second concurrent `update` is
+refused with the holder's PID.
+
+**Also:** the `nebula env` menu now displays the documented default from
+.envexample (`(défaut: 3000)`) for unset keys instead of a bare
+"(non défini)" — pairs with the pre-filled .env.example (8513387).
+
+**Verification (functional, in-sandbox):** fresh lock → start defers (exit 0,
+lock intact, no process); stale 20-min lock → cleaned then start proceeds;
+update-under-lock → refused with holder PID; menu renders
+`(défaut: 3000)` / `(défaut: 23-7)`. `bash -n` clean. Doc updated
+(MIGRATION_NOUVEAU_VPS.md explains the lock in the watchdog section).

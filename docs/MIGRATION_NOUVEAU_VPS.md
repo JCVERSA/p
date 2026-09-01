@@ -189,6 +189,11 @@ crontab -e   # ajouter les 3 lignes :
 @reboot /usr/local/bin/cloudflared tunnel run --token-file /etc/cloudflared/token >> /root/tunnel.log 2>&1
 @reboot sleep 10 && /root/p/manage.sh start >/dev/null 2>&1
 */5 * * * * /root/p/manage.sh start >/dev/null 2>&1      # watchdog : relance si crash
+
+> ℹ️ Le watchdog est **compatible avec `nebula update`** : pendant une mise à jour,
+> `manage.sh start` voit le verrou `/tmp/nebula-update.lock` et s'abstient de
+> relancer le bot (l'update le redémarre lui-même à la fin). Un verrou de plus de
+> 15 min (update planté) est automatiquement nettoyé.
 ```
 
 ---
