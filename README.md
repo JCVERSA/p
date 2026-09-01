@@ -58,7 +58,7 @@ The interactive flow defaults to VF too — and never lies about the language ac
 | 📦 | **Batch episodes** — `1-12` ranges, sequential pipeline hardened for ~1 GB containers, per-episode temp links (2 h TTL), optional season ZIP via `NEBULA_BATCH_ZIP=1` |
 | 🤖 | **Gemini AI** — chat, image generation, audio transcription, voice conversations with TTS, per-user daily budget + global concurrency cap |
 | 💬 | **WhatsApp multi-device** (Baileys) — QR pairing from the panel, auto-reconnect, bad-session recovery |
-| 🧩 | **33 hand-written commands** + sandboxed panel-created ones (no fs/process/network, no restart) — the vendored 145-file legacy corpus is quarantined by default, opt-in via `NEBULA_ENABLE_LEGACY=1` (behind strict ACLs) |
+| 🧩 | **37 hand-written commands** — incl. native `.tiktok` / `.instagram` / `.facebook` / `.youtube` downloads + sandboxed panel-created ones (no fs/process/network, no restart) — the vendored 145-file legacy corpus is quarantined by default, opt-in via `NEBULA_ENABLE_LEGACY=1` (behind strict ACLs) |
 | 🛡️ | **Group moderation** — antilink, antitag, welcome/goodbye, hidetag broadcasts, RoleGuard per-group access policies |
 | 🖥️ | **Web control panel** — live simulator, secrets manager (masked), command customizer, analytics, ZIP export |
 | 🛰️ | **One-command ops** — `manage.sh start/stop/update/doctor/env/logs/clean` on any VPS, behind a Cloudflare Tunnel |

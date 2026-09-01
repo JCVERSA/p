@@ -1039,3 +1039,26 @@ never at risk.
 TLS-intercepted GitHub), `tsc --noEmit` OK, vitest 277/277 (28 files),
 `npm run build` OK (server bundle 534.6 kB; same known harmless
 import.meta/esbuild warning).
+
+### 8.26 Native platform download commands — quarantine-proof `.tiktok/.instagram/.facebook/.youtube` (2026-09-01, twenty-eighth push)
+
+**User request:** with the legacy corpus quarantined (8.25), make TikTok,
+Instagram, YouTube and Facebook downloads part of the always-on native set.
+
+**Approach — reuse, not duplication:** the hardened native `.download`
+pipeline already handles all four platforms (Cobalt waterfall + fallbacks,
+SSRF guard per redirect hop, 60 MB buffer / 500 MB stream caps, temp links
+for >100 MB). The new commands are thin wrappers: `socialPlatforms.ts`
+(platform catalog + `matchSocialPlatform` hostname validation + usage cards in
+French) and four command files that validate the link and delegate with the
+same arg grammar (`.yt audio <url>`, quality passthrough). Zero new
+dependencies, zero legacy CJS loaded.
+
+**Test-caught fix:** the first implementation matched platforms by substring
+(`url.includes("tiktok.com")`), accepting `https://example.com/tiktok.com`.
+Rewritten to real hostname matching (`new URL().hostname`, exact/suffix/www).
+Bonus: registry verified conflict-free; commands registered natively with
+aliases (tt/ttdl, ig/igdl, fb/fbdl, yt/ytdl).
+
+Suite: 285/285 (29 files, +8 tests: hostname matching incl. shorteners and
+rejection cases, usage rendering, native registration of all four).
