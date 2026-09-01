@@ -1103,3 +1103,31 @@ bot ever runs behind a filtering proxy full-time.
 
 Suite: 291/291 (30 files, +6 tests: retry honesty real/simulated/unknown,
 watch sanitizer filtering/caps/non-array).
+
+### 8.28 `.rnyt` — legacy coins top-up (2026-09-01, thirtieth push)
+
+**Request:** the vendored (legacy) `.ytvideo`/`.song` commands charge coins
+(150/50) with no way to earn them; user asked for `.rnyt` = +3000 coins per use.
+
+**Evidence first:** the ledger lives in `src/bot/imported/utils/economy.js` —
+an in-memory singleton persisted to `economy_db.json`, keyed by sender JID.
+Crediting it from a native command only works if BOTH share the module
+singleton (Node require cache) — a separate instance would diverge from the
+in-memory copy and be overwritten on the next legacy mutation.
+
+**Fix:** native `src/bot/commands/renewYouTube.ts` (`.rnyt`, aliases
+`renewyoutube`/`renewyt`/`coins`, category Economy) that requires the economy
+module by the SAME absolute path the bridge resolves (`process.cwd()` +
+`src/bot/imported/utils/economy.js`) and calls `addCoins(context.sender,
+3000)` — same key the legacy commands debit (`extra.sender` = bridge's
+`context.sender`). When legacy is quarantined it refuses politely and points
+to the FREE native pipeline (`.youtube` / `.download … audio`) instead of
+crediting a useless ledger. Tests (5): singleton identity with the legacy
+resolution path, credit visible in-memory + on disk, repeatable credit,
+quarantine refusal without file mutation, registration metadata. The test
+suite snapshots/restores `economy_db.json` and purges the require cache
+between tests.
+
+**Deliberate:** unlimited repeats (explicit user request: "à chaque fois"),
+no cooldown — it is the owner's private economy; the native pipeline stays
+free of any coin mechanic.

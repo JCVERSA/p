@@ -9,7 +9,7 @@
 [![Version](https://img.shields.io/badge/version-1.1.0-8b5cf6?style=flat-square)](./package.json)
 [![Node](https://img.shields.io/badge/Node.js-%E2%89%A522-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](./tsconfig.json)
-[![Tests](https://img.shields.io/badge/tests-291%2F291%20passing-brightgreen?style=flat-square)](#-tests)
+[![Tests](https://img.shields.io/badge/tests-296%2F296%20passing-brightgreen?style=flat-square)](#-tests)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](./LICENSE)
 [![WhatsApp](https://img.shields.io/badge/WhatsApp-Baileys%20multi--device-25D366?style=flat-square&logo=whatsapp&logoColor=white)](https://github.com/WhiskeySockets/Baileys)
 [![ffmpeg](https://img.shields.io/badge/ffmpeg-HLS%20%2B%20remux-007EC7?style=flat-square&logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
@@ -58,7 +58,7 @@ The interactive flow defaults to VF too — and never lies about the language ac
 | 📦 | **Batch episodes** — `1-12` ranges, sequential pipeline hardened for ~1 GB containers, per-episode temp links (2 h TTL), optional season ZIP via `NEBULA_BATCH_ZIP=1` |
 | 🤖 | **Gemini AI** — chat, image generation, audio transcription, voice conversations with TTS, per-user daily budget + global concurrency cap |
 | 💬 | **WhatsApp multi-device** (Baileys) — QR pairing from the panel, auto-reconnect, bad-session recovery |
-| 🧩 | **37 hand-written commands** — incl. native `.tiktok` / `.instagram` / `.facebook` / `.youtube` downloads + sandboxed panel-created ones (no fs/process/network, no restart) — the vendored 145-file legacy corpus is quarantined by default, opt-in via `NEBULA_ENABLE_LEGACY=1` (behind strict ACLs) |
+| 🧩 | **38 hand-written commands** — incl. native `.tiktok` / `.instagram` / `.facebook` / `.youtube` downloads + `.rnyt` legacy-coins top-up + sandboxed panel-created ones (no fs/process/network, no restart) — the vendored 145-file legacy corpus is quarantined by default, opt-in via `NEBULA_ENABLE_LEGACY=1` (behind strict ACLs) |
 | 🛡️ | **Group moderation** — antilink, antitag, welcome/goodbye, hidetag broadcasts, RoleGuard per-group access policies |
 | 🖥️ | **Web control panel** — live simulator, secrets manager (masked), command customizer, analytics, ZIP export |
 | 🛰️ | **One-command ops** — `manage.sh start/stop/update/doctor/env/logs/clean` on any VPS, behind a Cloudflare Tunnel |
@@ -192,7 +192,7 @@ Secrets can also be managed from the panel (**Settings &amp; Access → API Secr
 ## 🧪 Tests
 
 ```bash
-npm test           # vitest — 291 tests across 30 files
+npm test           # vitest — 296 tests across 31 files
 npm run lint       # strict TypeScript typecheck
 npm run build      # production build (client + server)
 npm start          # serve the production build (capped V8 heap, gc exposed)
