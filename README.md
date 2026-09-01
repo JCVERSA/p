@@ -9,7 +9,7 @@
 [![Version](https://img.shields.io/badge/version-1.1.0-8b5cf6?style=flat-square)](./package.json)
 [![Node](https://img.shields.io/badge/Node.js-%E2%89%A522-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](./tsconfig.json)
-[![Tests](https://img.shields.io/badge/tests-263%2F263%20passing-brightgreen?style=flat-square)](#-tests)
+[![Tests](https://img.shields.io/badge/tests-277%2F277%20passing-brightgreen?style=flat-square)](#-tests)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](./LICENSE)
 [![WhatsApp](https://img.shields.io/badge/WhatsApp-Baileys%20multi--device-25D366?style=flat-square&logo=whatsapp&logoColor=white)](https://github.com/WhiskeySockets/Baileys)
 [![ffmpeg](https://img.shields.io/badge/ffmpeg-HLS%20%2B%20remux-007EC7?style=flat-square&logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
@@ -54,6 +54,7 @@ The interactive flow defaults to VF too — and never lies about the language ac
 |---|---|
 | 📺 | **Anime VF downloader** — voir-anime.to (VF-first) with nakanime fallback, VidMoly/Voe HLS mirrors, cat-catch style segment downloader, honest quality+size labels, WhatsApp-friendly files (~90 MB/ep), MyAnimeList info cards (`.anime`, Jikan), anime identification from a screenshot (`.trace`, trace.moe) |
 | 🗣️ | **VF by default** — quick mode *and* interactive menus; `.a vostfr` switches back; honest "VF non disponible" when a title has no dub |
+| 🔔 | **New-episode watcher** — `.a watch` on a VF season: cron polling (default every 6 h), quiet hours 23h–7h, WhatsApp notification with the ready-made download command; `.a unwatch <title>` / `.a watchlist` |
 | 📦 | **Batch episodes** — `1-12` ranges, sequential pipeline hardened for ~1 GB containers, per-episode temp links (2 h TTL), optional season ZIP via `NEBULA_BATCH_ZIP=1` |
 | 🤖 | **Gemini AI** — chat, image generation, audio transcription, voice conversations with TTS, per-user daily budget + global concurrency cap |
 | 💬 | **WhatsApp multi-device** (Baileys) — QR pairing from the panel, auto-reconnect, bad-session recovery |
@@ -174,6 +175,8 @@ Copy `.env.example` to `.env` (or run `./manage.sh env`). Highlights:
 | `NEBULA_BATCH_ZIP` | no | `1` re-enables the all-in-one season ZIP |
 | `NEBULA_BATCH_CONCURRENCY` | no | Parallel episode downloads (default 1 — sequential; keep 1 under ~1 GB RAM) |
 | `NEBULA_NOVABOX_MAX_EPISODES` / `_MAX_BATCH_MB` | no | Batch ceilings (12 / 2048) |
+| `NEBULA_DOWNLOAD_TIMEOUT_MS` | no | Hard global deadline per episode download (default 600000 = 10 min) |
+| `NEBULA_WATCH_CRON` / `_QUIET` / `_TZ` | no | Episode watcher schedule (`0 */6 * * *`), quiet window (`23-7`) and timezone (`Africa/Douala`) |
 | `NEBULA_TEMP_MAX_BYTES` | no | Temp storage ceiling (4 GiB) |
 | `NEBULA_AI_DAILY_LIMIT` / `_MAX_CONCURRENT` | no | AI budget (40/day/user) and concurrency (3) |
 | `NEBULA_PANEL_COMMANDS` | no | `off` disables sandboxed panel-created commands |
@@ -184,7 +187,7 @@ Secrets can also be managed from the panel (**Settings &amp; Access → API Secr
 ## 🧪 Tests
 
 ```bash
-npm test           # vitest — 263 tests across 26 files
+npm test           # vitest — 277 tests across 28 files
 npm run lint       # strict TypeScript typecheck
 npm run build      # production build (client + server)
 npm start          # serve the production build (capped V8 heap, gc exposed)

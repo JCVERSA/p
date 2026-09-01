@@ -937,3 +937,45 @@ simple": send/quote a screenshot, get the anime + episode + timecode.
 - No API key, one request per user action (anonymous rate limit friendly).
 
 Suite: 263/263 (26 files, +13 trace.moe tests).
+
+### 8.23 Full-audit remediation (S1–S4) + `.a watch` episode watcher (2026-09-01, twenty-fifth push)
+
+**Context:** expert-mode audit (Phase 1 report delivered, user approved
+execution "fais de ton mieux"). All five Critical findings of the 2026-08-29
+audit had already been verified fixed; this batch addressed H1-H3, M3, M6, M7
+and delivered the proposed feature.
+
+**S1/H2 — npm audit 5×high (minimatch ReDoS):** real chain is
+`yt-search → node-fzf → redstar → minimatch@3.0.8`; redstar only calls basic
+`minimatch(file, pattern)` (API-stable across majors) → targeted override
+`redstar.minimatch ^10.2.6`. Result: **0 production vulnerabilities**, yt-search
+still loads. **H1:** `@whiskeysockets/baileys` pinned to exactly `7.0.0-rc14`
+(no surprise RC bumps). **M3:** adm-zip moved to devDependencies (tests-only
+since 8.15).
+
+**S2/H3 — R9:** `downloadHlsAppLevel` now enforces a hard global deadline
+(`NEBULA_DOWNLOAD_TIMEOUT_MS`, default 10 min/episode) checked in the segment
+retry loop — a stalling CDN can no longer hang a batch slot for hours
+(per-segment fetches already cap at 15 s; the accumulation was the hole).
+**R2:** `server.ts` verifies ffmpeg (PATH, then ffmpeg-static) at boot and
+fails LOUDLY without blocking the panel; logged via addLog for the panel.
+
+**S3/M6/M7:** MIT LICENSE + badge; README command counts now honest
+(150+ registered — matches `/api/health`) instead of the vendored-corpus
+double count "241+".
+
+**S4 — `.a watch` (new feature):** `services/episodeWatchService.ts` —
+subscriptions persisted to `database/watch_subscriptions.json` (atomic write,
+per-chat cap 20, global 200, dedupe refresh). Cron via `node-cron`
+(`NEBULA_WATCH_CRON`, default every 6 h) started from botEngine on connection
+open (sender rebound per socket). Quiet hours 23h–7h `Africa/Douala`
+(`NEBULA_WATCH_QUIET`/`_TZ`) SKIP without consuming — notifications are
+deferred, never lost. Network failures increment `consecutiveErrors` and never
+delete user data. Cycle fully dependency-injected (fetch/send/clock/state).
+Interactive hook at the episode step: `.a watch` (VF voiranime seasons only,
+honest error otherwise), `.a unwatch <titre>`, `.a watchlist`; episode screen
+lists the option. New env keys documented in manage.sh + README.
+
+Suite: 277/277 (28 files, +14 watcher tests: deltas, midnight-crossing quiet
+hours, notification format, caps, persistence round-trip, injected cycle —
+notify/silent/error/quiet-skip).

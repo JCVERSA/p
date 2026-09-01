@@ -316,6 +316,10 @@ ENV_KEYS=(
   "FLARESOLVERR_URL|URL FlareSolverr (franime)"
   "NEBULA_AI_DAILY_LIMIT|Budget IA/jour/utilisateur (défaut 40)"
   "NEBULA_AI_MAX_CONCURRENT|Requêtes IA simultanées max (défaut 3)"
+  "NEBULA_DOWNLOAD_TIMEOUT_MS|Délai max global par téléchargement d'épisode en ms (défaut 600000 = 10 min)",
+  "NEBULA_WATCH_CRON|Planification cron de la veille épisodes (défaut toutes les 6 h)",
+  "NEBULA_WATCH_QUIET|Heures silencieuses de la veille, format H-H (défaut 23-7, off = désactivé)",
+  "NEBULA_WATCH_TZ|Fuseau horaire de la veille (défaut Africa/Douala)",
   "DEBUG_MEDIA|Mettre true pour logs média verbeux"
 )
 

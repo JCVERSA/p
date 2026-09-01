@@ -1,4 +1,5 @@
 import { BotCommand, BotCommandContext } from "../types.js";
+import { addSubscription, removeSubscriptions, listSubscriptions, WATCH_MAX_PER_CHAT } from "../services/episodeWatchService.js";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import fs from "fs";
@@ -349,6 +350,72 @@ export function splitMirrorsByLanguage(
  * embed URL (voembed.net & friends) into session.episodes as list 1, labelled
  * VF by construction (the entry slug ends with "-vf", audit 8.9).
  */
+/**
+ * Episode watcher actions (audit S4): `.a watch` subscribes the current chat
+ * to the selected voiranime VF season, `.a unwatch [titre]` stops a watch,
+ * `.a watchlist` lists active watches for this chat.
+ */
+async function handleWatchAction(context: BotCommandContext, session: AnimeSession, msg: any): Promise<any> {
+  const args = context.args || [];
+  const action = (args[0] || "").toLowerCase();
+  const chatJid = msg.key.remoteJid!;
+
+  if (action === "watch") {
+    if (!session.voiranimeAnimeUrl) {
+      return context.reply(
+        "❌ La veille n'est disponible que sur les saisons *VF de voiranime* pour l'instant.\n" +
+        "_(Les saisons VOSTFR nakanime ne sont pas encore surveillables.)_"
+      );
+    }
+    const totalEps = Math.max(0, ...Object.values(session.episodes || {}).map(arr => arr.length));
+    const result = addSubscription({
+      chatJid,
+      title: session.animeTitle,
+      seasonUrl: session.voiranimeAnimeUrl,
+      lang: session.selectedLanguage || "VF",
+      lastSeenEp: totalEps
+    });
+    if (!result.ok) return context.reply(`❌ ${result.error}`);
+    const cadence = process.env.NEBULA_WATCH_CRON ? "selon la configuration du serveur" : "toutes les ~6 heures";
+    return context.reply(
+      (result.updated ? "🔄 *Veille mise à jour !*\n" : "🔔 *Veille activée !*\n") +
+      `🎬 *${session.animeTitle}* (${session.selectedLanguage || "VF"})\n` +
+      `📦 Dernier épisode connu : ${totalEps}\n` +
+      `⏰ Vérification ${cadence} (nuit silencieuse 23h–7h)\n\n` +
+      "_Tu seras prévenu ici dès qu'un nouvel épisode sort, avec la commande de téléchargement prête._\n" +
+      `_Arrêter : \`.a unwatch ${session.animeTitle}\` · Liste : \`.a watchlist\`_`
+    );
+  }
+
+  if (action === "unwatch") {
+    const query = args.slice(1).join(" ").trim();
+    const subs = listSubscriptions(chatJid);
+    if (subs.length === 0) return context.reply("ℹ️ Aucune veille active dans cette discussion.");
+    if (!query) {
+      return context.reply(
+        "❌ Précise quelle veille arrêter :\n" +
+        subs.map(s => `• \`.a unwatch ${s.title}\` _(dernier ép. connu : ${s.lastSeenEp})_`).join("\n")
+      );
+    }
+    const removed = removeSubscriptions(chatJid, query);
+    return removed > 0
+      ? context.reply(`🗑️ ${removed} veille(s) supprimée(s) pour *"${query}"*.`)
+      : context.reply(`ℹ️ Aucune veille ne correspond à *"${query}"*.\n${subs.map(s => `• ${s.title}`).join("\n")}`);
+  }
+
+  const subs = listSubscriptions(chatJid);
+  if (subs.length === 0) {
+    return context.reply(
+      "ℹ️ Aucune veille active.\n_Pour en créer une : `.a <titre>` → saison → `.a watch`._"
+    );
+  }
+  return context.reply(
+    "🔔 *Veilles actives dans cette discussion :*\n\n" +
+    subs.map(s => `• 🎬 *${s.title}* (${s.lang}) — dernier ép. connu : ${s.lastSeenEp}${s.consecutiveErrors > 3 ? ` ⚠️ ${s.consecutiveErrors} erreurs` : ""}`).join("\n") +
+    `\n\n_Max ${WATCH_MAX_PER_CHAT} par discussion · Arrêt : \`.a unwatch <titre>\`_`
+  );
+}
+
 async function fillVoiranimePlayers(session: AnimeSession, indices: number[]): Promise<void> {
   if (!session.voiranimeEpisodes || !session.voiranimeAnimeUrl) return;
   const lists: Record<number, string[]> = session.episodes || { 1: new Array(session.voiranimeEpisodes.length).fill("") };
@@ -1301,7 +1368,8 @@ const animeCommand: BotCommand = {
             `*Options:*\n` +
             `• Single episode: \`.a e2\` (or \`.a 2\` / \`.a ep2\`)\n` +
             `• Multiple episodes: \`.a e2,e3,e4,e7,e9\` (or \`.a 2,3,4,7,9\`)\n` +
-            `• Episode range: \`.a 1-5\` (or \`.a e1-e5\`)\n\n` +
+            `• Episode range: \`.a 1-5\` (or \`.a e1-e5\`)\n` +
+            `• 🔔 Suivre les nouveaux épisodes: \`.a watch\`\n\n` +
             `👉 Reply with your desired episode(s):`
           );
         } catch (err: any) {
@@ -1316,6 +1384,11 @@ const animeCommand: BotCommand = {
         const fullArgStr = args.join(" ").trim();
         const totalEpisodes = Math.max(...Object.values(session.episodes || {}).map(arr => arr.length));
         const selectedIndices: number[] = [];
+
+        // Episode watcher (audit S4): `.a watch` / `.a unwatch [titre]` / `.a watchlist`
+        if (firstArg === "watch" || firstArg === "unwatch" || firstArg === "watchlist") {
+          return await handleWatchAction(context, session, msg);
+        }
 
         // Check for range format (e.g. 1-5 or e1-e5)
         const rangeMatch = fullArgStr.match(/^(?:ep|e)?(\d+)\s*-\s*(?:ep|e)?(\d+)$/i);

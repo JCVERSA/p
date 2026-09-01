@@ -25,6 +25,7 @@ import { checkAIQuota, consumeAIQuota, withAIConcurrency } from "./aiQuota.js";
 import { authorizeCommand, resolveRole } from "./accessControl.js";
 import { getGroupPolicy } from "./groupAccessStore.js";
 import { recordAudit } from "./auditTrail.js";
+import { setWatchSender, startWatchScheduler } from "./services/episodeWatchService.js";
 
 
 const groupMetadataCache = new Map<string, { data: any; timestamp: number }>();
@@ -541,6 +542,13 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
           const ownerJid = `${ownerDigits}@s.whatsapp.net`;
           sock.sendMessage(ownerJid, { text: `🌌 *${config.botName}* is online and connected!\nPrefix: \`${config.prefix}\`` }).catch(() => {});
         }
+
+        // Episode watcher (`.a watch`, audit S4): refresh the sender with the
+        // live socket on every (re)connection, then start the scheduler once.
+        setWatchSender(async (chatJid, text) => {
+          await sock.sendMessage(chatJid, { text });
+        });
+        startWatchScheduler();
       }
 
       if (connection === "close") {
