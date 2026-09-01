@@ -765,3 +765,41 @@ anyway.
 - The streaming zip writer (8.15) stays in place for `NEBULA_BATCH_ZIP=1`.
 
 Suite: 230/230 (24 files, +1 startup purge test).
+### 8.17 Interactive flow VF by default + honest language hint (2026-08-31, nineteenth push)
+
+**User evidence:** `.a tomb` → `.a 1` (Tomb Raider King) showed the season
+screen with `Language: VOSTFR (Default)` AND the incoherent tip "(To switch to
+VOSTFR, type `.a vostfr`)" — the tip offered the language already active, and
+the user expects VF by default for downloads generally.
+
+**Root cause (structural, twofold):**
+1. The interactive season screen decided the language from nakanime alone:
+   `checkVfExists()` is structurally false for nakanime URLs (nakanime carries
+   language per player, not per page), and voiranime — our honest VF source —
+   was never consulted outside the quick pipeline. So every nakanime-sourced
+   title (i.e. whenever anime-sama search 403s and the nakanime fallback
+   serves results, as in the user's log) landed on VOSTFR-by-default.
+2. The hint line offered the switch to the ALREADY-ACTIVE language.
+
+**Fix (`novabox.ts`):**
+- `wireVoiranimeVfSeasons(session, title)`: probes voiranime at the season
+  screen; if VF entries exist the session is wired to them (seasons flagged
+  `isVoiranime`, `selectedLanguage = "VF"`, languages `[VF, VOSTFR]`), while
+  `session.animeUrl` keeps pointing at the nakanime page so `.a vostfr` can
+  rebuild the VOSTFR season list. Mirrors the quick pipeline (8.10); same env
+  opt-outs (`NEBULA_VF_DEFAULT=0`, `NEBULA_VOIRANIME_DISABLED=1`).
+- Season screen: voiranime probe FIRST, nakanime logic only as fallback.
+- `.a sN` step: voiranime seasons load their positional episode list
+  (`voiranimeEpisodes`) instead of nakanime `episodes.js`; players resolved
+  lazily via `fillVoiranimePlayers` (episode selection and season-dl
+  inspection), exactly like the quick pipeline.
+- Language switch handler: `.a vostfr` on a voiranime-wired session rebuilds
+  the nakanime season list (the old URL-rewrite path is nakanime-only and
+  would have corrupted voiranime URLs); `.a vf` when VF is not registered
+  probes voiranime as a last chance before answering "unavailable".
+- `seasonScreenLanguageHint(defaultLang, vfAvailable)`: VF default → offers
+  `.a vostfr`; VOSTFR default + VF exists → offers `.a vf`; VOSTFR default +
+  no VF anywhere → honestly says "VF non disponible pour cet anime".
+
+Suite: 237/237 (24 files, +7 interactive VF default tests with a mocked
+voiranime client).
