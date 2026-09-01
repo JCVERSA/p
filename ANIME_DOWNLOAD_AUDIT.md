@@ -979,3 +979,30 @@ lists the option. New env keys documented in manage.sh + README.
 Suite: 277/277 (28 files, +14 watcher tests: deltas, midnight-crossing quiet
 hours, notification format, caps, persistence round-trip, injected cycle —
 notify/silent/error/quiet-skip).
+
+### 8.24 Debug toolbox — Certificate Transparency lookup (crt.name) (2026-09-01, twenty-sixth push)
+
+**Context:** user found `https://crt.name/v1/search?apex=<domain>` and asked
+whether the bot could use it. Verified live: it queries the public Certificate
+Transparency logs and lists the subdomains a domain has TLS certificates for.
+
+**Validation (evidence):** `apex=vmget.online` (the Voe CDN) returns
+`prx-1316-ant`, `prx-1351-ant-20`, `prx-1357-ant-v` — exactly the hosts seen in
+the production download logs, confirming it exposes the CDN's front inventory.
+
+**Decision — documented as a MANUAL debug reflex, NOT integrated in the bot:**
+the extractors already receive exact per-episode URLs from player playlists
+and multi-mirror fallback handles host rotation, so a CT lookup in the
+pipeline would add network surface for zero measurable gain (audit principle:
+every addition must serve a real need). The reflex is useful the day a mirror
+pattern breaks:
+
+```bash
+# Has the CDN rotated/deployed new front hosts (prx-*, gate-*)?
+curl -s "https://crt.name/v1/search?apex=vmget.online"     # Voe CDN
+curl -s "https://crt.name/v1/search?apex=vmnow.online"     # Voe alt
+# same idea for any mirror CDN domain found in [MIRROR_FALLBACK] logs
+```
+
+If one day a mirror's hosts stop resolving, compare this list against the
+hosts in the bot logs before suspecting our extractor.
