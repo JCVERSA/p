@@ -1266,10 +1266,11 @@ now slices its input to the same cap internally (the route guard remains).
 
 ### 9. Backlog permanent (living section — update instead of losing decisions)
 
-1. **Merge arena/01a05555-p → main** — owner decision, explicitly deferred
-   (2026-09-01). Post-merge steps, in order: verify CI green on main, switch
-   `scripts/install.sh` `BRANCH=` to `main`, tag `v2.9.x`. The old red CI run
-   on main predates the workflow and disappears on merge.
+1. **Merge PR #1 (arena → main)** — still deferred by the owner. NOTE
+   (8.33): the installer now targets the public repo `JCVERSA/nebula-p`
+   (branch `main`) regardless; the owner pushes releases there manually and
+   will then privatize `p`. Post-merge of PR #1 remains: CI green on main,
+   tag `v2.9.x`.
 2. **trace.moe live verification** — sandbox egress blocks it; verify on the
    VPS with `.trace` + a real screenshot when convenient.
 3. **Status quo decisions (documented, do not re-litigate without need):**
@@ -1281,3 +1282,32 @@ now slices its input to the same cap internally (the route guard remains).
 5. **Watchdog/update interplay** — documented §8.30; lock tested.
 
 **Suite:** 311/311 (34 files). tsc OK. eslint (now incl. scripts/) 0 errors.
+
+### 8.33 Distribution switch — public repo `nebula-p` (2026-09-01, thirty-fifth push)
+
+**Owner decision:** `JCVERSA/p` will eventually go private; the public
+distribution channel becomes `JCVERSA/nebula-p` (created empty). The vitrine
+repo `Nebula-bot-2.9` will be deleted by the owner (superseded). The owner
+will push the release to nebula-p and privatize p himself; PR #1 stays OPEN
+(no merge, explicit instruction).
+
+**Changes (repo pointers):** `REPO_URL`/`BRANCH` in scripts/install.sh and
+manage.sh → `https://github.com/JCVERSA/nebula-p` / `main`; README one-liner
+and manual-clone; MIGRATION + GUIDE VPS docs (clone/curl/pull refs).
+
+**Privacy genericization before public distribution (standing rule):** real
+panel domain (20 refs) in CLOUDFLARE_TUNNEL_DEPLOYMENT.md → `exemple.com`;
+`237`-prefixed example numbers in .env.example/manage.sh/auditTrail comment →
+neutral; test fixtures use neutral fake JIDs (1000000000x); `Africa/Douala`
+KEPT as the functional watch-timezone default (product behavior, not personal
+data). ANIME_DOWNLOAD_AUDIT.md retains internal history/domains — the owner
+may exclude it (and docs/MIGRATION) when pushing the public repo; exclusion
+command provided in the release notes.
+
+**Coherence note:** nebula-p's `main` will be this branch's history —
+`git pull --ff-only origin main` from an existing VPS checkout keeps
+fast-forwarding (same history), so existing installs only need
+`git remote set-url origin …/nebula-p.git`.
+
+**Suite:** 311/311 (34 files), tsc/eslint/build green (numbers unchanged —
+fixtures edited in place).

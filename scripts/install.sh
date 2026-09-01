@@ -3,18 +3,18 @@
 #  NEBULA BOT — Script d'installation en une ligne
 #
 #  Usage (depuis n'importe quel VPS/conteneur Debian/Ubuntu) :
-#    curl -fsSL "https://raw.githubusercontent.com/JCVERSA/p/arena/01a05555-p/scripts/install.sh" | sh
+#    curl -fsSL "https://raw.githubusercontent.com/JCVERSA/nebula-p/main/scripts/install.sh" | sh
 #
 #  Ou en interactif (recommandé — permet de configurer le .env à la fin) :
-#    sh -c "$(curl -fsSL https://raw.githubusercontent.com/JCVERSA/p/arena/01a05555-p/scripts/install.sh)"
+#    sh -c "$(curl -fsSL https://raw.githubusercontent.com/JCVERSA/nebula-p/main/scripts/install.sh)"
 #
 #  Le script est idempotent : le relancer met à jour l'installation.
 #  À la fin, la commande `nebula` est disponible partout (voir: nebula help).
 # ============================================================================
 set -eu
 
-REPO_URL="https://github.com/JCVERSA/p"
-BRANCH="arena/01a05555-p"
+REPO_URL="https://github.com/JCVERSA/nebula-p"
+BRANCH="main"
 
 # ---------------------------------------------------------------------------
 # Options (variables d'environnement ou arguments)
@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
     --dir) NEBULA_INSTALL_DIR="${2?-}"; shift 2 ;;
     --skip-build) NEBULA_SKIP_BUILD=1; shift ;;
     --help|-h)
-      sed -n '2,12p' "$0" 2>/dev/null || echo "See https://github.com/JCVERSA/p"
+      sed -n '2,12p' "$0" 2>/dev/null || echo "See https://github.com/JCVERSA/nebula-p"
       exit 0 ;;
     *) printf 'Unknown option: %s (try --help)\n' "$1" >&2; exit 1 ;;
   esac

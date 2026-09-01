@@ -5,7 +5,7 @@
 > Durée : ~20 minutes. Document en français, étape par étape.
 >
 > Setup actuel de référence : conteneur Debian/Ubuntu, dépôt `/root/p`, branche
-> `arena/01a05555-p`, panneau sur le port **3000**, tunnel **cloudflared** par
+> `main` (dépôt public `nebula-p`), panneau sur le port **3000**, tunnel **cloudflared** par
 > **jeton de connecteur** (Zero Trust), session WhatsApp dans `nebula_auth_info/`.
 
 ---
@@ -81,7 +81,7 @@ Sur le nouveau conteneur, **tout en un** (git + Node ≥ 22 + ffmpeg + code + bu
 + commande `nebula` + assistant `.env`) :
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/JCVERSA/p/arena/01a05555-p/scripts/install.sh" | sh
+curl -fsSL "https://raw.githubusercontent.com/JCVERSA/nebula-p/main/scripts/install.sh" | sh
 # puis:
 nebula env      # si l'assistant n'a pas été lancé à la fin de l'installation
 ```
@@ -89,7 +89,7 @@ nebula env      # si l'assistant n'a pas été lancé à la fin de l'installatio
 Le script est idempotent (le relancer = mise à jour). Équivalent manuel :
 
 ```bash
-git clone -b arena/01a05555-p https://github.com/JCVERSA/p /root/p
+git clone -b main https://github.com/JCVERSA/nebula-p /root/p
 cd /root/p
 chmod +x manage.sh
 ./manage.sh setup          # npm install + .env initial + build
@@ -213,7 +213,7 @@ crontab -e   # ajouter les 3 lignes :
 
 ## 8. Résumé en une ligne par brique
 
-- **Code** : `git clone -b arena/01a05555-p … && ./manage.sh setup`
+- **Code** : `git clone -b main https://github.com/JCVERSA/nebula-p … && ./manage.sh setup`
 - **Config** : `.env` avec `APP_URL=https://jcversaco.qzz.io` + `PANEL_TOKEN`
 - **Session WhatsApp** : dossier `nebula_auth_info/` restauré
 - **Tunnel** : `cloudflared tunnel run --token <jeton>` ; hostname public =

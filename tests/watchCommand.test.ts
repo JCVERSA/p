@@ -21,7 +21,7 @@ import { listSubscriptions } from "../src/bot/services/episodeWatchService.js";
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "w-cmd-"));
 process.env.NEBULA_DATA_DIR = DATA_DIR;
 
-const CHAT = "237699000111@s.whatsapp.net";
+const CHAT = "10000000003@s.whatsapp.net";
 
 function ctx(args: string[]) {
   const replies: string[] = [];

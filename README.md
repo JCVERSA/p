@@ -112,7 +112,7 @@ server.ts (entry) ── createApp() (app.ts: auth, rate limiting, /api routes)
 ### On a VPS (recommended — one line)
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/JCVERSA/p/arena/01a05555-p/scripts/install.sh" | sh
+curl -fsSL "https://raw.githubusercontent.com/JCVERSA/nebula-p/main/scripts/install.sh" | sh
 ```
 
 This installs dependencies (git, Node ≥ 22, ffmpeg), clones the repo, builds it,
@@ -125,7 +125,7 @@ nebula start      # start + wait for the panel
 ```
 
 The installer is idempotent — running it again just updates the installation.
-Manual equivalent: `git clone -b arena/01a05555-p https://github.com/JCVERSA/p /root/p && cd /root/p && ./manage.sh setup`.
+Manual equivalent: `git clone -b main https://github.com/JCVERSA/nebula-p /root/p && cd /root/p && ./manage.sh setup`.
 
 Then put it behind HTTPS with a Cloudflare Tunnel and set `APP_URL` —
 see **[docs/MIGRATION_NOUVEAU_VPS.md](docs/MIGRATION_NOUVEAU_VPS.md)** (French, step-by-step).

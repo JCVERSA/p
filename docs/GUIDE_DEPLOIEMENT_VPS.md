@@ -1,4 +1,4 @@
-# Guide de déploiement VPS — Nebula Bot (repo `JCVERSA/p`, branche `arena/01a05555-p`)
+# Guide de déploiement VPS — Nebula Bot (repo `JCVERSA/nebula-p`, branche `main`)
 
 Guide **pas-à-pas, copier-coller**, validé sur un conteneur Debian 11 sans systemd.
 Il couvre : installation depuis zéro, configuration, tunnel Cloudflare **avec ou sans
@@ -93,11 +93,11 @@ node -v && npm -v             # v22.x.x
 
 ```bash
 cd /root
-git clone -b arena/01a05555-p https://github.com/JCVERSA/p.git
+git clone -b main https://github.com/JCVERSA/nebula-p.git
 cd p
 ```
 
-> La branche `arena/01a05555-p` contient tous les correctifs récents (système anime,
+> La branche `main` du dépôt public `nebula-p` contient tous les correctifs récents (système anime,
 > fallback nakanime, proxy, mode production). Adaptez si vous déployez une autre branche.
 
 ### 2.4 Dépendances
@@ -441,7 +441,7 @@ Autres formes utiles :
 ```bash
 cd /root/p
 pkill -f dist/server.cjs; sleep 1
-git pull origin arena/01a05555-p
+git pull origin main
 npm install --ignore-scripts
 npm run build
 nohup npm start > /root/bot.log 2>&1 &
@@ -501,4 +501,4 @@ tar czf /root/nebula-backup-$(date +%F).tar.gz \
 ---
 
 *Guide généré le 2026-08-31 — toute la procédure a été vérifiée sur un conteneur
-Debian 11 (Node 22.23, ffmpeg 4.3.9) avec la branche `arena/01a05555-p`.*
+Debian 11 (Node 22.23, ffmpeg 4.3.9) avec la branche `main`.*

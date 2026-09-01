@@ -13,7 +13,7 @@ import renewYouTubeCommand, { loadLegacyEconomy } from "../src/bot/commands/rene
 
 const DB_PATH = path.join(process.cwd(), "src/bot/imported/utils/economy_db.json");
 const ECONOMY_PATH = path.join(process.cwd(), "src/bot/imported/utils/economy.js");
-const SENDER = "237699887766@s.whatsapp.net";
+const SENDER = "10000000002@s.whatsapp.net";
 
 let dbBackup: string;
 

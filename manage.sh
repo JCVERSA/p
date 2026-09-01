@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 #  NEBULA BOT — Script de gestion VPS
-#  Dépôt   : https://github.com/JCVERSA/p (branche arena/01a05555-p)
+#  Dépôt   : https://github.com/JCVERSA/nebula-p (branche main)
 #  Usage   : ./manage.sh <commande>   (voir: ./manage.sh help)
 #
 #  Commandes : start | stop | restart | status | update | setup | clone
@@ -13,8 +13,8 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-REPO_URL="https://github.com/JCVERSA/p"
-BRANCH="arena/01a05555-p"
+REPO_URL="https://github.com/JCVERSA/nebula-p"
+BRANCH="main"
 # Resolve the real script location THROUGH symlinks: the installer exposes
 # manage.sh as the `nebula` command (/usr/local/bin/nebula), so dirname of
 # BASH_SOURCE alone would point at the symlink's directory, not the repo.
@@ -359,10 +359,10 @@ cmd_clone() {
 # ENV
 # ---------------------------------------------------------------------------
 ENV_KEYS=(
-  "APP_URL|URL publique du panneau (ex: https://jcversaco.qzz.io) — obligatoire pour les liens + validation Host"
+  "APP_URL|URL publique du panneau (ex: https://bot.exemple.com) — obligatoire pour les liens + validation Host"
   "PANEL_TOKEN|Clé d'accès au panneau (si vide: générée au démarrage et affichée une fois en console)"
   "GEMINI_API_KEY|Clé Gemini pour l'IA (texte/image/transcription)"
-  "OWNER_NUMBER|Numéro WhatsApp propriétaire (avec indicatif, ex: 2376…)"
+  "OWNER_NUMBER|Numéro WhatsApp propriétaire (indicatif pays + numéro, sans + ni espaces)"
   "PORT|Port du panneau (défaut 3000)"
   "NEBULA_VF_DEFAULT|Mettre 0 pour désactiver la VF par défaut (défaut: VF d'abord)"
   "NEBULA_VOIRANIME_DISABLED|Mettre 1 pour couper la source voir-anime.to"
