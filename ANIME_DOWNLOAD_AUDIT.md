@@ -1176,3 +1176,10 @@ build OK, `bash -n` on both shell scripts, and an end-to-end
 path (pull → npm install removing ffmpeg-static without any GitHub access →
 build). Expected effect on the VPS: dependency-touching updates drop from
 20-30 min to ~1-2 min with a ~1 min bot downtime.
+
+**Post-scriptum (same day):** the E2E run also refreshed package-lock.json
+(ffmpeg-static entries removed) — committed separately right after; `npm ci`
+(CI) requires the lockfile in sync with package.json. The transient
+`was_running` false positive during the sandbox E2E came from the
+validation command itself containing the literal NODE_PATTERN string, not
+from manage.sh.
