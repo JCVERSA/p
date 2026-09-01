@@ -2198,11 +2198,23 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
     };
 
     let nextEpisodeIdx = 0;
+    // Batch OOM hardening (audit 8.14): the VPS container is capped by its
+    // cgroup (~954 MB) while Node sizes its heap from HOST RAM, so V8 defers
+    // major GC indefinitely and transient Buffer garbage accumulates across
+    // episodes until the kernel OOM-killer strikes. npm start now passes
+    // --max-old-space-size=384 --expose-gc; an explicit GC between episodes
+    // keeps RSS flat. No-op when --expose-gc is absent.
+    const gcBetweenEpisodes = () => {
+      try {
+        (globalThis as any).gc?.();
+      } catch {}
+    };
     const worker = async () => {
       while (nextEpisodeIdx < indices.length) {
         if (quotaExceeded) break;
         const currentIdx = nextEpisodeIdx++;
         await processEpisodeTask(currentIdx);
+        gcBetweenEpisodes();
       }
     };
 

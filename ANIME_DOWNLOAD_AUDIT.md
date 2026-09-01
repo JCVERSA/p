@@ -671,3 +671,31 @@ ceiling is the cgroup limit — check `cat /sys/fs/cgroup/memory.max` (v2) or
 `NEBULA_BATCH_CONCURRENCY`.
 
 Suite: 221/221 (21 files, +4 fast-lane guard tests).
+
+### 8.14 Sequential batch OOM again — V8 ignores the cgroup limit (2026-08-31, sixteenth push)
+
+**User evidence:** redeploy of the size guard OK, batch re-run: E09 delivered
+(92.28 MB, Voe, clean pipeline), then `Killed` right after the TempDownload
+registration. Same code path that survived the previous 12-episode run.
+
+**Root cause (measured, not guessed):** `cat /sys/fs/cgroup/memory.max` →
+`999997440` bytes ≈ **954 MB** — the container cap. `free -m` shows the HOST
+view (330 GB), and Node sizes its default V8 heap from that host view, so
+`--max-old-space-size` defaults to several GB. V8 therefore defers major GC
+indefinitely; each episode leaves ~92 MB of transient Buffer garbage that is
+*collectable but never collected*, and around episode 9 RSS crosses the cgroup
+cap → kernel OOM kill. Nondeterministic GC timing explains why one run survives
+and the next dies with identical code. The per-episode pipeline itself is
+bounded (segments written to disk as they arrive, drain-aware consolidation,
+temp links served via `createReadStream`, batch sends links not uploads) —
+verified by re-reading hlsDownloader/tempDownloadManager/app.ts/novabox.
+
+**Fix:**
+- `package.json` start: `node --max-old-space-size=384 --expose-gc` — heap
+  capped ~170 MB below the cgroup limit (headroom for external buffers,
+  ffmpeg children, runtime).
+- Batch worker now calls an explicit `gc()` between episodes (no-op without
+  `--expose-gc`).
+- Regression guard: `tests/startFlags.test.ts` fails if the flags disappear.
+
+Suite: 224/224 (22 files, +3 start-flag tests).
