@@ -67,8 +67,8 @@ demande un nouveau pairing (QR à rescanner depuis le panneau).
 apt-get update
 apt-get install -y git curl ca-certificates ffmpeg
 
-# Node.js ≥ 18 (NodeSource — remplacer setup_20.x par setup_22.x si tu veux)
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+# Node.js ≥ 22 (NodeSource)
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 node -v   # doit afficher v20.x (ou plus)
 ```
@@ -77,7 +77,7 @@ node -v   # doit afficher v20.x (ou plus)
 
 ## 3. Installer l'application (1 commande)
 
-Sur le nouveau conteneur, **tout en un** (git + Node ≥ 18 + ffmpeg + code + build
+Sur le nouveau conteneur, **tout en un** (git + Node ≥ 22 + ffmpeg + code + build
 + commande `nebula` + assistant `.env`) :
 
 ```bash

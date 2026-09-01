@@ -78,21 +78,21 @@ fi
 ok "git $(git --version 2>/dev/null | awk '{print $3}')"
 
 # ---------------------------------------------------------------------------
-step "2/6 · Node.js (>= 18)"
+step "2/6 · Node.js (>= 22)"
 # ---------------------------------------------------------------------------
 NODE_MAJOR=0
 if command -v node >/dev/null 2>&1; then
   NODE_MAJOR="$(node -v | tr -d 'v' | cut -d. -f1)"
 fi
 
-if [ "$NODE_MAJOR" -lt 18 ]; then
+if [ "$NODE_MAJOR" -lt 22 ]; then
   if [ -n "$APT" ] && [ "$(id -u)" -eq 0 ]; then
     warn "Node.js absent ou trop ancien (${NODE_MAJOR:-aucun}) — installation via NodeSource 22.x…"
     curl -fsSL https://deb.nodesource.com/setup_22.x | sh - >/dev/null || fail "Échec du setup NodeSource."
     DEBIAN_FRONTEND=noninteractive $APT install -y -qq nodejs >/dev/null || fail "Installation de nodejs impossible."
     NODE_MAJOR="$(node -v | tr -d 'v' | cut -d. -f1)"
   else
-    fail "Node.js >= 18 requis (root+apt indisponibles pour l'auto-install). Installe-le: https://nodejs.org puis relance."
+    fail "Node.js >= 22 requis (root+apt indisponibles pour l'auto-install). Installe-le: https://nodejs.org puis relance."
   fi
 fi
 [ "$NODE_MAJOR" -ge 18 ] || fail "Node.js $NODE_MAJOR détecté — il faut >= 18."

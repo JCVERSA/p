@@ -7,7 +7,7 @@
 **WhatsApp Media &amp; AI Command Center** — anime VF downloader, Gemini AI, dynamic commands and a full web control panel, in one container.
 
 [![Version](https://img.shields.io/badge/version-1.1.0-8b5cf6?style=flat-square)](./package.json)
-[![Node](https://img.shields.io/badge/Node.js-%E2%89%A518-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/Node.js-%E2%89%A522-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](./tsconfig.json)
 [![Tests](https://img.shields.io/badge/tests-250%2F250%20passing-brightgreen?style=flat-square)](#-tests)
 [![WhatsApp](https://img.shields.io/badge/WhatsApp-Baileys%20multi--device-25D366?style=flat-square&logo=whatsapp&logoColor=white)](https://github.com/WhiskeySockets/Baileys)
@@ -109,7 +109,7 @@ server.ts (entry) ── createApp() (app.ts: auth, rate limiting, /api routes)
 curl -fsSL "https://raw.githubusercontent.com/JCVERSA/p/arena/01a05555-p/scripts/install.sh" | sh
 ```
 
-This installs dependencies (git, Node ≥ 18, ffmpeg), clones the repo, builds it,
+This installs dependencies (git, Node ≥ 22, ffmpeg), clones the repo, builds it,
 creates the `nebula` command available everywhere and offers the `.env` wizard.
 Then:
 
@@ -133,7 +133,7 @@ npm install
 npm run dev        # panel at http://localhost:3000
 ```
 
-Requirements: **Node.js ≥ 18** (22 tested in production), `ffmpeg` on PATH for media.
+Requirements: **Node.js ≥ 22** and `ffmpeg` on PATH for media — see [Requirements](#-requirements).
 
 ### Day-to-day operations
 
