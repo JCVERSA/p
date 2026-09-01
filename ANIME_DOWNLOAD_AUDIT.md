@@ -1324,3 +1324,37 @@ them. Recommended for the public repo: orphan (fresh single-commit) history
 via `git checkout --orphan main`; existing VPS checkouts then re-align with
 `git fetch && git reset --hard origin/main` (runtime state is untracked:
 .env, database/, nebula_auth_info/ are gitignored — verified).
+
+### 8.34 Installer audit & optimization (2026-09-01, thirty-sixth push)
+
+**Scope:** `scripts/install.sh` (243 lines, POSIX sh — verified with dash).
+
+**Findings (evidence-based):**
+- **H1 real defect:** the "already installed" path pulled `origin main` from
+  whatever remote the checkout had — a VPS cloned from the OLD repo
+  (`JCVERSA/p`, branch arena) would silently stay on old code/remote while
+  the installer claims success. Exactly the live migration scenario.
+- M1: Node gate incoherence (installed 22, accepted ≥18; docs/CI say 22).
+- M2: `apt install ffmpeg` without `apt update` when git pre-existed.
+- M3: no disk pre-check; M4: full clone (repo carries a 4.5 MB gif).
+- L1: mojibake on fresh C-locale VPS (seen live on the owner's install);
+  L2: ".env créé" message even on cp failure; L3: cryptic `--dir` error;
+  L4: apt failures hidden by -qq.
+- Non-issues re-verified (no change): PATH profile printf emits literal
+  $PATH (single-quoted); TTY gating; symlink handling.
+
+**Changes:** auto-migration block (set-url + fetch + clean-tree switch to
+main; dirty tree → explicit warn, never resets); `apt_install` helper (lazy
+one-time update + verbose retry); unified Node ≥ 22 gate (one deliberate
+behavior change: pre-existing 18–21 now fails, matching README/CI);
+`LC_ALL=C.UTF-8` best-effort export; disk pre-check (fail <1 GB, warn <2 GB);
+shallow clone `--depth 1 --single-branch` (nebula update pulls fine);
+accurate .env message; `--dir` arg validation; banner shows installed
+commit. POSIX compliance kept (dash + bash -n clean).
+
+**Verification (in-sandbox E2E):** fresh install in /tmp (20 s, clone→
+npm→build→banner, non-root + degraded-ffmpeg paths exercised); idempotent
+re-run (pull --ff-only); forced old-remote migration (p.git → nebula-p,
+branch renamed → auto-switched to main, tree clean); profile PATH line
+emits literal $PATH. Not exercised: root+apt happy path (sandbox egress
+blocks apt) — logic reviewed, failure paths warn-and-continue.
