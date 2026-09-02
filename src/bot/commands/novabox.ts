@@ -31,7 +31,7 @@ import { bestAnimeMatch, formatAnimeCard } from "../services/jikanClient.js";
 import { isSafeDownloadUrl } from "../urlSafety.js";
 import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batchDownloadManager.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
-import { downloadHlsAppLevel, resolveVidmolyUrlset } from "../services/hlsDownloader.js";
+import { downloadHlsAppLevel, resolveVidmolyUrlset, isDeadFileSlug, markDeadFileSlug } from "../services/hlsDownloader.js";
 import {
   resolveBestMirrorStream,
   executeDirectOrFfmpegDownload,
@@ -2165,6 +2165,44 @@ async function inspectHlsStreams(hlsUrl: string, refererUrl: string, originUrl: 
   }
 }
 
+/** True when re-encoding to targetHeight cannot shrink the file (audit 8.47). */
+export function compressionPointless(sourceHeight: number | null, targetHeight: number): boolean {
+  return sourceHeight !== null && sourceHeight > 0 && sourceHeight <= targetHeight;
+}
+
+/** Video height of a local file via ffprobe (null when unavailable/slow). */
+function probeVideoHeight(filePath: string): Promise<number | null> {
+  return new Promise(resolve => {
+    try {
+      const p = spawn("ffprobe", [
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=height",
+        "-of",
+        "csv=p=0",
+        filePath
+      ]);
+      let out = "";
+      p.stdout.on("data", (d: Buffer) => (out += d.toString()));
+      p.on("error", () => resolve(null));
+      p.on("close", code => {
+        const h = parseInt(out.trim(), 10);
+        resolve(code === 0 && h > 0 ? h : null);
+      });
+      const timer = setTimeout(() => {
+        try { p.kill(); } catch {}
+        resolve(null);
+      }, 8000);
+      p.on("close", () => clearTimeout(timer));
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
 // Execute high-performance stream download using FFmpeg with safe process isolation
 async function executeFfmpegDownload(
   targetHlsUrl: string,
@@ -2175,6 +2213,10 @@ async function executeFfmpegDownload(
 ): Promise<boolean> {
   // SSRF through downloader: never hand an unvalidated URL to a subprocess.
   if (!(await isPublicFetchTarget(targetHlsUrl, "downloader input"))) {
+    return false;
+  }
+  if (isDeadFileSlug(targetHlsUrl)) {
+    console.warn(`[NOVABOX_FFMPEG] Skipping known-dead file: ${targetHlsUrl.split("?")[0]}`);
     return false;
   }
 
@@ -2386,6 +2428,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
             }
 
             success = await executeFfmpegDownload(targetHlsUrl, downloadSourceUrl, originUrl, localPath, 240000);
+            if (!success) markDeadFileSlug(targetHlsUrl);
           }
         }
 
@@ -2805,6 +2848,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       console.log(`[NOVABOX] Final target sub-playlist URL for download: "${targetHlsUrl}"`);
       downloadSuccess = await executeFfmpegDownload(targetHlsUrl, downloadSourceUrl, originUrl, localPath, 240000);
       console.log(`[NOVABOX] Legacy VidMoly ffmpeg download finished. Success: ${downloadSuccess}`);
+      if (!downloadSuccess) markDeadFileSlug(targetHlsUrl);
     }
   }
 
@@ -2852,9 +2896,20 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       // Auto-compress ONLY when the raw file exceeds the 100 MB WhatsApp
       // document ceiling (95-100 MB sends fine as a document — transcoding
       // there was a pure time sink, audit 8.5). x264 veryfast + all cores.
-      const shouldCompress =
+      let shouldCompress =
         fileSizeMB > 100 &&
         (session.forceCompress || resolution === "480P" || resolution === "360P" || resolution.includes("Compress"));
+
+      if (shouldCompress) {
+        // A source already at/below 480p cannot meaningfully shrink by
+        // re-encoding to 480p — the 2-minute encode just times out (production
+        // log: 121.8s wasted) before the raw high-speed-link delivery anyway.
+        const srcHeight = await probeVideoHeight(localPath);
+        if (compressionPointless(srcHeight, 480)) {
+          shouldCompress = false;
+          console.log(`[NOVABOX] Source is already ${srcHeight}p — compression skipped, delivering via high-speed link.`);
+        }
+      }
 
       if (shouldCompress) {
         const tComp = Date.now();

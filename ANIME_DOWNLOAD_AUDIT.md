@@ -1813,3 +1813,34 @@ ordering, env/wiring guards). tsc, eslint 0 errors, build OK, manage.sh
 syntax OK. Live confirmation on the VPS: re-ask a known-blocked episode —
 the log must show `Cross-source fallback: trying N mirror(s)` then either
 `succeeded via <host> (VF|VOSTFR)` or the honest failure recap.
+
+### 8.47 Dead-file memory + pointless-compression skip (2026-09-01, forty-ninth push)
+
+**Owner confirmation:** the cross-source wheel WORKS — Vinland Saga S02E05
+was rescued in VF via the secondary catalog (mirror 2 = a different upload
+of the episode on a healthy node, after mirror 1 re-served the same dead
+file id). Owner preference noted: a brand-new site would have been
+preferred over nakanime (past issues); accepted since it is proven
+VPS-reachable, and `animeFallback.ts` is source-agnostic (deps injected) —
+adding a third site later means writing one client, no rewiring.
+
+**Two time sinks visible in that same log, both fixed:**
+1. ~3-4 min retrying a known-dead file: the vidmoly family serves the SAME
+   file id from several embed hosts (.biz/.org/...); mirror 1 of the
+   fallback re-ran the full 34-attempt matrix + two FFmpeg passes on the
+   exact file that had just 403'd everywhere. Fix: dead-file slug memory
+   (`hlsDownloader`, 30-min TTL, 200-entry cap) checked and marked at every
+   retry surface — urlset matrix, funnel engine, mirror loop, novabox
+   ffmpeg path (single + batch). A slug marked from one URL form (embed)
+   is detected in every other form (urlset/media) of the same file.
+2. 121.8 s of futile 480p→480p re-encoding (could only time out; delivery
+   fell back to the raw high-speed link anyway). Fix: an 8s-bounded ffprobe
+   height check — when the downloaded source is already ≤480p tall,
+   compression is skipped and the episode goes straight to link delivery.
+   Probe failure (null) keeps the previous behavior.
+
+**Verification:** 394/394 tests (43 files, +8: slug extraction across the
+three URL forms + negatives, cross-form dead detection incl. the exact
+production case, TTL self-healing with fake timers, compression decision
+table incl. null-probe, wiring guards for all check/mark points). tsc,
+eslint 0 errors, build OK.
