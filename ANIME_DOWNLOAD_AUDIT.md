@@ -1489,3 +1489,37 @@ menu, README.
 **Suite:** 339/339 (37 files, +10: inject/isolation, sliding-TTL keep after
 9.5h+9.5h, expiry wipe, TTL=0, secret filter, compaction fold + failure
 fallback, forget scoping, status line).
+
+### 8.39 Offline download page — one HTML document instead of a link wall (2026-09-01, forty-first push)
+
+**Owner idea (validated):** multi-episode batches used to deliver N links in
+WhatsApp — tapping each meant whatsapp↔chrome ping-pong. Now the bot sends
+ONE `.html` document: opened once in Chrome, per-episode "⬇ Télécharger"
+buttons plus a "Tout télécharger" action that walks the list automatically.
+
+**Implementation:** `src/bot/services/downloadPage.ts` — self-contained page
+(inline CSS only, ~7 KB, works from the WhatsApp download folder with no
+network beyond the links). Sequential engine uses hidden iframes pointed at
+the temp-link route, which already serves `Content-Disposition: attachment`
+(+CORS, +Range) — real downloads, no navigation, cross-origin safe, zero JS
+on the target. Live expiry countdown (links' earliest expiresAt, now carried
+in generatedLinks), expired state disables everything, first-run hint about
+Chrome's one-time "download multiple files" permission. Project palette
+(zinc-950/#09090b, cards #18181b, amber-500/#f59e0b, emerald/rose accents).
+All user-derived text HTML-escaped (tested with script-injection labels).
+
+**Delivery wiring (novabox):** batches with >1 episode send a compact
+summary message + the HTML document (buffer, text/html, quoted reply);
+single-episode batches and the ZIP mode are unchanged; if the document send
+fails, the legacy full-links message is used (honest fallback, no silent
+loss).
+
+**Verification (re-verification pass run explicitly):** suite 348/348
+(38 files, +9: URL embedding incl. escaped forms, XSS escaping, palette
+constants, buttons/download attrs, totals+countdown+hint, expiry embedding,
+self-containment, <16 KB, wiring guard). tsc, eslint 0 errors, production
+build OK. Structural validation of a real generated page: python HTMLParser
+tag balance OK, 3 buttons, sequential URL list parses as JSON, 6.9 KB.
+NOT testable in-sandbox: an actual Chrome download session (egress) — the
+iframe+attachment mechanism is the standard pattern and the route headers
+were verified in source.
