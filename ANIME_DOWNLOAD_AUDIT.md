@@ -1280,6 +1280,14 @@ now slices its input to the same cap internally (the route guard remains).
    VOSTFR watch support (voiranime VF only for now), batch-registry
    persistence on restart (S5 — declined by default, jobs are short).
 5. **Watchdog/update interplay** — documented §8.30; lock tested.
+6. **Evaluated external tools (2026-09-01, owner-suggested):** `rtk-ai/rtk`
+   (terminal-output compressor for coding agents) — NOT applicable: the
+   bot's AI never runs shell commands; input compression already covered by
+   the memory/turn caps. `Graphify-Labs/graphify` (codebase knowledge-graph,
+   tree-sitter, local-first) — NOT for the bot (analyzes code, not
+   conversations); CANDIDATE dev tool for the next major audit of this repo
+   (god nodes would quantify M1's coupling; cross-file links speed up
+   call-site mapping). Neither added as a dependency.
 
 **Suite:** 311/311 (34 files). tsc OK. eslint (now incl. scripts/) 0 errors.
 
