@@ -1844,3 +1844,31 @@ three URL forms + negatives, cross-form dead detection incl. the exact
 production case, TTL self-healing with fake timers, compression decision
 table incl. null-probe, wiring guards for all check/mark points). tsc,
 eslint 0 errors, build OK.
+
+### 9.7 Media tooling references evaluated (sadness-splitter, addyosmani/video-compress — 2026-09-02)
+
+Pre-research for the upcoming media-toolkit story (owner-approved direction).
+Both repos cloned and inspected; zero dependencies added, zero code taken.
+
+**DivyanshuChipa/sadness-splitter** — Tauri v2 desktop video suite (Rust +
+FFmpeg). Not a scraper: nothing for the anime-source problem. Retained
+techniques for the bot's future `.v` toolkit: chained `atempo` for speed
+factors >2× (`atempo=2.0,atempo=x/2`), quality GIF recipe
+(`fps+lanczos+palettegen/paletteuse`), aspect-preserving scale+pad, annotated
+CRF scale (≤20 HQ / ≤23 balanced / >23 small). Thumbnail idea rejected:
+base64 vignettes would triple the 8 KB download page against the "optimized"
+requirement.
+
+**addyosmani/video-compress** — browser compressor (React + ffmpeg.wasm).
+The wasm angle is irrelevant server-side (native FFmpeg on the VPS), but the
+**file-size targeting formula** is directly applicable to our WhatsApp
+95-100 MB ceiling: `videoKbps = (targetMB × 8 × 1024) / durationSeconds`
+(their version omits subtracting the audio bitrate — ours will subtract it
+and clamp to sane 480p bounds). Also retained: the percentage→CRF mapping
+`crf = 51 − (pct/100) × 33` for a future `.v compress 50%` UX. Combines with
+the 8.47 ffprobe helper (duration + height already probed) into a
+deterministic "fit under X MB" mode instead of CRF-26-and-hope.
+
+Both fold into the same future story: `.v mp3 | gif | vitesse | trim |
+compress [pct|MB]` on the existing VPS FFmpeg infrastructure — fully
+locally testable, no network dependency.
