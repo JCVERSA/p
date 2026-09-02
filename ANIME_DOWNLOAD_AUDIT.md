@@ -1627,3 +1627,40 @@ blank-target fallbacks, ZIP gate, all-failed notice). tsc, eslint 0 errors,
 production build OK. Structural validation of a generated page via python
 HTMLParser: balanced tags, exactly one `</script>`, URL list JSON-decodable
 after unescaping, 8.2 KB.
+
+### 8.42 Source privacy — the bot never names the private anime sources (2026-09-01, forty-fourth push)
+
+**Owner requirement:** the anime sources (nakanime, voiranime, franime,
+anime-sama) are private — the bot must NEVER mention them in anything it
+sends. Full sweep of every runtime surface (WhatsApp messages, panel UI,
+served HTML, filenames, captions) via a literal scanner (string + template
+literals, comments stripped).
+
+**Findings — 15 user-facing mentions, all fixed:**
+- novabox: watch hint named voiranime/nakanime; franime.fr named in the VF
+  Cloudflare error; searchFailureMessage named anime-sama three times AND
+  leaked the domain in a `curl https://anime-sama.to` verification hint
+  (replaced with `nebula doctor`); "Language switched to VF! (voiranime)"
+  ×2 and "(nakanime)" ×1; "voiranime VF entry" in an error.
+- watch: four messages named voiranime, including one that quoted the
+  NEBULA_VOIRANIME_DISABLED env var name and one that replied raw
+  err.message (DNS/axios errors embed the source domain) — now generic
+  text, details stay in VPS logs.
+- franimeClient: last-resort catalog title `franime #<id>` could surface in
+  the search results list → `Anime #<id>`.
+
+**Deliberately unchanged (internal, never sent):** console.* diagnostics on
+the VPS (they are how we debug — 8.40 was solved through them), client URL
+builders and origins, SSRF host allowlists (urlSafety), HTTP Referer/Origin
+headers (functional requirement), env var NAMES (NEBULA_VOIRANIME_DISABLED
+stays — only its display in user messages was removed), repo dev docs
+(private repo). Panel UI (all TSX), app.ts and server.ts were already clean.
+
+**Regression guard:** `tests/sourcePrivacy.test.ts` scans every string
+literal of every runtime surface on each CI run and fails if a private
+source name appears outside the explicit internal allowlist (console lines,
+URL/regex builders, module specifiers, session-url key prefix, SSRF host
+file). Self-check test proves the scanner flags leaks and passes internals.
+
+**Verification:** 365/365 tests (40 files, +2), tsc, eslint 0 errors,
+production build OK.
