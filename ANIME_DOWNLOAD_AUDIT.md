@@ -1358,3 +1358,35 @@ re-run (pull --ff-only); forced old-remote migration (p.git → nebula-p,
 branch renamed → auto-switched to main, tree clean); profile PATH line
 emits literal $PATH. Not exercised: root+apt happy path (sandbox egress
 blocks apt) — logic reviewed, failure paths warn-and-continue.
+
+### 8.35 NVIDIA NIM AI fallback (2026-09-01, thirty-seventh push)
+
+**Owner decisions (asked explicitly):** NVIDIA as automatic FALLBACK (Gemini
+stays primary), owner already holds a key, default model
+`meta/llama-3.3-70b-instruct`, text-only scope — images stay Gemini-only.
+
+**Evidence:** NIM is a plain OpenAI-compatible chat-completions API on
+`https://integrate.api.nvidia.com/v1` (verified against the referenced
+free-claude-code provider implementation); free keys at
+build.nvidia.com/settings/api-keys. No new dependency: axios, already in the
+stack.
+
+**Implementation:** new `src/bot/nimClient.ts` (`isNimConfigured`,
+`getNimModel`, `nimChat` with 2-attempt retry on 429/5xx, truthful
+HTTP-status errors, DI'd post for tests). `geminiClient.generateTextWithFallback`
+now falls back to NIM when the Gemini key is absent OR every Gemini model
+failed (combined truthful error when both engines fail); multimodal prompts
+are collapsed to text (image parts dropped — fallback is text-only, honest
+error when prompt is textless). New central `isAIConfigured()` replaces raw
+GEMINI_API_KEY reads at every gate (.ai command, DM assistant, panel
+diagnostics, dynamic-command generation). `NVIDIA_NIM_API_KEY` joined the
+panel Secrets allowlist (masked); env surfaces: manage.sh env menu,
+.env.example (optional), README.
+
+Quotas unchanged: NIM calls happen INSIDE the existing per-user daily budget
+and concurrency cap (fallback inherits them by construction).
+
+**Suite:** 322/322 (35 files, +11: config detection/placeholders/model
+override/secret allowlist; body shape + bearer; 429 retry; truthful errors;
+empty completion; missing key; integration routes-to-NIM, isAIConfigured,
+textless-prompt guard).
