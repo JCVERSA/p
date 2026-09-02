@@ -1390,3 +1390,23 @@ and concurrency cap (fallback inherits them by construction).
 override/secret allowlist; body shape + bearer; 429 retry; truthful errors;
 empty completion; missing key; integration routes-to-NIM, isAIConfigured,
 textless-prompt guard).
+
+### 8.36 Panel secret field for the NVIDIA key (2026-09-01, thirty-eighth push)
+
+**Owner wish:** enter the NVIDIA API key directly in the control panel. The
+BACKEND already accepted it (8.35 allowlist), but the panel UI was
+hardcoded to GEMINI_API_KEY only (fetchSecretStatus picked Gemini/Owner;
+saveSecret always posted GEMINI) — verified in App.tsx before changing.
+
+**Fix:** following the file's existing per-secret convention — new
+nimSecret* state, NVIDIA pick in fetchSecretStatus, saveNimSecret /
+clearNimSecret (applied to the running bot + persisted to .env, masked
+status badge, honest messages), and a dedicated input block in BOTH secret
+surfaces (Settings page and the API Secrets card: password input, Enter to
+save, Save button, trash-to-remove when configured).
+
+**Also:** the OWNER_NUMBER placeholder in the panel was a 237-prefixed
+example — genericized (privacy pass had missed the .tsx).
+
+**Verification:** tsc OK, eslint 0 errors on App.tsx, suite 322/322,
+production build (vite + esbuild) OK.
