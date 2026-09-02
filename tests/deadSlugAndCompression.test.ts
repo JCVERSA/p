@@ -93,7 +93,9 @@ describe("wiring (8.47)", () => {
 
   it("compression is skipped via a real height probe before encoding", () => {
     const nova = fs.readFileSync("src/bot/commands/novabox.ts", "utf-8");
-    expect(nova).toContain("probeVideoHeight");
+    // 8.48 folded the probe into mediaToolkit.probeVideoInfo (duration + height)
+    expect(nova).toContain("probeVideoInfo(localPath)");
+    expect(nova).toContain("compressionPointless(probed.height, 480)");
     expect(nova).toContain("compression skipped, delivering via high-speed link");
   });
 });

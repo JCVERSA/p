@@ -32,6 +32,7 @@ import { isSafeDownloadUrl } from "../urlSafety.js";
 import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batchDownloadManager.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
 import { downloadHlsAppLevel, resolveVidmolyUrlset, isDeadFileSlug, markDeadFileSlug } from "../services/hlsDownloader.js";
+import { probeVideoInfo, whatsappFitVideoOptions } from "../services/mediaToolkit.js";
 import {
   resolveBestMirrorStream,
   executeDirectOrFfmpegDownload,
@@ -2170,39 +2171,6 @@ export function compressionPointless(sourceHeight: number | null, targetHeight: 
   return sourceHeight !== null && sourceHeight > 0 && sourceHeight <= targetHeight;
 }
 
-/** Video height of a local file via ffprobe (null when unavailable/slow). */
-function probeVideoHeight(filePath: string): Promise<number | null> {
-  return new Promise(resolve => {
-    try {
-      const p = spawn("ffprobe", [
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=height",
-        "-of",
-        "csv=p=0",
-        filePath
-      ]);
-      let out = "";
-      p.stdout.on("data", (d: Buffer) => (out += d.toString()));
-      p.on("error", () => resolve(null));
-      p.on("close", code => {
-        const h = parseInt(out.trim(), 10);
-        resolve(code === 0 && h > 0 ? h : null);
-      });
-      const timer = setTimeout(() => {
-        try { p.kill(); } catch {}
-        resolve(null);
-      }, 8000);
-      p.on("close", () => clearTimeout(timer));
-    } catch {
-      resolve(null);
-    }
-  });
-}
-
 // Execute high-performance stream download using FFmpeg with safe process isolation
 async function executeFfmpegDownload(
   targetHlsUrl: string,
@@ -2896,6 +2864,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       // Auto-compress ONLY when the raw file exceeds the 100 MB WhatsApp
       // document ceiling (95-100 MB sends fine as a document — transcoding
       // there was a pure time sink, audit 8.5). x264 veryfast + all cores.
+      let fitOptions: string[] | null = null;
       let shouldCompress =
         fileSizeMB > 100 &&
         (session.forceCompress || resolution === "480P" || resolution === "360P" || resolution.includes("Compress"));
@@ -2904,10 +2873,19 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         // A source already at/below 480p cannot meaningfully shrink by
         // re-encoding to 480p — the 2-minute encode just times out (production
         // log: 121.8s wasted) before the raw high-speed-link delivery anyway.
-        const srcHeight = await probeVideoHeight(localPath);
-        if (compressionPointless(srcHeight, 480)) {
+        const probed = await probeVideoInfo(localPath);
+        if (compressionPointless(probed.height, 480)) {
           shouldCompress = false;
-          console.log(`[NOVABOX] Source is already ${srcHeight}p — compression skipped, delivering via high-speed link.`);
+          console.log(`[NOVABOX] Source is already ${probed.height}p — compression skipped, delivering via high-speed link.`);
+        } else {
+          // Deterministic WhatsApp fit (audit 8.48): compute the bitrate that
+          // lands the output under the ceiling instead of CRF-26-and-hope.
+          // 92 MB target keeps a safety margin under the ~95-100 MB cap.
+          const fit = whatsappFitVideoOptions(probed.durationSec, 92, 480);
+          if (fit) {
+            fitOptions = fit.options;
+            console.log(`[NOVABOX] Deterministic WhatsApp fit: ${fit.videoKbps} kbps → ${fit.note}.`);
+          }
         }
       }
 
@@ -2918,20 +2896,17 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         compressedPath = path.join(os.tmpdir(), "comp_" + filename);
         
         try {
+          // Audit 8.48: when the duration probe succeeded, splice the
+          // deterministic WhatsApp-fit args (computed bitrate + maxrate) in
+          // place of the legacy fixed CRF 26 — the output size is then a
+          // mathematical certainty instead of a coin flip.
           const ffmpegArgs = [
             "-y",
             "-threads",
             "0",
             "-i",
             localPath,
-            "-vf",
-            "scale=-2:480",
-            "-c:v",
-            "libx264",
-            "-crf",
-            "26",
-            "-preset",
-            "veryfast",
+            ...(fitOptions || ["-vf", "scale=-2:480", "-c:v", "libx264", "-crf", "26", "-preset", "veryfast"]),
             "-c:a",
             "aac",
             "-b:a",

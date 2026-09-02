@@ -1872,3 +1872,55 @@ deterministic "fit under X MB" mode instead of CRF-26-and-hope.
 Both fold into the same future story: `.v mp3 | gif | vitesse | trim |
 compress [pct|MB]` on the existing VPS FFmpeg infrastructure — fully
 locally testable, no network dependency.
+
+### 8.48 Media toolkit `.m` + deterministic WhatsApp-fit compression (2026-09-02, fiftieth push)
+
+Implements the direction approved after the two repo evaluations (§9.7:
+size-target formula from addyosmani/video-compress with the audio track
+subtracted — the bug their version has — plus sadness-splitter's chained
+atempo, palettegen GIF and scale+pad recipes; zero code taken, zero deps).
+
+**New: `services/mediaToolkit.ts`** — pure, fully-tested FFmpeg recipe
+builders: `crfFromPercentage` (100%→18 … 0%→51, clamped),
+`videoBitrateKbpsForTargetMb` (audio subtracted FIRST, clamped 120–4000),
+`estimateSizeMb` round-trip, `atempoChain` (per-filter 2.0 limit, factor
+clamped 0.5–4), `speedFilterComplex` (setpts + audio chain, video-only
+variant), `gifVideoFilter` (lanczos+palettegen/paletteuse), `scalePadFilter`,
+`parseTimeSpec` (MM:SS / HH:MM:SS / 1m30 / s), arg builders for mp3/gif/
+speed/trim/compress, `whatsappFitVideoOptions` (deterministic -b:v +
+maxrate + `scale=-2:min(480\,ih)` — never upscales), bounded `probeVideoInfo`
+(duration+height+audio, one call) and `runFfmpegKit` (hard timeout).
+
+**New: `.m` command (media.ts, alias `m`)** — reply-to-media UX: mp3
+extraction (96–320 kbps), quality GIF (12 fps/480px, first 10 s by default,
+`full` capped at 60 s), speed 0.5–4× (audio preserved), lossless trim,
+compression by `50%`/`95mb`/explicit CRF. Outputs ≤90 MB arrive as WhatsApp
+documents; bigger ones as 2 h high-speed links (same infra as anime).
+Process-wide single-flight lock (VPS CPU is a shared cgroup resource).
+
+**Engine: quoted-media fallback** — `context.downloadMedia()` now falls back
+to the QUOTED message's media when the invoking message has none (pure
+helper `utils/quotedMedia.ts`, unwraps ephemeral/viewOnce). This is what
+makes "reply to a video with .m gif" work; existing own-media behavior
+unchanged.
+
+**Novabox: deterministic WhatsApp fit** — the >100 MB compression path now
+probes duration once (8.47's height probe folded into `probeVideoInfo`) and,
+when known, splices `whatsappFitVideoOptions` (target 92 MB, margin under
+the ~95–100 MB cap) in place of the fixed CRF 26: the output size becomes a
+mathematical certainty instead of CRF-and-hope. Unknown duration keeps the
+legacy CRF 26 args; the ≤480p skip (8.47) is preserved.
+
+**Self-review fixed before shipping:** initial splice was ineffective
+(legacy options came after and ffmpeg lets the LAST option win — CRF 26
+would have silently overridden the computed bitrate) and carried a leftover
+empty arg; a `min(480\\,ih)` double-escaping bug was caught by rendering the
+actual value at runtime; the unreachable sub-0.5 atempo branch was removed.
+
+**Verification:** 408/408 tests (44 files, +14: formula table incl. the
+audio-subtraction proof 95 MB/1200 s → 552k and the round-trip, atempo
+chains incl. clamps, time-spec parser, builders incl. gif bounds and
+deterministic fit 1440 s → 427 kbps → 91.9 MB, quoted-media extraction incl.
+viewOnce, wiring guards). tsc, eslint 0 errors, production build OK. FFmpeg
+is not installable in the sandbox (no root) — runtime execution validates on
+the VPS; every arg array is asserted in tests instead.
