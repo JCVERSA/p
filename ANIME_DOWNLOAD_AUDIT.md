@@ -2191,3 +2191,40 @@ whether 8.53's "nakanime search:" line appears.
 **Tests:** interactiveVfDefault.test.ts +4 (relevance-order sort, Saison-N
 sort, retry-then-wire, double-failure fallback) → 11 in file; suite 451/451
 (47 files), tsc, eslint 0 errors, prettier clean.
+
+### 8.55 Fix — VF by default: cross-catalog title matching (2026-09-03, fifty-seventh push)
+
+**Owner evidence (`.a Komi-san wa, Komyushō desu`):** selection showed
+VOSTFR-default and `.a vf` answered "VF not available" — yet voir-anime
+CARRIES the show in VF. Web research confirmed it: voir-anime hosts
+"Komi-san wa, Komyushou desu. (VF)" (12 eps, Netflix dub) — indexed under
+the ROMAJI title, while nakanime returns the FRENCH title ("Komi cherche
+ses mots"). The probe searched voir-anime with the catalog's French title
+and found nothing. Root cause: title mismatch between catalogs, not a
+missing VF.
+
+**Fix — multi-candidate title probing:**
+- `wireVoiranimeVfSeasons(session, title, extraCandidates)` walks
+  [catalog title → user's raw query (session.userSearchQuery, persisted at
+  search time in all interactive sessions)], first candidate with VF
+  entries wins; a candidate that returns results-but-no-VF or errors falls
+  through to the next instead of failing the whole probe.
+- `foldTitleDiacritics()`: macrons → Hepburn doubles (ō→ou, ū→uu, ā→aa,
+  ī→ii, ē→ee) then NFD-strip — the owner's "Komyushō desu" now probes
+  "Komyushou desu", which is what the site indexes.
+- Quick pipeline (`.a titre 1`): same candidate walk
+  (title → animeQuery → canonicalQuery).
+- `.a vf` manual switch uses the same candidates; when NOTHING has the VF
+  the message is now honest: "Aucune VF trouvée … la VOSTFR reste
+  disponible — c'est la seule version qui existe pour ce titre."
+- Miss log lists every probed candidate for production diagnosis.
+
+**Reality note for the owner:** VF will now be found whenever it EXISTS on
+voir-anime (romaji or French title). But some animes have NO French dub at
+all (most seasonal simulcasts are sub-only) — for those, VOSTFR is the only
+thing any source can deliver; the bot says so honestly instead of failing.
+
+**Tests:** interactiveVfDefault.test.ts → 15 in file (+4: candidate
+fall-through with macron folding, fold units, dedupe of identical
+candidates, miss-log contents); searchOrder wiring pin updated for the new
+signature. Suite 455/455 (48 files), tsc, eslint 0 errors, prettier clean.
