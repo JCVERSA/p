@@ -1271,8 +1271,9 @@ now slices its input to the same cap internally (the route guard remains).
    (branch `main`) regardless; the owner pushes releases there manually and
    will then privatize `p`. Post-merge of PR #1 remains: CI green on main,
    tag `v2.9.x`.
-2. **trace.moe live verification** — sandbox egress blocks it; verify on the
-   VPS with `.trace` + a real screenshot when convenient.
+2. **trace.moe** — CLOSED (8.56): the unwired trace.ts command + tracemoe
+   client were removed with the dead-code cleanup; revisit only if the owner
+   asks for an anime-screenshot identifier as a new feature.
 3. **Status quo decisions (documented, do not re-litigate without need):**
    M1 app.ts monolith (1 722 lines), M2 three HTTP stacks, M5 in-memory
    registries (batch jobs, panel sessions, economy RAM-first by design).
@@ -2252,3 +2253,17 @@ Owner approved the full-audit execution plan. Block P1 (this push):
 Verification: 444/444 tests (46 files — 2 deleted), tsc, eslint 0 errors,
 prettier clean. app.test.ts checkup pin updated (bridge entry must NOT
 resurrect; Command Registry Validation stays authoritative).
+
+### 8.56 Cleanup — audit execution P2 (2026-09-03, fifty-ninth push)
+
+1. **Dead command files removed** — facebook/instagram/tiktok/youtube/trace
+   existed on disk but were never registered in production (their function is
+   covered by `.dl`/`.m`); socialPlatforms.ts (shared helper) and
+   tracemoeClient.ts went with them, plus their tests. Repo/prod coherence
+   restored; the inverse-8.49b trap (files that LOOK wired) is gone.
+2. **CI quality gates** — eslint (0 errors enforced; warnings visible) and
+   prettier --check added as CI steps; actions bumped checkout/setup-node
+   v4 → v5 (kills the Node-20 deprecation annotation, backlog §9.7 closed).
+
+Verification: tsc clean, eslint 0 errors, prettier clean, tests green
+pre-commit (final count in the P3 push).
