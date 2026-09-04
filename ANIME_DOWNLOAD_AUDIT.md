@@ -1990,3 +1990,54 @@ initRegistry/getCommand.
 (`NODE_ENV=production node dist/server.cjs`): media.ts absent from the skip
 list and `[Registry] Ready: 34 commands registered` (was 33). 424/424 tests
 (46 files), tsc, eslint 0 errors, build OK.
+
+### 8.50 Fix — OOM resilience for heavy batches (2026-09-03, fifty-third push)
+
+**Owner report:** after the 8.49b update (log confirmed `Ready: 34 commands`),
+a 4-episode Vinland Saga batch (each 110-125 MB, HLS 79-157 segments, all
+downloads successful, 5.7 s/segment) was `Killed` by the kernel mid-E14 —
+"le bot s'est éteint tout seul". Container cgroup limit: ~954 MB.
+
+**Audit of the usual suspects — all individually bounded:** hlsDownloader
+(segment concurrency 8, streamed disk writes, tempDir cleanup, batch
+concurrency already pinned to 1 via NEBULA_BATCH_CONCURRENCY), robustFetchBuffer
+(axios arraybuffer, no double buffers). No leak in any single episode.
+
+**Diagnosis — RSS drift, not a leak:** `--max-old-space-size=384` caps the V8
+heap ONLY. External memory (net Buffers for segment concatenation, ~120 MB of
+transient buffers per episode) plus glibc's per-thread arenas (up to 8×Ncores
+arenas that fragment and never return pages to the OS) made the process RSS
+creep upward across episodes until it hit the cgroup ceiling. Node never saw
+an allocation failure — the kernel OOM-killer just shot it (plain `Killed`,
+no stack, no exit handler).
+
+**Fix (defense in depth):**
+1. `MALLOC_ARENA_MAX=2` exported in `cmd_start` (override: NEBULA_MALLOC_ARENA_MAX)
+   — bounds arena fragmentation; standard mitigation for long-lived Node in
+   tight cgroups.
+2. `enforceMemoryHeadroom()` (src/bot/services/memoryGuard.ts) called in the
+   novabox batch worker after EVERY episode: logs `[MEM] … rss=X MB — level`;
+   at ≥700 MB forces GC + two 5 s pauses (bounded ~12 s) so the kernel reclaims
+   before the next episode; critical threshold 820 MB (still below the 954 MB
+   ceiling).
+3. `./manage.sh watchdog` — cron command (`* * * * *`) that restarts the bot
+   only when actually down (respects the update lock; each restart dated in
+   /root/nebula_watchdog.log). The bot must NEVER stay dead.
+4. `doctor` now reads /proc/PID/environ + VmRSS of the running bot: verifies
+   MALLOC_ARENA_MAX is really active on the live process (not just in the
+   script) and shows the live RSS.
+
+**Tests:** tests/memoryGuard.test.ts (10) — threshold classification, bounded
+back-off (max 2 GC attempts, no infinite loop), recovery path, log signature,
+plus WIRING guards: novabox worker must call `enforceMemoryHeadroom(` and
+manage.sh must ship MALLOC_ARENA_MAX + the watchdog case (the 8.49b lesson:
+green locally ≠ wired in production).
+
+**Verification:** 434/434 tests (47 files), tsc clean, eslint 0 errors,
+`bash -n manage.sh` OK. Docs: MIGRATION_NOUVEAU_VPS.md cron block updated to
+`manage.sh watchdog`.
+
+**Expected VPS behaviour after deploy:** `[MEM]` line after each batch episode
+in the log; RSS that used to climb monotonically should plateau or saw-tooth
+around the pauses; even in the worst case, watchdog restarts the bot within
+60 s and logs the event.

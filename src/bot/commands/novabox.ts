@@ -33,6 +33,7 @@ import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batch
 import { BatchZipManager } from "../services/batchZipManager.js";
 import { downloadHlsAppLevel, resolveVidmolyUrlset, isDeadFileSlug, markDeadFileSlug } from "../services/hlsDownloader.js";
 import { probeVideoInfo, whatsappFitVideoOptions } from "../services/mediaToolkit.js";
+import { enforceMemoryHeadroom } from "../services/memoryGuard.js";
 import {
   resolveBestMirrorStream,
   executeDirectOrFfmpegDownload,
@@ -2516,6 +2517,10 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         const currentIdx = nextEpisodeIdx++;
         await processEpisodeTask(currentIdx);
         gcBetweenEpisodes();
+        // 8.50 OOM hardening: heavy batches (~120 MB/episode) pushed RSS into
+        // the ~954 MB cgroup ceiling and the kernel killed the bot mid-batch.
+        // Observe the footprint and back off when pressure rises.
+        await enforceMemoryHeadroom(`batch episode ${currentIdx + 1}/${indices.length} done`);
       }
     };
 

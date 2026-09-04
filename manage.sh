@@ -6,7 +6,7 @@
 #
 #  Commandes : start | stop | restart | status | update | setup | clone
 #              env [list|set|get|unset|edit] | logs [filtre] | clean
-#              doctor | version
+#              doctor | watchdog | version
 # ============================================================================
 set -uo pipefail
 
@@ -144,6 +144,9 @@ wait_http() { # $1 = URL, $2 = timeout s → 0 si répondu
 # START / STOP / RESTART
 # ---------------------------------------------------------------------------
 cmd_start() {
+  # 8.50: glibc arena fragmentation balloons RSS under Buffer churn in the
+  # ~954 MB cgroup (OOM kill mid-batch). Two arenas bound the fragmentation.
+  export MALLOC_ARENA_MAX="${NEBULA_MALLOC_ARENA_MAX:-2}"
   require_repo
   # Ne pas relancer le bot pendant une mise à jour (verrou posé par cmd_update).
   # Exit 0 pour que le watchdog cron reste silencieux. Le flag interne
@@ -568,6 +571,18 @@ cmd_doctor() {
   echo
   [ -f "${APP_DIR}/dist/server.cjs" ] && ok "Build présent (dist/server.cjs)" || { ko "Pas de build — ./manage.sh update"; fails=$((fails+1)); }
   is_running && ok "Bot en cours d'exécution (PID $(bot_pids | tr '\n' ' '))" || warn "Bot arrêté — ./manage.sh start"
+  # 8.50 : preuve que la protection OOM est active sur le process QUI TOURNE.
+  local pid; pid="$(bot_pids | head -1)"
+  if [ -n "${pid}" ] && [ -r "/proc/${pid}/environ" ]; then
+    local bot_env; bot_env="$(tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null || true)"
+    if echo "${bot_env}" | grep -q '^MALLOC_ARENA_MAX='; then
+      ok "Arenas glibc bridées (MALLOC_ARENA_MAX=$(echo "${bot_env}" | grep '^MALLOC_ARENA_MAX=' | cut -d= -f2))"
+    else
+      warn "Bot lancé sans MALLOC_ARENA_MAX — ./manage.sh restart (protection OOM 8.50)"
+    fi
+    local vmrss; vmrss="$(awk '/^VmRSS:/{print $2}' "/proc/${pid}/status" 2>/dev/null)"
+    [ -n "${vmrss}" ] && info "RSS actuel du bot : $((vmrss/1024)) Mo (pause batch à 700 Mo)"
+  fi
   local code; code="$(http_code "http://127.0.0.1:${PORT}/")"
   [ "${code}" != "000" ] && ok "Panneau local : HTTP ${code}" || warn "Panneau local : pas de réponse (bot arrêté ?)"
   local pub; pub="$(public_url)"
@@ -589,6 +604,16 @@ cmd_doctor() {
   [ "${fails}" -eq 0 ] && ok "Diagnostic global : RIEN DE BLOQUANT 🎉" || ko "${fails} problème(s) bloquant(s) à corriger."
   [ "${fails}" -gt 0 ] && exit 1
   return 0
+}
+
+cmd_watchdog() {
+  # 8.50: un OOM kill du cgroup a laissé le bot éteint jusqu'à intervention
+  # manuelle. Prévu pour cron (* * * * *) : ne relance que s'il est vraiment mort.
+  if is_running; then
+    exit 0
+  fi
+  echo "$(date '+%F %T') watchdog: bot down — restarting" >> "${LOG_DIR:-/root}/nebula_watchdog.log"
+  cmd_start
 }
 
 cmd_version() {
@@ -627,6 +652,7 @@ ${C_BOLD}Maintenance${C_RESET}
    ${C_BOLD}clean${C_RESET}      Purge les temporaires orphelins (staging >1h, liens expirés >3h)
    ${C_BOLD}doctor${C_RESET}     Diagnostic complet (node, ffmpeg, .env, RAM, disque, réseau…)
    ${C_BOLD}version${C_RESET}    Révision git du script + de l'app
+   ${C_BOLD}watchdog${C_RESET}  Vérifie que le bot tourne, sinon le relance (pour cron)
 
 ${C_DIM}Installé via scripts/install.sh → commande « nebula » disponible partout.${C_RESET}
 EOF
@@ -647,6 +673,7 @@ case "${1:-help}" in
   logs)    shift || true; cmd_logs "$@" ;;
   clean)   shift || true; cmd_clean "$@" ;;
   doctor)  shift || true; cmd_doctor "$@" ;;
+  watchdog) cmd_watchdog "$@" ;;
   version) shift || true; cmd_version "$@" ;;
   help|--help|-h) cmd_help ;;
   *) ko "Commande inconnue: $1"; echo; cmd_help; exit 1 ;;
