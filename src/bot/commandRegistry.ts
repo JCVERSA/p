@@ -22,6 +22,7 @@ import helpCommand from "./commands/help.js";
 import swebCommand from "./commands/sweb.js";
 import videoCommand from "./commands/video.js";
 import mediaCommand from "./commands/media.js";
+import stickerCommand from "./commands/sticker.js";
 import watchCommand from "./commands/watch.js";
 import animeCommand from "./commands/novabox.js";
 import accessCommand from "./commands/access.js";
@@ -95,6 +96,7 @@ const defaultCommands = [
   swebCommand,
   videoCommand,
   mediaCommand,
+  stickerCommand,
   watchCommand,
   animeCommand,
   accessCommand,

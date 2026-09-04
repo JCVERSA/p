@@ -2267,3 +2267,25 @@ resurrect; Command Registry Validation stays authoritative).
 
 Verification: tsc clean, eslint 0 errors, prettier clean, tests green
 pre-commit (final count in the P3 push).
+
+### 8.56 Cleanup — audit execution P3 (2026-09-03, sixtieth push)
+
+1. **Native `.s` sticker** (owner-approved rewrite replacing the legacy one):
+   reply-to-image/video → WebP sticker via the system ffmpeg and the shared
+   runFfmpegKit runner — zero new dependency. Image: ≤512 px rgba WebP q90;
+   video: capped 6 s, 12 fps, animated WebP loop 0. Busy-flag, temp cleanup,
+   graceful French errors; already-a-sticker detected honestly. Custom EXIF
+   pack names = documented follow-up (WhatsApp accepts plain WebP).
+   Registered in defaultCommands + registry/args guard tests (8.49b lesson).
+2. **App.tsx extraction slice #1**: the command/category matching predicate,
+   duplicated across FIVE JSX blocks (pCat), moved to
+   src/utils/commandCategory.ts (commandMatchesCategory) — first incremental
+   step of the monolith plan (M3), zero behaviour change, unit-tested.
+3. **CI gates** (eslint + prettier --check, actions v5) are prepared in
+   docs/CI_NEXT.md: the sandbox GitHub App token lacks the `workflows`
+   permission, so the ci.yml edit could not be pushed from here — the owner
+   applies it once via the GitHub web UI (content provided verbatim).
+
+Verification: 430/430 tests (46 files), tsc, eslint 0 errors, prettier
+clean, production smoke `Ready: 24 commands` (34 − 10 fun/utility − .rnyt
++ sticker).
