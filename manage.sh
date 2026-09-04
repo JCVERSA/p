@@ -63,6 +63,13 @@ is_running() { [ -n "$(bot_pids)" ]; }
 UPDATE_LOCK_DIR="${TMPDIR:-/tmp}/nebula-update.lock"
 UPDATE_LOCK_STALE_MIN=15    # au-delà: verrou considéré comme débris (update planté)
 
+# --- Verrou watchdog (audit 8.51) -------------------------------------------
+# Cron tire chaque minute ; npm peut mettre >60 s à faire apparaître le
+# process node sur un conteneur throttled. Sans verrou, deux watchdogs
+# qui se chevauchent verraient tous deux « bot arrêté » → DEUX bots.
+WATCHDOG_LOCK_DIR="${TMPDIR:-/tmp}/nebula-watchdog.lock"
+WATCHDOG_LOCK_STALE_MIN=3   # un démarrage (npm + attente HTTP 45 s) ne dure jamais aussi longtemps
+
 update_lock_held() {        # 0 = un update FRAIS est en cours
   [ -d "${UPDATE_LOCK_DIR}" ] || return 1
   local age=$(( ( $(date +%s) - $(stat -c %Y "${UPDATE_LOCK_DIR}" 2>/dev/null || echo 0) ) / 60 ))
@@ -346,6 +353,29 @@ cmd_setup() {
   ( cd "${APP_DIR}" && npm run build 2>&1 | tail -n 4 | sed 's/^/    /' ) || die "Build échoué"
   hdr "Séparation vocale (optionnelle)"
   bash "${APP_DIR}/scripts/uvr-setup.sh" 2>&1 | sed 's/^/    /'
+  hdr "Rotation du log (audit 8.51)"
+  # nohup écrit /root/bot.log sans limite — sans rotation, il finit par remplir
+  # le disque (et un conteneur plein fait bien plus que casser les logs).
+  # copytruncate : le bot garde son fd ouvert, il ne faut PAS déplacer le fichier.
+  local lr="/etc/logrotate.d/nebula-bot"
+  # Heredoc NON quoté : le chemin du log est résolu ICI (logrotate ne fait
+  # aucune expansion shell — un heredoc quoté écrirait un literal ${...} invalide).
+  if command -v logrotate >/dev/null 2>&1 && cat > "${lr}" 2>/dev/null <<LR
+${LOG_FILE}
+{
+  weekly
+  rotate 4
+  compress
+  missingok
+  notifempty
+  copytruncate
+}
+LR
+  then
+    ok "Rotation hebdomadaire du log installée (${lr}, 4 semaines conservées, compressé)"
+  else
+    warn "logrotate indisponible — surveille la taille de ${LOG_FILE:-/root/bot.log} (./manage.sh clean ne le gère pas)"
+  fi
   ok "Installation terminée — démarre avec: ./manage.sh start"
 }
 
@@ -566,13 +596,31 @@ cmd_doctor() {
   fi
   local avail; avail="$(df -Pk / 2>/dev/null | awk 'NR==2{print int($4/1048576)}')"
   [ -n "${avail}" ] && { [ "${avail}" -ge 2 ] && ok "Disque: ${avail} Go libres" || { ko "Disque: ${avail} Go libres (<2 Go) — ./manage.sh clean"; fails=$((fails+1)); }; }
+  # 8.51 : sans rotation, /root/bot.log finit par remplir le disque.
+  local botlog_size; botlog_size="$(du -m "${LOG_FILE}" 2>/dev/null | awk '{print $1}')"
+  if [ -f /etc/logrotate.d/nebula-bot ]; then
+    ok "Rotation du log active (logrotate hebdo)${botlog_size:+ — log actuel: ${botlog_size} Mo}"
+  else
+    if [ -n "${botlog_size}" ] && [ "${botlog_size}" -ge 200 ]; then
+      warn "Log ${LOG_FILE} = ${botlog_size} Mo SANS rotation — nebula setup (audit 8.51)"
+    else
+      info "Log non rotaté — nebula setup installe logrotate (audit 8.51)"
+    fi
+  fi
 
   # Build / process / réseau
   echo
   [ -f "${APP_DIR}/dist/server.cjs" ] && ok "Build présent (dist/server.cjs)" || { ko "Pas de build — ./manage.sh update"; fails=$((fails+1)); }
   is_running && ok "Bot en cours d'exécution (PID $(bot_pids | tr '\n' ' '))" || warn "Bot arrêté — ./manage.sh start"
   # 8.50 : preuve que la protection OOM est active sur le process QUI TOURNE.
-  local pid; pid="$(bot_pids | head -1)"
+  # 8.51 : npm start spawn aussi un wrapper `sh -c` que pgrep matche — ses
+  # /proc sont ceux du shell (RSS ~2 Mo, meaningless). On vise le vrai node.
+  local pid pid_
+  pid=""
+  for pid_ in $(bot_pids); do
+    if [ "$(cat "/proc/${pid_}/comm" 2>/dev/null)" = "node" ]; then pid="${pid_}"; break; fi
+  done
+  [ -z "${pid}" ] && pid="$(bot_pids | head -1)"
   if [ -n "${pid}" ] && [ -r "/proc/${pid}/environ" ]; then
     local bot_env; bot_env="$(tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null || true)"
     if echo "${bot_env}" | grep -q '^MALLOC_ARENA_MAX='; then
@@ -612,6 +660,16 @@ cmd_watchdog() {
   if is_running; then
     exit 0
   fi
+  # 8.51: jamais deux démarrages concurrents (voir WATCHDOG_LOCK_DIR ci-dessus).
+  if [ -d "${WATCHDOG_LOCK_DIR}" ]; then
+    local wl_age=$(( ( $(date +%s) - $(stat -c %Y "${WATCHDOG_LOCK_DIR}" 2>/dev/null || echo 0) ) / 60 ))
+    if [ "${wl_age}" -lt "${WATCHDOG_LOCK_STALE_MIN}" ]; then
+      exit 0   # une autre tentative de démarrage est en cours
+    fi
+    rm -rf "${WATCHDOG_LOCK_DIR}"   # verrou périmé (tentative morte) — on reprend la main
+  fi
+  mkdir "${WATCHDOG_LOCK_DIR}" 2>/dev/null || exit 0
+  trap 'rmdir "${WATCHDOG_LOCK_DIR}" 2>/dev/null' EXIT
   echo "$(date '+%F %T') watchdog: bot down — restarting" >> "${LOG_DIR:-/root}/nebula_watchdog.log"
   cmd_start
 }

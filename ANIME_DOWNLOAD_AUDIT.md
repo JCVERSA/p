@@ -1288,6 +1288,16 @@ now slices its input to the same cap internally (the route guard remains).
    conversations); CANDIDATE dev tool for the next major audit of this repo
    (god nodes would quantify M1's coupling; cross-file links speed up
    call-site mapping). Neither added as a dependency.
+7. **(8.51) CI actions Node-20 deprecation** — actions/checkout@v4 +
+   setup-node@v4 show a deprecation annotation (forced to Node 24).
+   Cosmetic; bump both to the current majors in a quiet window.
+8. **(8.51) Watchdog scope** — restarts a DEAD bot only; an alive-but-wedged
+   event loop is NOT restarted (a kill during a live batch would be worse).
+   Revisit only if a hang is ever observed in production.
+9. **(8.51) Owner sync ritual is canonical now** —
+   `git fetch <p> arena/01a05555-p && git read-tree -u --reset FETCH_HEAD &&
+   git commit -m "…" && git push origin main` (propagates deletions, unlike
+   `git checkout FETCH_HEAD -- .`; validated 0-diff in a mirror).
 
 **Suite:** 311/311 (34 files). tsc OK. eslint (now incl. scripts/) 0 errors.
 
@@ -2041,3 +2051,63 @@ green locally ≠ wired in production).
 in the log; RSS that used to climb monotonically should plateau or saw-tooth
 around the pauses; even in the worst case, watchdog restarts the bot within
 60 s and logs the event.
+
+### 8.51 Audit — ultra-complete review + anticipated failures (2026-09-03, fifty-fourth push)
+
+Scope: re-read every 8.50 change plus its blast radius (deploy path, cron,
+restarts, logs, disk), hunting for the NEXT failure before the owner hits it.
+
+**Findings fixed in this push:**
+
+1. **Watchdog could start TWO bots.** Cron fires every minute while
+   `cmd_start` waits up to 45 s on HTTP; on a throttled container npm can
+   take >60 s to surface the node process, so an overlapping watchdog also
+   saw "bot down" → double start. Fixed with a mkdir lock
+   (`/tmp/nebula-watchdog.lock`, staleness 3 min, trap cleanup) — validated
+   functionally: fresh lock → skip, stale lock → purge + proceed.
+2. **Batch ran into the OOM anyway at critical.** The 8.50 guard pauses but
+   kept launching ~120 MB episode pipelines even when RSS stayed critical
+   after the wait. Now `memoryStop`: workers stop claiming episodes, the
+   recap tells the user exactly which episodes were deferred ("Garde
+   mémoire … redemande dans quelques minutes"), and the 0-links path no
+   longer misreports a memory deferral as "CDN restricted".
+   Deferred count = `indices.length - nextEpisodeIdx` after Promise.all —
+   exact and race-free vs CONCURRENCY>1.
+3. **Single-episode flow had no guard.** Sequential single downloads churn
+   the same ~2x episode size in Buffers across a long session.
+   `enforceMemoryHeadroom("single EXX done")` now runs at the end of the
+   single path (the batch path returns earlier — its guard is per episode).
+4. **Doctor read the wrong /proc.** `npm start` spawns an `sh -c` wrapper
+   that pgrep also matches; `head -1` could inspect the shell (RSS ~2 MB)
+   instead of node. Doctor now selects the pid whose comm is "node".
+5. **Unbounded bot log.** nohup writes /root/bot.log forever; a full disk
+   takes down everything. `nebula setup` now installs
+   /etc/logrotate.d/nebula-bot (weekly, 4 rotations, compress,
+   copytruncate — required because nohup keeps its fd). Doctor reports
+   rotation status + current log size (warns ≥200 Mo unrotated). Heredoc
+   pitfall avoided: logrotate does no shell expansion, so the heredoc is
+   UNQUOTED on purpose to bake the resolved path.
+6. **Owner sync ritual did not propagate deletions.**
+   `git checkout FETCH_HEAD -- .` never deletes files removed upstream
+   (that's why 8.50 needed a manual `git rm` for the .pyc). Canonical
+   ritual is now `git fetch … && git read-tree -u --reset FETCH_HEAD &&
+   git commit && git push` — validated end-to-end in a sandbox mirror:
+   resulting tree 0-line diff vs FETCH_HEAD, deletions included.
+
+**Checked and clean (no action):** secrets scan over all 498 tracked files
+(no keys/tokens/PEM); no .env/dist/models/venv tracked; cgroup_max_mb
+handles v1+v2; cmd_restart routes through cmd_start (env export kept);
+`--expose-gc` in npm start makes the guard's gc() real in prod; in-memory
+batch registry (M5) means an OOM-killed batch vanishes cleanly instead of
+leaving phantom jobs; update-lock still shields watchdog during updates.
+
+**Known limitations (documented, deliberate):** watchdog only restarts a
+DEAD process — a wedged-but-alive event loop is not restarted (restarting
+a live batch would kill it; revisit only if a hang is ever observed).
+CI annotation: actions/checkout+setup-node target Node 20 (forced to 24) —
+cosmetic, bump queued in backlog.
+
+**Verification:** 439/439 tests (47 files, +5 wiring/lock/logrotate guards),
+tsc clean, eslint 0 errors, `bash -n` OK, prod smoke `Ready: 34 commands`,
+logrotate heredoc expansion checked, lock logic exercised, ritual mirror
+validated (0-diff tree).

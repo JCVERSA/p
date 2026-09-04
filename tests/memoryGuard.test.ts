@@ -115,7 +115,7 @@ describe("enforceMemoryHeadroom", () => {
   });
 });
 
-describe("8.50 wiring (the 8.49b lesson: green locally ≠ wired in production)", () => {
+describe("8.50/8.51 wiring (the 8.49b lesson: green locally ≠ wired in production)", () => {
   it("the novabox batch worker calls enforceMemoryHeadroom between episodes", () => {
     const source = fs.readFileSync("src/bot/commands/novabox.ts", "utf8");
     expect(source).toContain('from "../services/memoryGuard.js"');
@@ -127,6 +127,22 @@ describe("8.50 wiring (the 8.49b lesson: green locally ≠ wired in production)"
     expect(workerLoop).toContain("await enforceMemoryHeadroom(");
   });
 
+  it("8.51: the batch stops claiming episodes when RSS stays critical", () => {
+    const source = fs.readFileSync("src/bot/commands/novabox.ts", "utf8");
+    // Worker breaks on the memory flag + the flag is set on critical.
+    expect(source).toContain("if (quotaExceeded || memoryStop) break;");
+    expect(source).toContain('if (level === "critical")');
+    // Deferred episodes are counted from unclaimed indices (exact, race-free)
+    // and surfaced to the user + the batch job status.
+    expect(source).toContain("const memoryDeferredCount = memoryStop ? indices.length - nextEpisodeIdx : 0;");
+    expect(source).toContain("Garde mémoire:");
+  });
+
+  it("8.51: the single-episode flow also runs the headroom check", () => {
+    const source = fs.readFileSync("src/bot/commands/novabox.ts", "utf8");
+    expect(source).toContain("enforceMemoryHeadroom(`single E");
+  });
+
   it("manage.sh caps glibc arenas at startup and ships a watchdog command", () => {
     const script = fs.readFileSync("manage.sh", "utf8");
     expect(script).toContain('MALLOC_ARENA_MAX="${NEBULA_MALLOC_ARENA_MAX:-2}"');
@@ -134,5 +150,27 @@ describe("8.50 wiring (the 8.49b lesson: green locally ≠ wired in production)"
     // Registered in the dispatch case + documented in help.
     expect(script).toMatch(/\bwatchdog\) cmd_watchdog "\$@" ;;/);
     expect(script).toContain("watchdog${C_RESET}");
+  });
+
+  it("8.51: the watchdog cannot start two bots concurrently (cron overlap lock)", () => {
+    const script = fs.readFileSync("manage.sh", "utf8");
+    expect(script).toContain('WATCHDOG_LOCK_DIR="${TMPDIR:-/tmp}/nebula-watchdog.lock"');
+    // Staleness cleanup so a dead lock can never disable the watchdog forever.
+    expect(script).toContain("wl_age");
+    expect(script).toMatch(/rmdir "\$\{WATCHDOG_LOCK_DIR\}"/);
+  });
+
+  it("8.51: doctor inspects the real node process, not npm's sh wrapper", () => {
+    const script = fs.readFileSync("manage.sh", "utf8");
+    expect(script).toContain('/proc/${pid_}/comm');
+    expect(script).toContain('= "node"');
+  });
+
+  it("8.51: setup installs weekly log rotation for the bot log", () => {
+    const script = fs.readFileSync("manage.sh", "utf8");
+    expect(script).toContain("/etc/logrotate.d/nebula-bot");
+    // copytruncate is REQUIRED: nohup keeps its fd on the moved file.
+    expect(script).toContain("copytruncate");
+    expect(script).toContain("Rotation du log active (logrotate hebdo)");
   });
 });
