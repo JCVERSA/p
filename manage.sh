@@ -324,11 +324,39 @@ cmd_update() {
   hdr "Build"
   ( cd "${APP_DIR}" && npm run build 2>&1 | tail -n 6 | sed 's/^/    /' ) || update_fail "Build échoué"
 
+  hdr "Rotation du log (audit 8.51)"
+  install_logrotate
+
   hdr "Redémarrage"
   if [ "${was_running}" = "yes" ]; then
     cmd_restart
   else
     info "Le bot était arrêté — relance avec: ./manage.sh start"
+  fi
+}
+
+# 8.51 : rotation hebdomadaire du log du bot (idempotent — appelé par setup
+# ET update : l'owner ne passe QUE par update en routine).
+# copytruncate : le bot garde son fd ouvert, il ne faut PAS déplacer le fichier.
+# Heredoc NON quoté : le chemin est résolu ICI (logrotate ne fait aucune
+# expansion shell — un heredoc quoté écrirait un literal ${...} invalide).
+install_logrotate() {
+  local lr="/etc/logrotate.d/nebula-bot"
+  if command -v logrotate >/dev/null 2>&1 && cat > "${lr}" 2>/dev/null <<LR
+${LOG_FILE}
+{
+  weekly
+  rotate 4
+  compress
+  missingok
+  notifempty
+  copytruncate
+}
+LR
+  then
+    ok "Rotation hebdomadaire du log installée (${lr}, 4 semaines conservées, compressé)"
+  else
+    warn "logrotate indisponible — surveille la taille de ${LOG_FILE} (./manage.sh clean ne le gère pas)"
   fi
 }
 
@@ -354,28 +382,7 @@ cmd_setup() {
   hdr "Séparation vocale (optionnelle)"
   bash "${APP_DIR}/scripts/uvr-setup.sh" 2>&1 | sed 's/^/    /'
   hdr "Rotation du log (audit 8.51)"
-  # nohup écrit /root/bot.log sans limite — sans rotation, il finit par remplir
-  # le disque (et un conteneur plein fait bien plus que casser les logs).
-  # copytruncate : le bot garde son fd ouvert, il ne faut PAS déplacer le fichier.
-  local lr="/etc/logrotate.d/nebula-bot"
-  # Heredoc NON quoté : le chemin du log est résolu ICI (logrotate ne fait
-  # aucune expansion shell — un heredoc quoté écrirait un literal ${...} invalide).
-  if command -v logrotate >/dev/null 2>&1 && cat > "${lr}" 2>/dev/null <<LR
-${LOG_FILE}
-{
-  weekly
-  rotate 4
-  compress
-  missingok
-  notifempty
-  copytruncate
-}
-LR
-  then
-    ok "Rotation hebdomadaire du log installée (${lr}, 4 semaines conservées, compressé)"
-  else
-    warn "logrotate indisponible — surveille la taille de ${LOG_FILE:-/root/bot.log} (./manage.sh clean ne le gère pas)"
-  fi
+  install_logrotate
   ok "Installation terminée — démarre avec: ./manage.sh start"
 }
 
