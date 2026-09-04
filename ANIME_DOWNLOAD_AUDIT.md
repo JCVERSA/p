@@ -2228,3 +2228,27 @@ thing any source can deliver; the bot says so honestly instead of failing.
 fall-through with macron folding, fold units, dedupe of identical
 candidates, miss-log contents); searchOrder wiring pin updated for the new
 signature. Suite 455/455 (48 files), tsc, eslint 0 errors, prettier clean.
+
+### 8.56 Cleanup — full audit execution P1 (2026-09-03, fifty-eighth push)
+
+Owner approved the full-audit execution plan. Block P1 (this push):
+
+1. **Double boot init fixed** — server.ts AND botEngine both called
+   initRegistry() (visible as a duplicated [Bridge]+[Registry] block in every
+   production boot log). initRegistry gains a registryInitialized flag +
+   isRegistryReady() export; botEngine now skips when the registry is ready.
+   initRegistry itself stays re-initializable (tests reset through it).
+2. **`.rnyt` removed** — it credited +3000 coins into the LEGACY economy
+   ledger that nothing debits anymore (the debiting code lived in the
+   quarantined corpus). Command + test deleted.
+3. **Legacy corpus REMOVED** — 145 vendored CJS command files + utils
+   (src/bot/imported/), importedBridge.ts, bridgeAcl.ts, their tests, the
+   NEBULA_ENABLE_LEGACY flag (.env.example) and the "Vendored Command Bridge"
+   checkup entry. Rationale (audit H2): unaudited third-party code with raw
+   exec() calls, one flag away from execution; ~15 duplicates of native
+   commands; zero production use since 8.x. This removes the exec() surface
+   entirely. Sticker (.s) will be rewritten natively (P3).
+
+Verification: 444/444 tests (46 files — 2 deleted), tsc, eslint 0 errors,
+prettier clean. app.test.ts checkup pin updated (bridge entry must NOT
+resurrect; Command Registry Validation stays authoritative).
