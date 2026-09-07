@@ -6,8 +6,8 @@ import downloadCommand from "./download.js";
  * `.facebook`, `.youtube` — thin wrappers that validate the link then delegate
  * to the hardened native `.download` pipeline (Cobalt waterfall + fallbacks,
  * SSRF guard per redirect hop, byte caps, temp links for >100 MB). They exist
- * so the popular platform shortcuts keep working with the legacy corpus
- * quarantined (NEBULA_ENABLE_LEGACY), and never load third-party CJS code.
+ * so the popular platform shortcuts keep working (the legacy corpus was
+ * REMOVED entirely in 8.56 — native commands only, no third-party CJS).
  */
 
 export interface SocialPlatform {
