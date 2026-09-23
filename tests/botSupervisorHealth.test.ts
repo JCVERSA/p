@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { BotSupervisor } from "../src/bot/botSupervisor.js";
 import { parseBotsConfig } from "../src/bot/botsConfig.js";
