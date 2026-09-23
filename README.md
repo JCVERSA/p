@@ -22,7 +22,7 @@
 
 ## 🧭 Contents
 
-**[What it looks like](#-what-it-looks-like)** · **[Features](#-features)** · **[Preview](#-preview)** · **[Architecture](#-architecture)** · **[Quick Start](#-quick-start)** · **[Anime engine](#-anime-engine)** · **[Environment variables](#-environment-variables)** · **[Tests](#-tests)** · **[Security](#-security-notes)** · **[Docs](#-documentation)** · **[Extending](#-extending)**
+**[What it looks like](#-what-it-looks-like)** · **[Features](#-features)** · **[Command Flow](#-command-flow)** · **[Architecture](#-architecture)** · **[Quick Start](#-quick-start)** · **[Anime engine](#-anime-engine)** · **[Environment variables](#-environment-variables)** · **[Tests](#-tests)** · **[Security](#-security-notes)** · **[Docs](#-documentation)** · **[Extending](#-extending)**
 
 ---
 
@@ -71,9 +71,9 @@ The interactive flow defaults to VF too — and never lies about the language ac
 | 🖥️ | **Web control panel** — live simulator, secrets manager (masked), command customizer, analytics, ZIP export |
 | 🛰️ | **One-command ops** — `manage.sh start/stop/update/doctor/env/logs/clean` on any VPS, behind a Cloudflare Tunnel |
 
-## 🎥 Preview
+## 🔄 Command Flow
 
-![Nebula Bot preview](preview.gif)
+<img src="docs/images/command-flow.svg" alt="Nebula Bot — command flow: WhatsApp message through the engine (access control, command registry, anime pipeline, AI fallback) and back with document links" width="960"/>
 
 ## 🏗️ Architecture
 
