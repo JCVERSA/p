@@ -4,7 +4,7 @@
 #  Dépôt   : https://github.com/JCVERSA/nebula-p (branche main)
 #  Usage   : ./manage.sh <commande>   (voir: ./manage.sh help)
 #
-#  Commandes : start | stop | restart | status | update | setup | clone
+#  Commandes : start | stop | restart | pair | status | update | setup | clone
 #              env [list|set|get|unset|edit] | logs [filtre] | clean
 #              doctor | watchdog | version
 # ============================================================================
@@ -217,6 +217,59 @@ cmd_stop() {
 }
 
 cmd_restart() { cmd_stop; cmd_start; }
+
+# ---------------------------------------------------------------------------
+# Connexion par code d'appariement (8.74) : appelle l'API panneau locale
+# (déjà protégée par PANEL_TOKEN) et affiche le code à saisir sur le téléphone.
+# ---------------------------------------------------------------------------
+cmd_pair() {
+  require_repo
+  local phone
+  phone="$(printf '%s' "${1:-}" | tr -cd '0-9')"
+  if [ -z "$phone" ] || [ "${#phone}" -lt 8 ] || [ "${#phone}" -gt 16 ]; then
+    ko "Usage: $(basename "$0") pair <numero international>"
+    echo " Exemple : $(basename "$0") pair 237690000000"
+    echo " (numéro WhatsApp complet avec indicatif pays, sans + ni espaces)"
+    return 1
+  fi
+  local port token
+  port="$(env_value PORT)"; port="${port:-3000}"
+  token="$(env_value PANEL_TOKEN)"
+  if [ -z "$token" ]; then
+    ko "PANEL_TOKEN introuvable dans ${ENV_FILE} — définis ta clé via '$(basename "$0") env'"
+    return 1
+  fi
+  if ! curl -s -o /dev/null -m 5 "http://127.0.0.1:${port}/"; then
+    ko "Le panneau ne répond pas sur le port ${port} — lance d'abord : $(basename "$0") start"
+    return 1
+  fi
+  hdr "CONNEXION PAR CODE D'APPARIEMENT (+${phone})"
+  echo " ℹ Arrêt de la session actuelle et demande d'un code aux serveurs WhatsApp…"
+  local resp out code
+  resp="$(curl -s -m 50 -X POST "http://127.0.0.1:${port}/api/bot/pair-code" \
+    -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
+    -d "{\"phoneNumber\":\"${phone}\"}")"
+  out="$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const j=JSON.parse(d);if(j.code)console.log("OK:"+j.code);else console.log("ERR:"+(j.error||"réponse inattendue du panneau"))}catch(e){console.log("ERR:réponse invalide du panneau")}})' 2>/dev/null || echo "ERR:node indisponible")"
+  case "$out" in
+    OK:*)
+      code="${out#OK:}"
+      ok "Code d'appariement généré"
+      echo
+      echo " ${C_BOLD}${C_CYAN}      ${code}      ${C_RESET}"
+      echo
+      echo " Sur ton téléphone WhatsApp :"
+      echo " ${C_BOLD}Paramètres > Appareils connectés > Connecter un appareil >${C_RESET}"
+      echo " ${C_BOLD}Connecter avec un numéro de téléphone à la place${C_RESET}"
+      echo " Saisis le code ci-dessus — le bot se connecte automatiquement."
+      ;;
+    *)
+      ko "${out#ERR:}"
+      echo " Vérifie que le bot n'est pas déjà connecté ('$(basename "$0") status') puis réessaie."
+      return 1
+      ;;
+  esac
+}
+
 
 # ---------------------------------------------------------------------------
 # STATUS
@@ -711,6 +764,7 @@ ${C_BOLD}Cycle de vie${C_RESET}
    ${C_BOLD}start${C_RESET}      Démarre le bot (nohup) et vérifie que le panneau répond
    ${C_BOLD}stop${C_RESET}       Arrêt propre (SIGTERM puis SIGKILL si besoin)
    ${C_BOLD}restart${C_RESET}    stop + start
+   ${C_BOLD}pair${C_RESET}      Connecte un numéro par code d'appariement (sans QR) : nebula pair 237690000000
    ${C_BOLD}status${C_RESET}     État complet: process, RAM vs cgroup, panneau, tunnel, disque
    ${C_BOLD}logs${C_RESET} [f]   Suit le log en direct (/root/bot.log); ex: nebula logs NOVABOX
 
@@ -742,6 +796,7 @@ case "${1:-help}" in
   start)   shift || true; cmd_start "$@" ;;
   stop)    shift || true; cmd_stop "$@" ;;
   restart) shift || true; cmd_restart "$@" ;;
+  pair)    shift || true; cmd_pair "$@" ;;
   status)  shift || true; cmd_status "$@" ;;
   update)  shift || true; cmd_update "$@" ;;
   setup)   shift || true; cmd_setup "$@" ;;
