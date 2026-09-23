@@ -239,7 +239,19 @@ export function registerCommand(cmd: BotCommand) {
 }
 
 export function removeCommand(name: string) {
-  commandsMap.delete(name.toLowerCase());
+  const key = name.toLowerCase();
+  const cmd = commandsMap.get(key);
+  // 8.79: retirer une commande doit aussi retirer ses alias — sinon la
+  // commande supprimée restait atteignable via `.alias` (trou trouvé par
+  // les tests du harnais IA). On ne retire un alias que s'il pointe encore
+  // sur CETTE commande (il a pu être ré-enregistré par une autre entre-temps).
+  if (cmd?.aliases) {
+    for (const alias of cmd.aliases) {
+      const aliasKey = alias.toLowerCase();
+      if (commandsMap.get(aliasKey) === cmd) commandsMap.delete(aliasKey);
+    }
+  }
+  commandsMap.delete(key);
   updateGlobalCommands();
 }
 
