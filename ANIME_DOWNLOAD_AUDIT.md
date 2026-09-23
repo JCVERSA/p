@@ -2690,3 +2690,34 @@ mises à jour. **vitest 457/457 (48 fichiers)**, tsc clean.
 Action owner requise (aucune pour le défaut après update) : si NVIDIA a
 encore tourné le catalogue, `nebula env` → NEBULA_NIM_MODEL = <id actuel
 de build.nvidia.com>.
+
+## §8.72 — IA : le timeout externe tuait la chaîne avant le secours NIM (2026-09-23)
+
+**Rapport owner (logs prod, 18h13)** : Gemini en surcharge (503 « high
+demand » sur les 3 modèles) → le bot enchaînait ses retries (3 modèles ×
+3 tentatives, ~7 s par appel sur endpoint encombré) → **« AI request
+timed out »** à exactement +60 s — et AUCUNE ligne « falling back to
+NVIDIA NIM » : la course de 60 s de withAIConcurrency tuait la requête
+AU MILIEU des retries Gemini, le secours NIM n'était jamais atteint.
+Cause racine : la boucle Gemini n'avait aucune notion de temps.
+
+Changements (8.72) :
+1. **Budget de phase** (`geminiClient.ts`) : toute la phase Gemini est
+   plafonnée à 25 s par défaut (`NEBULA_AI_GEMINI_BUDGET_MS`, plancher
+   1 s) ; à budget épuisé → bascule immédiate vers NIM, qui dispose du
+   reste de la course externe (60 s). Garantie structurelle : le
+   secours est TOUJOURS atteint.
+2. **Timeout par appel SDK** : chaque `generateContent` porte
+   `config.httpOptions.timeout = 10 s` (@google/genai ≥ 2.4) — un
+   modèle qui pend ne peut plus dévorer le budget.
+3. **Bug latent corrigé** : une réponse Gemini vide (succès sans texte)
+   rebouclait le MÊME modèle à l'infini (retries jamais décrémentés) —
+   désormais : passage au modèle suivant.
+4. Surfaces env : .env.example + menu `nebula env`.
+
+Tests : `tests/aiFallbackDeadline.test.ts` (nouveau, 4) — journée
+Gemini encombrée simulée (503 lents) → NIM atteint dans le budget
+(< 4 s) et non à 60 s ; timeout par appel présent sur chaque requête ;
+réponses vides → modèle suivant (≤ 3 appels, plus de boucle infinie) ;
+plancher du budget documenté et appliqué. **vitest 461/461
+(49 fichiers)**, tsc clean, eslint 0 erreur.

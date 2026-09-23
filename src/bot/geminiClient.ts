@@ -78,22 +78,51 @@ export async function generateTextWithFallback(
   // Dedup models to keep preferred first
   const modelsToTry = Array.from(new Set(modelCandidates));
 
+  // 8.72: PHASE BUDGET. Production log 2026-09-23: a busy Gemini day made
+  // every attempt take ~7s; 3 models x 3 attempts ate the whole outer 60s
+  // race (withAIConcurrency) and the request died BEFORE the NVIDIA NIM
+  // fallback was ever reached ("AI request timed out", zero NIM calls).
+  // The Gemini phase now gets a bounded budget (default 25s, env-tunable)
+  // and every SDK call a per-request timeout, so one hanging model cannot
+  // starve the fallback engine. NIM then gets the rest of the outer race.
+  const phaseBudgetMs = Math.max(
+    1_000,
+    Number(process.env.NEBULA_AI_GEMINI_BUDGET_MS) || 25_000
+  );
+  const phaseDeadline = Date.now() + phaseBudgetMs;
+  const CALL_TIMEOUT_MS = 10_000;
+
   let lastError: any = null;
+  let budgetSpent = false;
 
   for (const model of modelsToTry) {
+    if (budgetSpent) break;
     let retries = 2;
     while (retries >= 0) {
+      if (Date.now() >= phaseDeadline) {
+        console.log(`🤖 [Gemini Engine] Phase budget spent (${phaseBudgetMs}ms) — moving on to the fallback engine.`);
+        budgetSpent = true;
+        break;
+      }
       try {
         console.log(`🤖 [Gemini Engine] Attempting query with model [${model}]...`);
         const response = await ai.models.generateContent({
           model: model,
           contents: prompt,
-          config: systemInstruction ? { systemInstruction } : undefined,
+          config: {
+            ...(systemInstruction ? { systemInstruction } : {}),
+            httpOptions: { timeout: CALL_TIMEOUT_MS }
+          }
         });
 
         if (response && response.text) {
           return response.text.trim();
         }
+        // 8.72: an empty-but-successful response used to re-loop the SAME
+        // model forever (retries never decremented) until the outer race
+        // killed it. Move to the next model instead.
+        console.log(`🤖 [Gemini Engine] Model [${model}] returned an empty response — trying the next model...`);
+        break;
       } catch (err: any) {
         lastError = err;
         const errMessage = err?.message || String(err);
@@ -104,7 +133,7 @@ export async function generateTextWithFallback(
                             errMessage.includes("RESOURCE_EXHAUSTED") ||
                             errMessage.includes("high demand");
 
-        if (isTransient && retries > 0) {
+        if (isTransient && retries > 0 && Date.now() < phaseDeadline) {
           console.log(`🤖 [Gemini Engine] Model [${model}] temporarily busy. Retrying in 1s...`);
           await delay(1000);
           retries--;
