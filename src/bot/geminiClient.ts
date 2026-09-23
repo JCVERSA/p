@@ -54,6 +54,26 @@ export function getAIClient(): GoogleGenAI | null {
 }
 
 /**
+ * 8.73: configurable engine order for text prompts (NEBULA_AI_PRIMARY).
+ * "gemini" (default) or "nim". Vision prompts (image parts) always go to
+ * Gemini first — NIM is text-only.
+ */
+export function getPrimaryAIEngine(): "gemini" | "nim" {
+  return String(process.env.NEBULA_AI_PRIMARY || "")
+    .trim()
+    .toLowerCase() === "nim" ? "nim" : "gemini";
+}
+
+/** True when the prompt carries image parts (NIM cannot see images). */
+function promptHasImageParts(prompt: string | any[]): boolean {
+  if (typeof prompt === "string") return false;
+  const parts = Array.isArray(prompt) ? prompt : [prompt];
+  return parts.some(
+    (part: any) => typeof part !== "string" && (part?.inlineData || part?.fileData)
+  );
+}
+
+/**
  * Robust wrapper for text generation with retry mechanism and model fallbacks.
  * Throws when every model failed, so callers can render a truthful error.
  */
@@ -70,6 +90,26 @@ export async function generateTextWithFallback(
       return await nimFallback(prompt, systemInstruction);
     }
     throw new Error("No AI engine configured. Please add GEMINI_API_KEY or NVIDIA_NIM_API_KEY in Settings > Secrets.");
+  }
+
+  // 8.73: engine order. NIM primary (text only) is tried first when
+  // configured; on failure the Gemini chain below takes over (and the final
+  // NIM rescue may retry it once). Vision prompts always start at Gemini.
+  const primaryEngine = getPrimaryAIEngine();
+  const hasImageParts = promptHasImageParts(prompt);
+  if (primaryEngine === "nim" && !hasImageParts) {
+    if (isNimConfigured()) {
+      console.log("🤖 [AI Engine] NVIDIA NIM primary (NEBULA_AI_PRIMARY=nim).");
+      try {
+        return await nimFallback(prompt, systemInstruction);
+      } catch (nimErr: any) {
+        console.log(`🤖 [AI Engine] NIM primary failed (${nimErr?.message || nimErr}) — falling back to Gemini.`);
+      }
+    } else {
+      console.log("🤖 [AI Engine] NEBULA_AI_PRIMARY=nim but NIM is not configured — using Gemini.");
+    }
+  } else if (primaryEngine === "nim" && hasImageParts) {
+    console.log("🤖 [AI Engine] Vision prompt — routed to Gemini first (NIM is text-only).");
   }
 
   // List of models to try in sequence if a transient error (503/429) occurs
@@ -163,93 +203,4 @@ export async function generateTextWithFallback(
   // All models failed — surface a truthful error instead of a canned message.
   const errMsg = lastError?.message || String(lastError);
   throw new Error(`Gemini API is currently unavailable: ${errMsg}`);
-}
-
-/**
- * Robust image generation with retries, model fallbacks, and a flawless Pollinations AI backup
- */
-export async function generateImageWithFallback(
-  prompt: string,
-  inputImageBase64?: string
-): Promise<{ imageUrl: string; mode: "generated" | "edited" | "fallback" }> {
-  const ai = getAIClient();
-
-  if (ai) {
-    // Try Gemini image generation first
-    const imageModels = ["gemini-3.1-flash-image", "imagen-3.0-generate-002"];
-
-    for (const model of imageModels) {
-      try {
-        console.log(`🎨 Attempting Gemini Image Generation with [${model}]...`);
-        let response;
-
-        if (inputImageBase64) {
-          // Image editing mode
-          response = await ai.models.generateContent({
-            model: model,
-            contents: {
-              parts: [
-                {
-                  inlineData: {
-                    data: inputImageBase64,
-                    mimeType: "image/png"
-                  }
-                },
-                {
-                  text: prompt
-                }
-              ]
-            },
-            config: {
-              imageConfig: {
-                aspectRatio: "1:1",
-                imageSize: "1K"
-              }
-            }
-          });
-        } else {
-          // Text-to-image mode
-          response = await ai.models.generateContent({
-            model: model,
-            contents: prompt,
-            config: {
-              imageConfig: {
-                aspectRatio: "1:1",
-                imageSize: "1K"
-              }
-            }
-          });
-        }
-
-        let base64Data: string | null = null;
-        if (response.candidates?.[0]?.content?.parts) {
-          for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData && part.inlineData.data) {
-              base64Data = part.inlineData.data;
-              break;
-            }
-          }
-        }
-
-        if (base64Data) {
-          return {
-            imageUrl: `data:image/png;base64,${base64Data}`,
-            mode: inputImageBase64 ? "edited" : "generated"
-          };
-        }
-      } catch (err: any) {
-        console.log(`🤖 [Gemini Engine] Image model [${model}] is busy. Re-routing...`);
-      }
-    }
-  }
-
-  // Failsafe backup: Pollinations AI is highly reliable, free, and incredibly fast!
-  console.log("🌟 Gemini Image Service rate-limited or unavailable. Activating Pollinations AI high-fidelity fallback...");
-  const encodedPrompt = encodeURIComponent(prompt);
-  const fallbackUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${Math.floor(Math.random() * 100000)}`;
-
-  return {
-    imageUrl: fallbackUrl,
-    mode: "fallback"
-  };
 }

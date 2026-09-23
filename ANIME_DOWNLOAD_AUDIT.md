@@ -2721,3 +2721,32 @@ Gemini encombrée simulée (503 lents) → NIM atteint dans le budget
 réponses vides → modèle suivant (≤ 3 appels, plus de boucle infinie) ;
 plancher du budget documenté et appliqué. **vitest 461/461
 (49 fichiers)**, tsc clean, eslint 0 erreur.
+
+## §8.73 — IA : moteur primaire configurable + suppression de `.image` (2026-09-23)
+
+Décisions owner (Q&R du jour) : (1) switch de l'ordre des moteurs avec
+défaut Gemini (reco acceptée) ; (2) **suppression de la génération
+d'images** — « le bot est un spécialiste pour télécharger des animés, pas
+pour les images » ; (3) timeout externe global gardé à 60 s. Owner annonce
+une nouvelle erreur anime à corriger en priorité (non encore fournie).
+
+Changements :
+1. **`geminiClient.ts` — `NEBULA_AI_PRIMARY`** (`gemini` défaut | `nim`) :
+   NIM primaire sert les prompts texte en premier ; en échec, la chaîne
+   Gemini prend le relais (budget 8.72), et le sauvetage NIM final peut le
+   retenter une fois. **Prompts avec image → TOUJOURS Gemini d'abord** (NIM
+   ne voit pas les images) — `promptHasImageParts` + log explicite. Nouvel
+   export `getPrimaryAIEngine`.
+2. **Suppression `.image`** (owner 8.73) : `commands/image.ts` supprimé,
+   registre nettoyé (19 → **18 commandes**), ligne menu retirée, inventaire
+   mis à jour (`commandInventory.test.ts`), `generateImageWithFallback`
+   (Gemini imagen + Pollinations) retiré du client — plus aucune génération
+   d'image dans le bot. La VISION (images envoyées en privé à l'IA) reste :
+   elle passe par Gemini et dégrade proprement.
+3. Surfaces env : `.env.example` + menu `nebula env` (NEBULA_AI_PRIMARY).
+
+Tests : `tests/aiPrimarySwitch.test.ts` (nouveau, 6) — défaut Gemini sans
+toucher NIM ; NIM primaire prioritaire ; échec NIM → secours Gemini ;
+prompts vision routés Gemini même en NIM primaire ; épuisement des deux →
+erreur honnête ; parsing de NEBULA_AI_PRIMARY. **vitest 467/467
+(50 fichiers)**, tsc clean, eslint 0 erreur.
