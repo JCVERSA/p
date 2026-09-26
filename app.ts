@@ -34,7 +34,7 @@ import {
   protectApiRoutes,
   registerProjectArchiveRoute,
 } from "./src/panel/httpMiddleware.js";
-import { getTempDownload, updateServerBaseUrl, cleanupExpiredZipFiles, getTempStorageStats } from "./src/bot/tempDownloadManager.js";
+import { getTempDownload, touchTempDownload, updateServerBaseUrl, cleanupExpiredZipFiles, getTempStorageStats } from "./src/bot/tempDownloadManager.js";
 import { getGroupPolicy, setGroupPolicy, listGroupPolicies } from "./src/bot/groupAccessStore.js";
 import { DEFAULT_GROUP_POLICY } from "./src/bot/accessControl.js";
 import { getAuditEvents, clearAudit, recordAudit } from "./src/bot/auditTrail.js";
@@ -1471,6 +1471,10 @@ The \`.env\` file contains a placeholder API key. Set your real \`GEMINI_API_KEY
       }
       return res.status(410).json({ error: "This temporary download link has expired or is invalid." });
     }
+
+    // 8.83 — TTL glissant : chaque téléchargement (GET/HEAD, requêtes range
+    // incluses) relance le délai d'expiration de ce fichier.
+    touchTempDownload(token);
 
     // Increment download counter
     record.downloadCount = (record.downloadCount || 0) + 1;

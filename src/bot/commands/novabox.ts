@@ -6,7 +6,7 @@ import path from "path";
 import os from "os";
 import { spawn } from "child_process";
 import { resolvedFfmpegPath } from "../ffmpeg.js";
-import { registerTempDownload } from "../tempDownloadManager.js";
+import { registerTempDownload, getLinkTtlMinutes } from "../tempDownloadManager.js";
 import { buildDownloadPage } from "../services/downloadPage.js";
 import { formatFailedEpisodes } from "../services/batchRecap.js";
 import { animeProxyOptions } from "../services/scrapingProxy.js";
@@ -2255,9 +2255,10 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
           }
           totalMBDownloaded += thisMB;
 
-          // Move file into managed temporary store so the download link remains valid for full TTL
+          // Move file into managed temporary store — TTL glissant 8.83 :
+          // 30 min par défaut (NEBULA_LINK_TTL_MIN), remises à zéro à chaque
+          // téléchargement, vie totale plafonnée à 2 h.
           const tempDownload = registerTempDownload(localPath, filename, {
-            ttlMinutes: 120, // 2 hours for individual episodes
             moveFile: true
           });
 
@@ -2357,7 +2358,6 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
           season: formattedSeason,
           resolution,
           language: lang,
-          ttlMinutes: 180,
           namingStyle: "simple",
           batchJobId: batchJob.id,
           cleanupSourceFiles: false // Retain individual files for the individual episode links
@@ -2439,7 +2439,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         (memoryDeferredCount > 0
           ? `🛡️ *Garde mémoire:* ${memoryDeferredCount} épisode(s) non lancé(s) pour protéger le bot (pression RAM critique). Les épisodes livrés ci-dessus sont intacts — redemande les épisodes manquants dans quelques minutes.\n`
           : "") +
-        `⏳ *Links Validity:* 2 Hours\n\n` +
+        `⏳ *Links Validity:* ${getLinkTtlMinutes()} min (reset at each download, max 2 h)\n\n` +
         (pageDelivered
           ? `📄 *Ouvre le fichier HTML ci-dessus dans Chrome* → un seul bouton *« Tout télécharger »* lance tous les épisodes d'un coup (ou bouton par épisode).\n\n`
           : `📥 *Direct Episode Links:*\n\n` +
@@ -2755,11 +2755,11 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         console.log(`[NOVABOX] Pipeline total so far (players+scan+download${shouldCompress ? "+compress" : ""}): ${((Date.now() - session.pipelineStartedAt) / 1000).toFixed(1)}s`);
       }
 
-      // Move file into managed temporary store so the download link remains valid for 2 hours
+      // Move file into managed temporary store — TTL glissant 8.83 (défaut
+      // 30 min, reset à chaque téléchargement, 2 h de vie totale max).
       let tempDownload: any = null;
       try {
         tempDownload = registerTempDownload(activeSendPath, deliveredFilename, {
-          ttlMinutes: 120,
           moveFile: true
         });
         if (tempDownload && tempDownload.filePath) {
@@ -2784,7 +2784,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       const captionTail = (highSpeedLink: string) =>
         `📺 *Player Source:* ${activePlayerName}\n` +
         `📄 *Filename:* \`${deliveredFilename}\`\n\n` +
-        (highSpeedLink ? `🚀 *Direct High-Speed Download (Browser/PC):*\n🔗 ${highSpeedLink}\n⏳ _Valid for 2 Hours_\n\n` : "") +
+        (highSpeedLink ? `🚀 *Direct High-Speed Download (Browser/PC):*\n🔗 ${highSpeedLink}\n⏳ _Valid ${getLinkTtlMinutes()} min after each download (max 2 h)_\n\n` : "") +
         (vidmolyUrl ? `• 📺 *Play Ad-Free (${playerSourceLabel(vidmolyUrl)}):* ${vidmolyUrl}\n` : "") +
         `\n🌌 _Nebula Bot - Your ultimate media center_`;
 
@@ -2820,7 +2820,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
           await context.reply(
             `🚀 *TEMPORARY HIGH-SPEED DOWNLOAD LINK* 🚀\n\n` +
             `⚠️ *File Size:* ${fileSizeMB.toFixed(1)} MB (Exceeds WhatsApp 100MB limit)\n` +
-            `⏳ *Link Validity:* 2 Hours (Auto-expires)\n` +
+            `⏳ *Link Validity:* ${getLinkTtlMinutes()} min after each download (max 2 h)\n` +
             `🎬 *Anime:* ${session.animeTitle}\n` +
             `🗣️ *Language:* ${lang} | ${session.selectedSeason?.name} - Ep ${epNum}\n` +
             `⚙️ *Quality:* ${resolution}\n` +
