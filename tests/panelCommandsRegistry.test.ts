@@ -43,6 +43,10 @@ beforeAll(async () => {
   process.env.NEBULA_PANEL_COMMANDS = "on";
   mod = await import("../src/bot/panelCommands.js");
   registry = await import("../src/bot/commandRegistry.js");
+  // 8.84 (C1) : les tests de collision ont besoin des BUILT-IN enregistrés
+  // (ce worker n'a pas de boot moteur — sans ça, le registre ne contient
+  // que les commandes panneau des tests précédents).
+  if (!registry.isRegistryReady()) await registry.initRegistry();
 });
 
 afterAll(() => {
@@ -132,6 +136,58 @@ describe("F4 — métadonnées nettoyées avant le prompt système", () => {
     expect(saved.ok).toBe(true);
     const registered = registry.getCommand("auditalias2");
     expect(registered?.aliases).toEqual(["ok alias"]);
+  });
+});
+
+describe("C1 (audit 8.84) — jamais de détournement de built-in", () => {
+  beforeEach(() => {
+    mod.replaceAllPanelCommands([]);
+  });
+
+  it("refuse de sauver une commande panneau nommée comme un alias de built-in (ex. « a »)", () => {
+    const r = mod.savePanelCommand(def("a"));
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("déjà pris");
+    // Le built-in est intact.
+    expect(registry.getCommand("a")?.name).toBe("anime");
+  });
+
+  it("refuse un nom de built-in (ex. « ping ») et un alias de built-in (ex. « nv »)", () => {
+    expect(mod.savePanelCommand(def("ping")).ok).toBe(false);
+    expect(registry.getCommand("ping")?.description).toContain("latency");
+    const withAlias = mod.savePanelCommand(def("moncmd", { aliases: ["nv"] }));
+    expect(withAlias.ok).toBe(false);
+    expect(withAlias.error).toContain("nv");
+    expect(registry.getCommand("nv")?.name).toBe("anime");
+  });
+
+  it("refuse un alias déjà pris par une AUTRE commande panneau", () => {
+    expect(mod.savePanelCommand(def("cmdun", { aliases: ["partage"] })).ok).toBe(true);
+    const r = mod.savePanelCommand(def("cmddeux", { aliases: ["partage"] }));
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("partage");
+    // L'alias appartient toujours à la première.
+    expect(registry.getCommand("partage")?.name).toBe("cmdun");
+  });
+
+  it("permet la mise à jour de SA PROPRE commande (y compris ses alias existants)", () => {
+    expect(mod.savePanelCommand(def("mienne", { aliases: ["m1", "m2"] })).ok).toBe(true);
+    // Mise à jour : alias conservé + nouvel alias → OK.
+    const up = mod.savePanelCommand(def("mienne", { aliases: ["m1", "m3"], description: "v2" }));
+    expect(up.ok).toBe(true);
+    expect(registry.getCommand("m1")?.name).toBe("mienne");
+    expect(registry.getCommand("m3")?.name).toBe("mienne");
+  });
+
+  it("restauration de backup : la définition en collision est rejetée et le built-in reste en place", () => {
+    const result = mod.replaceAllPanelCommands([def("trace", { description: "PIRATE" })]);
+    expect(result.errors.some((e) => e.includes("Rejected \"trace\""))).toBe(true);
+    // Le vrai trace (built-in) n'a pas été détourné.
+    const live = registry.getCommand("trace");
+    expect(live?.description).not.toContain("PIRATE");
+    // Et le garde de boot fait pareil : re-registration → toujours ignorée.
+    mod.registerPanelCommands();
+    expect(registry.getCommand("trace")?.description).not.toContain("PIRATE");
   });
 });
 

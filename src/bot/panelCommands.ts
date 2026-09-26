@@ -144,6 +144,37 @@ function makeExecute(def: PanelCommandDefinition) {
   };
 }
 
+/**
+ * 8.84 (audit commandes C1) : une commande panneau ne peut JAMAIS détourner
+ * un nom ou un alias déjà pris. Chaque nom/alias doit être libre, ou résoudre
+ * vers CETTE commande (mise à jour de ses propres alias). Avant ce garde,
+ * sauver une commande panneau nommée « a » écrasait silencieusement le
+ * built-in anime — et le détournement survivait aux redémarrages
+ * (registerPanelCommands tourne après les built-ins).
+ */
+function findRegistrationBlocker(def: { name: string; aliases?: string[] }): string | null {
+  const own = def.name.toLowerCase();
+  const seen = new Set<string>();
+  for (const entry of [def.name, ...(def.aliases || [])]) {
+    const key = String(entry || "").trim().toLowerCase();
+    if (!key) continue;
+    if (seen.has(key)) return `« ${key} » est déclaré deux fois (nom et alias).`;
+    seen.add(key);
+    const existing = getCommand(key);
+    if (!existing) continue;
+    const existingName = existing.name.toLowerCase();
+    // Auto-référence UNIQUEMENT : mise à jour de sa propre commande panneau
+    // (le nom ou un de ses propres alias). Tout le reste est un
+    // détournement — y compris un built-in PORTANT LE MÊME NOM (ex. une
+    // commande panneau « trace » face au trace natif : même nom, mais il
+    // n'appartient pas au store panneau).
+    if (existingName === own && registeredPanelNames.has(existingName)) continue;
+    const kind = registeredPanelNames.has(existingName) ? "commande panneau" : "commande intégrée";
+    return `« ${key} » est déjà pris par la ${kind} « ${existing.name} » — choisis un autre nom/alias.`;
+  }
+  return null;
+}
+
 export function registerPanelCommands(): void {
   if (!PANEL_COMMANDS_ENABLED) return;
   for (const def of store) {
@@ -159,6 +190,14 @@ export function registerPanelCommands(): void {
       aliases: def.aliases || [],
       execute: makeExecute(def),
     };
+    // 8.84 (C1) : au boot, un stored qui entre en collision avec un built-in
+    // (ex. commande « trace » sauvée avant que trace devienne natif) est
+    // ignoré bruyamment au lieu de le détourner.
+    const blocker = findRegistrationBlocker(def);
+    if (blocker) {
+      console.error(`[PanelCommands] ⛔ « ${def.name} » non enregistrée : ${blocker}`);
+      continue;
+    }
     registerCommand(wrapped as any);
     registeredPanelNames.add(def.name);
   }
@@ -174,6 +213,11 @@ export interface SavePanelCommandResult {
 export function savePanelCommand(def: PanelCommandDefinition): SavePanelCommandResult {
   if (!/^[a-z0-9]+$/.test(def.name)) {
     return { ok: false, loaded: false, error: "Invalid command name: use letters and digits only.", message: "Invalid command name." };
+  }
+  // 8.84 (C1) : jamais de détournement d'un built-in ou d'une autre commande.
+  const blocker = findRegistrationBlocker(def);
+  if (blocker) {
+    return { ok: false, loaded: false, error: blocker, message: blocker };
   }
   const existing = getCommand(def.name);
 
@@ -305,15 +349,26 @@ export function replaceAllPanelCommands(defs: Array<Partial<PanelCommandDefiniti
   // F2 : les commandes absentes du nouveau set quittent le registre VIVANT
   // (et l'inventaire IA) — avant, elles restaient invoquables jusqu'au
   // restart malgré leur disparition du store restauré.
-  for (const name of registeredPanelNames) {
-    if (!next.some((d) => d.name === name)) removeCommand(name);
+  for (const name of Array.from(registeredPanelNames)) {
+    if (!next.some((d) => d.name === name)) {
+      removeCommand(name);
+      registeredPanelNames.delete(name);
+    }
   }
-  registeredPanelNames.clear();
-  // Re-register under the safe runner.
-  store.forEach((def) => {
+  // Re-register under the safe runner — 8.84 (C1) : chaque définition qui
+  // entre en collision (built-in ou autre commande) est signalée dans
+  // errors et reste NON enregistrée, au lieu de détourner l'existante.
+  // Le set n'est PAS vidé : l'auto-référence (restaurer sa propre commande)
+  // doit rester permise.
+  for (const def of store) {
+    const blocker = findRegistrationBlocker(def);
+    if (blocker) {
+      errors.push(`Rejected "${def.name}": ${blocker}`);
+      continue;
+    }
     registerCommand(makeRegistered(def));
     registeredPanelNames.add(def.name);
-  });
+  }
   persist();
   return { count: store.length, errors };
 }
