@@ -118,7 +118,10 @@ donne la vue complète.
   relance, le panneau survit).
 - **Disque** : le plafond par batch (2048 Mo) reste par bot, mais la
   session 8.78 ajoute un garde-fou GLOBAL inter-bots : chaque batch
-  réserve son plafond dans un dossier partagé (`$TMPDIR/nebula-disk-claims`)
+  réserve son besoin RÉEL estimé (taille/épisode × épisodes × 1,5,
+  plafonnée par `NEBULA_NOVABOX_MAX_BATCH_MB` — 8.81, retour terrain :
+  avant, la réservation portait le plafond entier de 2048 Mo et bloquait
+  les petits disques) dans un dossier partagé (`$TMPDIR/nebula-disk-claims`)
   et un nouveau batch est refusé tant que l'espace libre passerait sous la
   réserve (`NEBULA_MIN_FREE_DISK_MB`, 500 Mo). La réservation est libérée à
   la fin du batch (completed/failed/cancelled) ; un moteur mort en cours de
