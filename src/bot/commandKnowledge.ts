@@ -35,7 +35,7 @@ Flux interactif, étape par étape :
 Tout en une ligne : \`${p}a jjk s3 ep6 r2\` · \`${p}a jjk s3 all r2\` · \`${p}a jjk s3 1-5 r2\`
 Catalogues : \`${p}a <titre>\` = catalogue complet (défaut) · \`${p}a va <titre>\` = catalogue VF
 
-À savoir : maximum 12 épisodes par demande ; un épisode = un lien direct, plusieurs = une page HTML avec un bouton « Tout télécharger » ; les liens expirent après 2 h ; après une longue inactivité la session expire → relancer \`${p}a <titre>\` ; \`${p}w <titre>\` pose une veille et notifie automatiquement dès qu'un nouvel épisode sort.`;
+À savoir : maximum 12 épisodes par demande ; un épisode = un lien direct, plusieurs = une page HTML avec un bouton « Tout télécharger » ; les liens expirent après 2 h (archive ZIP optionnelle : 1 h) ; après une longue inactivité la session expire → relancer \`${p}a <titre>\` ; \`${p}w <titre>\` pose une veille et notifie automatiquement dès qu'un nouvel épisode sort.`;
 
 /** Règles de guidage (l'IA est proactive mais honnête sur ses limites). */
 const GUIDANCE_RULES = (p: string) => `# Tes commandes

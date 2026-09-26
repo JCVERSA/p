@@ -69,28 +69,48 @@ const diskCommandCache = new Map<string, BotCommand>();
 
 // Built-in commands are statically imported so they always work, including in
 // the production bundle where dynamic .ts loading is unavailable.
-const defaultCommands = [
-  pingCommand,
-  menuCommand,
-  helpCommand,
-  aiCommand,
-  defineCommand,
-  swebCommand,
-  watchCommand,
-  animeCommand,
-  ytvideoCommand,
-  songCommand,
-  ytlinkCommand,
-  tiktokCommand,
-  instagramCommand,
-  qrCommand,
-  base64Command,
-  getppCommand,
-  whoisCommand,
-  traceCommand,
-];
+// 8.80 (audit harnais F1) : la liste est construite DANS une fonction, plus
+// jamais au top-level du module. Le cycle registry -> commands/ai -> persona
+// -> commandKnowledge -> registry rendait aiCommand indefini (TDZ) quand
+// commands/ai.ts etait importe en premier ; differe au runtime, tous les
+// ordres d'entree sont surs.
+function getBuiltinCommands(): BotCommand[] {
+  return [
+    pingCommand,
+    menuCommand,
+    helpCommand,
+    aiCommand,
+    defineCommand,
+    swebCommand,
+    watchCommand,
+    animeCommand,
+    ytvideoCommand,
+    songCommand,
+    ytlinkCommand,
+    tiktokCommand,
+    instagramCommand,
+    qrCommand,
+    base64Command,
+    getppCommand,
+    whoisCommand,
+    traceCommand,
+  ];
+}
 
 function register(cmd: BotCommand) {
+  const key = cmd.name.toLowerCase();
+  // 8.80 (audit harnais F3) : ré-enregistrer une commande doit purger les
+  // alias de la version PRÉCÉDENTE — sinon une mise à jour avec moins
+  // d'alias laissait des entrées fantômes pointant sur l'ancien objet.
+  const previous = commandsMap.get(key);
+  if (previous?.aliases) {
+    for (const alias of previous.aliases) {
+      const aliasKey = alias.toLowerCase();
+      if (aliasKey !== key && commandsMap.get(aliasKey) === previous) {
+        commandsMap.delete(aliasKey);
+      }
+    }
+  }
   const parentCategory = cmd.parentCategory || getTopLevelCategory(cmd.category);
   const normalizedCmd: BotCommand = {
     ...cmd,
@@ -177,6 +197,7 @@ export async function initRegistry(): Promise<void> {
 
   // Register the static built-ins (audit 8.56: the 145-file legacy corpus and
   // its CJS bridge were REMOVED — owner decision; native commands only).
+  const defaultCommands = getBuiltinCommands();
   defaultCommands.forEach(register);
 
   const builtinNames = new Set(defaultCommands.map((cmd) => cmd.name.toLowerCase()));
