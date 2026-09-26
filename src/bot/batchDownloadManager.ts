@@ -9,6 +9,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
+import { releaseDiskClaim } from "./diskClaims.js";
 
 export {
   BatchZipManager,
@@ -50,6 +51,10 @@ export interface BatchDownloadJob {
   createdAt: number;
   updatedAt: number;
   error?: string;
+  /** True for panel-simulator jobs (driven by the simulation timer). Real
+   *  WhatsApp-driven jobs cannot be retried from the panel — the download
+   *  pipeline lives in the command session (R11 honesty fix, 2026-09-01). */
+  simulated?: boolean;
 }
 
 // In-memory store of batch download jobs (max 20 most recent)
@@ -157,6 +162,11 @@ export function updateJobStatus(
     job.progressPercent = 92;
   }
   job.updatedAt = Date.now();
+  // 8.78: un état terminal libère la réservation disque du batch (garde-fou
+  // inter-bots — l'acquisition se fait dans novabox.sendFinalEpisode).
+  if (status === "completed" || status === "failed" || status === "cancelled") {
+    releaseDiskClaim(jobId);
+  }
 }
 
 /**
@@ -175,6 +185,7 @@ export function completeBatchJob(
   const job = batchJobs.get(jobId);
   if (!job) return;
 
+  releaseDiskClaim(jobId);
   job.status = "completed";
   job.progressPercent = 100;
   job.currentStatusText = `Batch download complete! ZIP Archive (${zipInfo.zipSizeMB} MB) is ready.`;
@@ -212,6 +223,7 @@ export function getBatchJob(id: string): BatchDownloadJob | null {
 export function cancelBatchJob(id: string): boolean {
   const job = batchJobs.get(id);
   if (!job) return false;
+  releaseDiskClaim(id);
   job.status = "cancelled";
   job.currentStatusText = "Batch download cancelled by user.";
   job.updatedAt = Date.now();
@@ -229,6 +241,15 @@ export function retryBatchJob(id: string): { success: boolean; job?: BatchDownlo
   const job = batchJobs.get(id);
   if (!job) {
     return { success: false, error: "Batch job not found" };
+  }
+
+  // R11 honesty fix: real (WhatsApp-driven) jobs have no panel-side worker —
+  // flipping statuses here would fake progress forever. Refuse explicitly.
+  if (!job.simulated) {
+    return {
+      success: false,
+      error: "Ce téléchargement a été lancé depuis WhatsApp : relance-le là-bas (`.a <titre> s1 <épisodes> r1`). Le panneau ne peut re-jouer que les jobs du simulateur."
+    };
   }
 
   // Clear previous top-level errors
@@ -309,6 +330,14 @@ export function retryEpisode(jobId: string, epNum: number): { success: boolean; 
   const ep = job.episodes.find((e) => e.epNum === epNum);
   if (!ep) {
     return { success: false, error: `Episode ${epNum} not found in batch job` };
+  }
+
+  // R11 honesty fix: see retryBatchJob.
+  if (!job.simulated) {
+    return {
+      success: false,
+      error: `L'épisode ${epNum} fait partie d'un téléchargement lancé depuis WhatsApp : relance la commande là-bas (\`.a <titre> s1 ${epNum} r1\`).`
+    };
   }
 
   ep.status = "downloading";
@@ -477,6 +506,10 @@ function pruneOldJobs() {
     const toDelete = sorted.slice(0, batchJobs.size - 15);
     for (const [k] of toDelete) {
       batchJobs.delete(k);
+      // 8.78: ceinture et bretelles — si un job est évincé sans être passé
+      // par un état terminal (moteur repris en main, bug), sa réservation
+      // disque ne doit pas survivre à son suivi.
+      releaseDiskClaim(k);
     }
   }
 }
@@ -510,6 +543,7 @@ export function simulateBatchDownload(options?: {
     resolution,
     language,
   });
+  job.simulated = true;
 
   job.status = "downloading";
   job.currentStatusText = `Initializing ${totalEpisodes} concurrent download streams...`;

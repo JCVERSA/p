@@ -1,3 +1,4 @@
+import { commandMatchesCategory } from "./utils/commandCategory";
 import { useState, useEffect, useRef, FormEvent } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -73,6 +74,16 @@ import { BrowserIdentitySelector } from "./components/BrowserIdentitySelector";
 import { BatchDownloadStatus } from "./components/BatchDownloadStatus";
 import AccessControlPanel from "./components/AccessControlPanel";
 import SecurityExtras from "./components/SecurityExtras";
+import BotsPanel from "./components/BotsPanel";
+import { ActiveBotProvider } from "./lib/botContext";
+import { withBotParam } from "./lib/botSelection";
+import SpotlightCard from "./components/SpotlightCard";
+import ShinyText from "./components/ShinyText";
+import HeroChip from "./components/HeroChip";
+import HeroKbd from "./components/HeroKbd";
+import HeroSnippet from "./components/HeroSnippet";
+import HeroUser from "./components/HeroUser";
+import SystemDiagnostics from "./components/SystemDiagnostics";
 
 type TabId = NavTab;
 
@@ -107,32 +118,36 @@ const VALID_STATUSES: ConnectionStatus[] = ["disconnected", "connecting", "qr_re
 
 function StatCard({ icon: Icon, label, value, sub }: { icon: any; label: string; value: string; sub?: string }) {
   return (
-    <div className="bg-[#0b0b0c] rounded-2xl border border-white/10 p-4 sm:p-5 flex items-start gap-3.5 sm:gap-4 hover:border-white/20 transition-all shadow-sm">
-      <div className={`p-2.5 rounded-xl bg-white/5 text-amber-400 border border-white/5 shrink-0`}>
-        <Icon className="w-5 h-5" />
+    <SpotlightCard spotlightColor="rgba(245, 158, 11, 0.15)" className="h-full">
+      <div className="p-5 flex flex-col justify-between h-full">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">{label}</span>
+          <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/10 shrink-0">
+            <Icon className="w-4 h-4" />
+          </div>
+        </div>
+        <div className="mt-4">
+          <p className="text-2xl font-black text-white tracking-tight">{value}</p>
+          {sub && <p className="text-[11px] text-zinc-500 mt-1 truncate">{sub}</p>}
+        </div>
       </div>
-      <div className="min-w-0">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">{label}</p>
-        <p className="text-xl sm:text-2xl font-bold text-white tracking-tight truncate">{value}</p>
-        {sub && <p className="text-xs text-zinc-400 mt-0.5 truncate">{sub}</p>}
-      </div>
-    </div>
+    </SpotlightCard>
   );
 }
 
 function Card({ title, icon: Icon, action, children, className = "" }: { title?: string; icon?: any; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
-    <div className={`bg-[#0b0b0c] rounded-2xl border border-white/10 shadow-lg ${className}`}>
+    <div className={`bg-[#0e0e11] rounded-2xl border border-white/5 shadow-xl hover:shadow-2xl/10 transition-all duration-300 ${className}`}>
       {title && (
-        <div className="flex items-center justify-between px-4 sm:px-5 py-3.5 sm:py-4 border-b border-white/10">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
           <div className="flex items-center gap-2.5">
             {Icon && <Icon className="w-4 h-4 text-amber-400" />}
-            <h3 className="font-semibold text-white text-sm tracking-tight">{title}</h3>
+            <h3 className="font-bold text-white text-sm tracking-wide uppercase">{title}</h3>
           </div>
           {action}
         </div>
       )}
-      <div className="p-4 sm:p-5">{children}</div>
+      <div className="p-5">{children}</div>
     </div>
   );
 }
@@ -140,10 +155,19 @@ function Card({ title, icon: Icon, action, children, className = "" }: { title?:
 
 export default function App() {
   // ------------------------------------------------------------------ state
+  const bgContainerRef = useRef<HTMLDivElement>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
+  // 8.77 multi-bots : bot piloté par le panneau (null = bot par défaut).
+  const [activeBotId, setActiveBotId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("nebula-active-bot") || null;
+    } catch {
+      return null;
+    }
+  });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [quickTerminalOpen, setQuickTerminalOpen] = useState(false);
   const [isStartingBot, setIsStartingBot] = useState(false);
@@ -185,6 +209,150 @@ export default function App() {
   const [antiLink, setAntiLink] = useState(true);
   const [autonomousAi, setAutonomousAi] = useState(true);
   const [publicMode, setPublicMode] = useState(true);
+
+  // Liquid glass visual state controls
+  const [adaptiveMorphing, setAdaptiveMorphing] = useState(() => {
+    const saved = localStorage.getItem("adaptive-morphing");
+    return saved !== "false";
+  });
+  const [blurIntensity, setBlurIntensity] = useState(() => {
+    const saved = localStorage.getItem("backdrop-blur-intensity");
+    return saved ? parseFloat(saved) : 1.0;
+  });
+  const [animationDuration, setAnimationDuration] = useState(() => {
+    const saved = localStorage.getItem("blob-animation-duration");
+    return saved ? parseFloat(saved) : 16;
+  });
+  const [motionSensitivity, setMotionSensitivity] = useState(() => {
+    const saved = localStorage.getItem("motion-sensitivity");
+    return saved !== "false";
+  });
+
+  const [blobStyles, setBlobStyles] = useState([
+    { borderRadius: "40% 60% 70% 30% / 40% 50% 60% 50%", transform: "translate(0px, 0px) scale(1)" },
+    { borderRadius: "50% 50% 30% 70% / 50% 60% 40% 60%", transform: "translate(0px, 0px) scale(1)" },
+    { borderRadius: "60% 40% 50% 50% / 40% 40% 60% 60%", transform: "translate(0px, 0px) scale(1)" },
+  ]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--backdrop-blur-intensity", blurIntensity.toString());
+    localStorage.setItem("backdrop-blur-intensity", blurIntensity.toString());
+  }, [blurIntensity]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--blob-animation-duration", `${animationDuration}s`);
+    localStorage.setItem("blob-animation-duration", animationDuration.toString());
+  }, [animationDuration]);
+
+  useEffect(() => {
+    localStorage.setItem("motion-sensitivity", motionSensitivity.toString());
+  }, [motionSensitivity]);
+
+  // Mouse & Scroll velocity based organic scale feedback loop
+  useEffect(() => {
+    if (!motionSensitivity) {
+      if (bgContainerRef.current) {
+        bgContainerRef.current.style.transform = "scale(1)";
+      }
+      return;
+    }
+
+    let lastX = 0;
+    let lastY = 0;
+    let lastTime = Date.now();
+    let targetScale = 1;
+    let currentScale = 1;
+    let animationFrameId: number;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const now = Date.now();
+      const dt = now - lastTime;
+      if (dt > 0) {
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const speed = distance / dt;
+        // Map mouse movement speed smoothly into scale up to 1.15
+        targetScale = 1 + Math.min(speed * 0.04, 0.15);
+      }
+      lastX = e.clientX;
+      lastY = e.clientY;
+      lastTime = now;
+    };
+
+    let lastScrollTop = window.scrollY || document.documentElement.scrollTop;
+    const handleScroll = () => {
+      const now = Date.now();
+      const dt = now - lastTime;
+      if (dt > 0) {
+        const currentScroll = window.scrollY || document.documentElement.scrollTop;
+        const dy = Math.abs(currentScroll - lastScrollTop);
+        const speed = dy / dt;
+        // Map scrolling speed smoothly up to 1.2
+        targetScale = 1 + Math.min(speed * 0.06, 0.2);
+        lastScrollTop = currentScroll;
+      }
+      lastTime = now;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove, { passive: true });
+    window.addEventListener("scroll", handleScroll, { passive: true });
+
+    const updatePhysics = () => {
+      // Natural fluid deceleration (spring pull back to rest scale of 1.0)
+      targetScale += (1 - targetScale) * 0.04;
+      // Exponential dynamic lerping for absolute silk smoothness
+      currentScale += (targetScale - currentScale) * 0.08;
+      if (bgContainerRef.current) {
+        bgContainerRef.current.style.transform = `scale(${currentScale.toFixed(4)})`;
+      }
+      animationFrameId = requestAnimationFrame(updatePhysics);
+    };
+
+    animationFrameId = requestAnimationFrame(updatePhysics);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("scroll", handleScroll);
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [motionSensitivity]);
+
+  useEffect(() => {
+    if (!adaptiveMorphing) return;
+
+    const generateRandomBlobStyle = () => {
+      const rand = (min = 25, max = 75) => Math.floor(Math.random() * (max - min)) + min;
+      const radius = `${rand()}% ${rand()}% ${rand()}% ${rand()}% / ${rand()}% ${rand()}% ${rand()}% ${rand()}%`;
+      const tx = rand(-60, 60);
+      const ty = rand(-60, 60);
+      const scale = (rand(85, 125) / 100).toFixed(2);
+      return {
+        borderRadius: radius,
+        transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
+      };
+    };
+
+    setBlobStyles([
+      generateRandomBlobStyle(),
+      generateRandomBlobStyle(),
+      generateRandomBlobStyle(),
+    ]);
+
+    const interval = setInterval(() => {
+      setBlobStyles([
+        generateRandomBlobStyle(),
+        generateRandomBlobStyle(),
+        generateRandomBlobStyle(),
+      ]);
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [adaptiveMorphing]);
+
+  useEffect(() => {
+    localStorage.setItem("adaptive-morphing", adaptiveMorphing.toString());
+  }, [adaptiveMorphing]);
 
   // Audio transcription
   const [isRecording, setIsRecording] = useState(false);
@@ -269,6 +437,10 @@ export default function App() {
   const [secretMessage, setSecretMessage] = useState("");
 
   const [ownerSecretStatus, setOwnerSecretStatus] = useState<{ configured: boolean; masked: string | null } | null>(null);
+  const [nimSecretStatus, setNimSecretStatus] = useState<{ configured: boolean; masked: string | null } | null>(null);
+  const [nimSecretValue, setNimSecretValue] = useState("");
+  const [isSavingNimSecret, setIsSavingNimSecret] = useState(false);
+  const [nimSecretMessage, setNimSecretMessage] = useState("");
   const [ownerSecretValue, setOwnerSecretValue] = useState("");
   const [isSavingOwnerSecret, setIsSavingOwnerSecret] = useState(false);
   const [ownerSecretMessage, setOwnerSecretMessage] = useState("");
@@ -472,6 +644,47 @@ export default function App() {
 
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, activeBotId]);
+
+  // 8.77 : changer de bot invalide l'état d'affichage WhatsApp (QR/pairing)
+  // et persiste le choix. Le polling ci-dessus se réarme et rafraîchit seul.
+  const firstBotEffectRun = useRef(true);
+  useEffect(() => {
+    try {
+      if (activeBotId) localStorage.setItem("nebula-active-bot", activeBotId);
+      else localStorage.removeItem("nebula-active-bot");
+    } catch {}
+    if (firstBotEffectRun.current) {
+      firstBotEffectRun.current = false;
+      return;
+    }
+    setQrUrl(null);
+    setQrReceivedAt(null);
+    setPairingCode("");
+    setPairingExpiresAt(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBotId]);
+
+  // 8.77 : une sélection sauvegardée qui n'existe plus (bots.json changé)
+  // est silencieusement remise à zéro — sinon le panneau piloterait un 404.
+  useEffect(() => {
+    if (!isAuthenticated || !activeBotId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/bots", { credentials: "same-origin" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const ids = Array.isArray(data?.bots) ? data.bots.map((b: any) => String(b?.id ?? "")) : [];
+        if (!cancelled && ids.length > 0 && !ids.includes(activeBotId)) {
+          setActiveBotId(null);
+        }
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
 
   useEffect(() => {
@@ -516,9 +729,13 @@ export default function App() {
   }, [pairingExpiresAt, pairingCode]);
 
   /** Central fetch wrapper: uses the HttpOnly session cookie; 401 → locked UI. */
+  // 8.77 multi-bots : ajoute ?bot=<id> aux routes par-bot quand un bot
+  // non-défaut est sélectionné (les routes du panneau ne changent jamais).
+  const botUrl = (url: string) => withBotParam(url, activeBotId);
+
   const apiFetch = async (url: string, init?: RequestInit): Promise<Response | null> => {
     try {
-      let res = await fetch(url, {
+      const res = await fetch(botUrl(url), {
         ...init,
         credentials: "same-origin",
       });
@@ -594,7 +811,7 @@ export default function App() {
       }
 
       if (data?.status === "qr_ready") {
-        const qrRes = await fetch("/api/bot/qr");
+        const qrRes = await fetch(botUrl("/api/bot/qr"));
         if (qrRes.ok) {
           const qrData = await qrRes.json();
           if (qrData && qrData.qrUrl) {
@@ -611,7 +828,7 @@ export default function App() {
 
   const fetchSecretStatus = async () => {
     try {
-      const res = await fetch("/api/bot/secrets");
+      const res = await fetch(botUrl("/api/bot/secrets"));
       if (!res.ok) return;
       const data = await res.json();
       const gemini = Array.isArray(data?.secrets)
@@ -623,6 +840,11 @@ export default function App() {
         ? data.secrets.find((s: { name: string }) => s.name === "OWNER_NUMBER")
         : null;
       setOwnerSecretStatus(ownerSecret || null);
+
+      const nimSecret = Array.isArray(data?.secrets)
+        ? data.secrets.find((s: { name: string }) => s.name === "NVIDIA_NIM_API_KEY")
+        : null;
+      setNimSecretStatus(nimSecret || null);
     } catch (e) {}
   };
 
@@ -630,7 +852,7 @@ export default function App() {
   const startBot = async () => {
     setIsStartingBot(true);
     try {
-      await fetch("/api/bot/start", { method: "POST" });
+      await fetch(botUrl("/api/bot/start"), { method: "POST" });
       await fetchStatus();
     } catch (e) {
     } finally {
@@ -640,7 +862,7 @@ export default function App() {
 
   const stopBot = async () => {
     try {
-      await fetch("/api/bot/stop", { method: "POST" });
+      await fetch(botUrl("/api/bot/stop"), { method: "POST" });
       setPairingCode("");
       setPairingExpiresAt(null);
       fetchStatus();
@@ -678,7 +900,7 @@ export default function App() {
     addSystemLog(`📱 Requesting 8-digit Pairing Code for +${cleanDigits}...`);
 
     try {
-      const res = await fetch("/api/bot/pair-code", {
+      const res = await fetch(botUrl("/api/bot/pair-code"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phoneNumber: cleanDigits }),
@@ -718,7 +940,7 @@ export default function App() {
 
   const clearBotLogs = async () => {
     try {
-      await fetch("/api/bot/clear-logs", { method: "POST" });
+      await fetch(botUrl("/api/bot/clear-logs"), { method: "POST" });
       fetchStatus();
     } catch (e) {}
   };
@@ -729,9 +951,9 @@ export default function App() {
     setQrReceivedAt(Date.now());
     setQrTimeLeft(50);
     try {
-      await fetch("/api/bot/stop", { method: "POST" });
+      await fetch(botUrl("/api/bot/stop"), { method: "POST" });
       await new Promise((resolve) => setTimeout(resolve, 800));
-      await fetch("/api/bot/start", { method: "POST" });
+      await fetch(botUrl("/api/bot/start"), { method: "POST" });
       await fetchStatus();
     } catch (e) {
       console.error(e);
@@ -764,7 +986,7 @@ export default function App() {
         timestamp: new Date().toLocaleTimeString(),
       });
 
-      const res = await fetch("/api/bot/retry", { method: "POST" });
+      const res = await fetch(botUrl("/api/bot/retry"), { method: "POST" });
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && data.success) {
@@ -819,7 +1041,7 @@ export default function App() {
     setGeminiPlaygroundOutput("");
     addSystemLog(`🤖 Asking Gemini (${geminiModel}): "${geminiPlaygroundPrompt.slice(0, 40)}..."`);
     try {
-      const res = await fetch("/api/bot/chat", {
+      const res = await fetch(botUrl("/api/bot/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -844,7 +1066,7 @@ export default function App() {
     setBroadcastStatus(null);
     addSystemLog(`📢 Dispatching broadcast message: "${broadcastText.slice(0, 30)}..."`);
     try {
-      const res = await fetch("/api/bot/chat", {
+      const res = await fetch(botUrl("/api/bot/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -884,7 +1106,7 @@ export default function App() {
     setIsSavingConfig(true);
     setConfigMessage("");
     try {
-      const res = await fetch("/api/bot/config", {
+      const res = await fetch(botUrl("/api/bot/config"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formConfig),
@@ -910,7 +1132,7 @@ export default function App() {
     setIsSavingSecret(true);
     setSecretMessage("");
     try {
-      const res = await fetch("/api/bot/secrets", {
+      const res = await fetch(botUrl("/api/bot/secrets"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "GEMINI_API_KEY", value: secretValue }),
@@ -939,7 +1161,7 @@ export default function App() {
     setIsSavingSecret(true);
     setSecretMessage("");
     try {
-      const res = await fetch("/api/bot/secrets", {
+      const res = await fetch(botUrl("/api/bot/secrets"), {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "GEMINI_API_KEY" }),
@@ -960,12 +1182,67 @@ export default function App() {
     }
   };
 
+  const saveNimSecret = async () => {
+    if (!nimSecretValue.trim()) return;
+    setIsSavingNimSecret(true);
+    setNimSecretMessage("");
+    try {
+      const res = await fetch(botUrl("/api/bot/secrets"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "NVIDIA_NIM_API_KEY", value: nimSecretValue }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setNimSecretValue("");
+        setNimSecretMessage(
+          data.fileSaved
+            ? "✅ NVIDIA key saved to the .env file and applied to the running bot."
+            : "✅ NVIDIA key applied to the running bot (this deployment does not allow writing .env)."
+        );
+        addSystemLog("🔑 NVIDIA_NIM_API_KEY updated from panel.");
+        fetchSecretStatus();
+      } else {
+        setNimSecretMessage(`❌ ${data.error || "Failed to save secret."}`);
+      }
+    } catch (e) {
+      setNimSecretMessage("❌ Could not reach the server to save the secret.");
+    } finally {
+      setIsSavingNimSecret(false);
+    }
+  };
+
+  const clearNimSecret = async () => {
+    setIsSavingNimSecret(true);
+    setNimSecretMessage("");
+    try {
+      const res = await fetch(botUrl("/api/bot/secrets"), {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "NVIDIA_NIM_API_KEY" }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setNimSecretValue("");
+        setNimSecretMessage("✅ NVIDIA key removed. The AI fallback is disabled; Gemini keeps working.");
+        addSystemLog("🔑 NVIDIA_NIM_API_KEY removed from panel.");
+        fetchSecretStatus();
+      } else {
+        setNimSecretMessage(`❌ ${data.error || "Failed to remove secret."}`);
+      }
+    } catch (e) {
+      setNimSecretMessage("❌ Could not reach the server to remove the secret.");
+    } finally {
+      setIsSavingNimSecret(false);
+    }
+  };
+
   const saveOwnerSecret = async () => {
     if (!ownerSecretValue.trim()) return;
     setIsSavingOwnerSecret(true);
     setOwnerSecretMessage("");
     try {
-      const res = await fetch("/api/bot/secrets", {
+      const res = await fetch(botUrl("/api/bot/secrets"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "OWNER_NUMBER", value: ownerSecretValue }),
@@ -994,7 +1271,7 @@ export default function App() {
     setIsSavingOwnerSecret(true);
     setOwnerSecretMessage("");
     try {
-      const res = await fetch("/api/bot/secrets", {
+      const res = await fetch(botUrl("/api/bot/secrets"), {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "OWNER_NUMBER" }),
@@ -1082,7 +1359,7 @@ export default function App() {
     setIsSavingCode(true);
     setEditorMessage("");
     try {
-      const res = await fetch("/api/bot/commands/save", {
+      const res = await fetch(botUrl("/api/bot/commands/save"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: selectedCommand.name, code: commandCode }),
@@ -1109,7 +1386,7 @@ export default function App() {
     setIsGeneratingCommand(true);
     setAiGenMessage("🧬 Nebula AI is synthesizing the code...");
     try {
-      const res = await fetch("/api/bot/commands/generate", {
+      const res = await fetch(botUrl("/api/bot/commands/generate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1151,7 +1428,7 @@ export default function App() {
     setIsSimulating(true);
 
     try {
-      const res = await fetch("/api/bot/simulate", {
+      const res = await fetch(botUrl("/api/bot/simulate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ senderName: "Owner", text: cmdText }),
@@ -1195,7 +1472,7 @@ export default function App() {
     setIsSimulating(true);
 
     try {
-      const res = await fetch("/api/bot/simulate", {
+      const res = await fetch(botUrl("/api/bot/simulate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ senderName: "Owner", text }),
@@ -1241,7 +1518,7 @@ export default function App() {
     setIsSimulating(true);
 
     try {
-      const res = await fetch("/api/bot/simulate", {
+      const res = await fetch(botUrl("/api/bot/simulate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ senderName: "Owner", text: userMsgText }),
@@ -1287,7 +1564,7 @@ export default function App() {
     setIsSimulating(true);
 
     try {
-      const res = await fetch("/api/bot/simulate", {
+      const res = await fetch(botUrl("/api/bot/simulate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ senderName: "Owner", text: "🎙️ [Voice Note]" }),
@@ -1349,7 +1626,7 @@ export default function App() {
         setIsTranscribing(true);
         try {
           const base64Audio = await blobToBase64(audioBlob);
-          const response = await fetch("/api/gemini/transcribe", {
+          const response = await fetch(botUrl("/api/gemini/transcribe"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ audioBase64: base64Audio, mimeType: "audio/webm" }),
@@ -1394,7 +1671,7 @@ export default function App() {
     setIsPlayingVoice(false);
 
     try {
-      const res = await fetch("/api/gemini/voice-conversation", {
+      const res = await fetch(botUrl("/api/gemini/voice-conversation"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: textPrompt }),
@@ -1441,7 +1718,7 @@ export default function App() {
         setIsTranscribing(true);
         try {
           const base64Audio = await blobToBase64(audioBlob);
-          const response = await fetch("/api/gemini/transcribe", {
+          const response = await fetch(botUrl("/api/gemini/transcribe"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ audioBase64: base64Audio, mimeType: "audio/webm" }),
@@ -1568,7 +1845,44 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-black text-zinc-100 font-sans" id="app_root">
+    <div className="flex h-screen w-full overflow-hidden bg-[#070709] text-zinc-100 font-sans relative" id="app_root">
+      {/* Liquid Glass Background Ambient Orbs */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none -z-50">
+        <div 
+          ref={bgContainerRef}
+          style={{
+            width: "100%",
+            height: "100%",
+            position: "relative",
+            pointerEvents: "none",
+            zIndex: -50,
+            willChange: "transform"
+          }}
+        >
+          <div 
+            className={`liquid-blob w-[450px] h-[450px] top-[-10%] left-[-5%] bg-[var(--color-blob-1,#d97706)] ${adaptiveMorphing ? 'liquid-blob-adaptive' : ''}`}
+            style={adaptiveMorphing ? {
+              borderRadius: blobStyles[0].borderRadius,
+              transform: blobStyles[0].transform
+            } : undefined}
+          />
+          <div 
+            className={`liquid-blob w-[600px] h-[600px] bottom-[-20%] right-[-10%] bg-[var(--color-blob-2,#ea580c)] ${adaptiveMorphing ? 'liquid-blob-adaptive' : ''}`}
+            style={adaptiveMorphing ? {
+              borderRadius: blobStyles[1].borderRadius,
+              transform: blobStyles[1].transform
+            } : undefined}
+          />
+          <div 
+            className={`liquid-blob w-[350px] h-[350px] top-[40%] left-[50%] bg-[var(--color-blob-1,#d97706)] ${adaptiveMorphing ? 'liquid-blob-adaptive' : ''}`}
+            style={adaptiveMorphing ? {
+              borderRadius: blobStyles[2].borderRadius,
+              transform: blobStyles[2].transform
+            } : { animationDelay: "-4s", animationDuration: "24s" }}
+          />
+        </div>
+      </div>
+
       {/* Reference Template Sidebar */}
       <Sidebar
         activeTab={activeTab}
@@ -1580,11 +1894,15 @@ export default function App() {
       />
 
       {/* Main Column */}
-      <div className="flex min-w-0 flex-1 flex-col bg-black">
+      <div 
+        className="flex min-w-0 flex-1 flex-col bg-black/45 relative z-10 border-l border-white/5"
+        style={{ backdropFilter: "blur(calc(var(--backdrop-blur-intensity, 1) * 24px))" }}
+      >
         {/* Reference Template Topbar */}
         <Topbar
           activeTab={activeTab}
           setActiveTab={setActiveTab}
+          activeBotId={activeBotId}
           botStatus={status}
           onResetSession={clearAuthAndRetryConnection}
           isResetting={isClearingAuth}
@@ -1619,17 +1937,23 @@ export default function App() {
           </div>
         )}
 
-        {/* Main scrollable body */}
+        {/* Main scrollable body — 8.77 : les sections reçoivent le bot sélectionné via le contexte */}
+        <ActiveBotProvider botId={activeBotId}>
         <main className="flex-1 overflow-y-auto bg-black p-3 sm:p-6 md:p-8 pb-28 md:pb-8 dark-scroll">
           <div className="max-w-6xl mx-auto space-y-6">
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeTab}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.15 }}
+                initial={{ opacity: 0, y: 15, scale: 0.995 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -15, scale: 0.995 }}
+                transition={{ type: "spring", stiffness: 380, damping: 28 }}
               >
+                {/* ============================================================ MULTI-BOTS */}
+                {activeTab === "bots" && (
+                  <BotsPanel activeBotId={activeBotId} onSelectBot={setActiveBotId} />
+                )}
+
                 {/* ============================================================ OVERVIEW */}
                 {activeTab === "overview" && (
                   <div className="space-y-6 animate-fade-in">
@@ -2234,7 +2558,7 @@ export default function App() {
                           <button onClick={() => setActiveTab("simulator")} className="px-4 py-2 bg-white/5 hover:bg-white/10 text-zinc-200 border border-white/10 rounded-xl text-xs font-medium flex items-center gap-1.5 transition cursor-pointer">
                             <MessageSquare className="w-3.5 h-3.5" /> Open Simulator
                           </button>
-                          <a href="/api/bot/download-zip" className="px-4 py-2 bg-white/5 hover:bg-white/10 text-zinc-200 border border-white/10 rounded-xl text-xs font-medium flex items-center gap-1.5 transition cursor-pointer">
+                          <a href={botUrl("/api/bot/download-zip")} className="px-4 py-2 bg-white/5 hover:bg-white/10 text-zinc-200 border border-white/10 rounded-xl text-xs font-medium flex items-center gap-1.5 transition cursor-pointer">
                             <FileDown className="w-3.5 h-3.5" /> Project ZIP
                           </a>
                         </div>
@@ -2266,7 +2590,7 @@ export default function App() {
                     {/* System summary */}
                     <div className="flex flex-col md:flex-row gap-4 md:h-52 select-none" id="system_summary_container">
                       {/* 3D Minecraft Engine Ignition Torch */}
-                      <div className="bg-[#0b0b0c] border border-white/10 rounded-xl p-5 shadow-sm flex flex-col items-center justify-between text-center relative overflow-hidden group hover:border-amber-500/30 transition-all duration-500 w-full md:flex-1 h-48 md:h-full">
+                      <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 shadow-xl flex flex-col items-center justify-between text-center relative overflow-hidden group hover:border-amber-500/30 hover:scale-[1.015] transition-all duration-300 w-full md:flex-1 h-48 md:h-full">
                         <div className="flex items-center justify-between w-full">
                           <span className="text-[10px] font-bold font-mono uppercase tracking-wider text-amber-400/80">Engine Power</span>
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${status === "connected" ? "bg-emerald-950 text-emerald-300 border border-emerald-800" : "bg-zinc-900 text-zinc-400 border border-zinc-700"}`}>
@@ -2295,7 +2619,7 @@ export default function App() {
                       </div>
 
                       {/* Engine status card - accordion */}
-                      <div className="bg-[#0b0b0c] border border-white/10 rounded-xl p-5 shadow-sm flex flex-col justify-between hover:border-white/20 hover:border-amber-500/30 transition-all duration-500 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
+                      <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 shadow-xl flex flex-col justify-between hover:border-amber-500/30 hover:scale-[1.015] transition-all duration-300 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
                         {/* Collapsed State (Vertical layout on desktop) */}
                         <div className="hidden md:flex group-hover:md:hidden flex-col items-center justify-between h-full py-2">
                           <Cpu className="w-5 h-5 text-amber-400 animate-pulse" />
@@ -2318,7 +2642,7 @@ export default function App() {
                       </div>
 
                       {/* Intelligence status card - accordion */}
-                      <div className="bg-[#0b0b0c] border border-white/10 rounded-xl p-5 shadow-sm flex flex-col justify-between hover:border-white/20 hover:border-amber-500/30 transition-all duration-500 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
+                      <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 shadow-xl flex flex-col justify-between hover:border-amber-500/30 hover:scale-[1.015] transition-all duration-300 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
                         {/* Collapsed State (Vertical layout on desktop) */}
                         <div className="hidden md:flex group-hover:md:hidden flex-col items-center justify-between h-full py-2">
                           <Sparkles className="w-5 h-5 text-amber-400 animate-pulse" />
@@ -2343,7 +2667,7 @@ export default function App() {
                       </div>
 
                       {/* Prefix status card - accordion */}
-                      <div className="bg-[#0b0b0c] border border-white/10 rounded-xl p-5 shadow-sm flex flex-col justify-between hover:border-white/20 hover:border-amber-500/30 transition-all duration-500 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
+                      <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 shadow-xl flex flex-col justify-between hover:border-amber-500/30 hover:scale-[1.015] transition-all duration-300 ease-in-out w-full md:w-14 md:flex-none md:hover:w-80 md:hover:flex-1 cursor-pointer overflow-hidden group min-h-[140px] md:h-full">
                         {/* Collapsed State (Vertical layout on desktop) */}
                         <div className="hidden md:flex group-hover:md:hidden flex-col items-center justify-between h-full py-2">
                           <Smartphone className="w-5 h-5 text-amber-400 animate-pulse" />
@@ -2392,7 +2716,7 @@ export default function App() {
                       {/* Left: Box Accordion Column (Cyber Node Status) */}
                       <div className="lg:col-span-2 flex flex-col gap-3">
                         <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Node Cluster Status</span>
-                        <div className="bg-[#0b0b0c] border border-white/10 rounded-2xl p-5 h-64 flex flex-col justify-between">
+                        <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 h-64 flex flex-col justify-between shadow-xl hover:border-amber-500/10 hover:scale-[1.01] transition-all duration-300">
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-bold text-zinc-300">Live Active Clusters</span>
                             <span className="w-2 h-2 rounded-full bg-[#00ffeb] animate-pulse" />
@@ -2429,7 +2753,7 @@ export default function App() {
                       {/* Right: Git Commits / Engine Core Updates Timeline (3 Columns) */}
                       <div className="lg:col-span-3 flex flex-col gap-3">
                         <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Engine Repository Commits</span>
-                        <div className="bg-[#0b0b0c] border border-white/10 rounded-2xl p-5 h-64 overflow-y-auto scrollbar">
+                        <div className="bg-[#0e0e11] border border-white/5 rounded-2xl p-5 h-64 overflow-y-auto scrollbar shadow-xl hover:border-amber-500/10 hover:scale-[1.01] transition-all duration-300">
                           <div className="relative pl-6 before:absolute before:top-2 before:bottom-2 before:left-3 before:w-[2px] before:border-l-2 before:border-dashed before:border-zinc-800">
                             
                             {/* Commit 1 */}
@@ -2509,7 +2833,9 @@ export default function App() {
                           </span>
                           <span className="text-xs text-zinc-500 font-mono">Baileys WebSocket Multi-Device v6.7.x</span>
                         </div>
-                        <h2 className="text-xl font-bold text-white tracking-tight">WhatsApp Connection Command Center</h2>
+                        <h2 className="text-xl font-bold text-white tracking-tight">
+                          <ShinyText text="WhatsApp Connection Command Center" speed={4} />
+                        </h2>
                         <p className="text-xs text-zinc-400 max-w-xl">
                           Pair your WhatsApp account directly to the bot engine via 8-digit Pairing Code (no second phone needed) or QR Code Scanner.
                         </p>
@@ -2660,19 +2986,14 @@ export default function App() {
                             </form>
 
                             {pairingCode && (
-                              <div className="mt-4 p-5 bg-black border-2 border-amber-500/40 rounded-2xl space-y-3 text-center">
-                                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">Your Secure Pairing Code</span>
-                                <div className="text-3xl font-mono font-black text-white tracking-widest py-2 bg-white/5 rounded-xl border border-white/10 select-all">
-                                  {pairingCode}
+                              <div className="mt-4 p-5 bg-[#18181b]/90 border border-white/10 rounded-2xl space-y-3.5 text-center">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 block select-none">Your Secure Pairing Code</span>
+                                <div className="flex justify-center">
+                                  <HeroSnippet symbol="" size="lg" color="warning">
+                                    {pairingCode}
+                                  </HeroSnippet>
                                 </div>
                                 <div className="flex items-center justify-center gap-3">
-                                  <button
-                                    onClick={copyPairingCode}
-                                    className="px-4 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
-                                  >
-                                    {pairingCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                                    {pairingCopied ? "Copied!" : "Copy Code"}
-                                  </button>
                                   <span className="text-xs text-zinc-400 font-mono">Expires in {pairingTimeLeft}s</span>
                                 </div>
 
@@ -2792,22 +3113,18 @@ export default function App() {
                     {/* WhatsApp header mockup */}
                     <div className="bg-[#1f2c34] text-white px-5 py-3.5 flex items-center justify-between border-b border-white/10 shadow-md">
                       <div className="flex items-center gap-3">
-                        <div className="relative">
-                          <img src={config.botImage} alt={config.botName} className="w-10 h-10 rounded-full object-cover border-2 border-white/20 ring-2 ring-amber-500/20" />
-                          <span className={`absolute bottom-0 right-0 w-3 h-3 border-2 border-[#1f2c34] rounded-full ${status === "connected" ? "bg-emerald-400 animate-pulse" : "bg-zinc-500"}`} />
-                        </div>
-                        <div>
-                          <h3 className="font-bold text-sm tracking-tight text-zinc-100 flex items-center gap-2">
-                            {config.botName}
-                            <span className="text-[10px] font-normal px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-mono">Sandbox</span>
-                          </h3>
-                          <p className="text-[10px] text-zinc-400">{isSimulating ? "typing..." : "online · controller simulator"}</p>
-                        </div>
+                        <HeroUser
+                          name={config.botName}
+                          description={isSimulating ? "typing..." : "online · controller simulator"}
+                          avatarUrl={config.botImage}
+                        />
+                        <HeroChip variant="flat" color="warning" size="sm">
+                          Sandbox
+                        </HeroChip>
                       </div>
-                      <div className="flex items-center gap-2 text-zinc-300 text-xs bg-black/40 px-3 py-1.5 rounded-full border border-white/10">
-                        <Globe className="w-3.5 h-3.5 text-amber-400" />
-                        Prefix: <strong className="text-white font-mono">{config.prefix}</strong>
-                      </div>
+                      <HeroChip variant="bordered" color="primary" size="md">
+                        Prefix: <span className="font-mono font-bold text-white ml-1">{config.prefix}</span>
+                      </HeroChip>
                     </div>
 
                     {/* Search */}
@@ -2959,24 +3276,37 @@ export default function App() {
                     <BatchDownloadStatus onSimulateCommand={simulateCommandFromDoc} />
 
                     <Card title="Playground Info" icon={HelpCircle}>
-                      <ul className="space-y-2.5 text-xs text-zinc-400">
-                        {[
-                          `Commands run locally against the real engine — prefix: ${config.prefix}`,
-                          "You are simulated as the owner and a group admin, so every command is testable",
-                          "Media, reactions and AI images appear right in the chat",
-                          "Try: .menu · .ping · .roast me · .trivia · .download <url>",
-                        ].map((tip, i) => (
-                          <li key={i} className="flex items-start gap-2">
-                            <span className="mt-1 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-                            <span>{tip}</span>
-                          </li>
-                        ))}
+                      <ul className="space-y-3.5 text-xs text-zinc-400">
+                        <li className="flex items-start gap-2.5">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                          <div>
+                            <span>Commands run against the live engine using prefix: </span>
+                            <HeroChip variant="flat" color="warning" size="sm" className="ml-1 font-mono">{config.prefix}</HeroChip>
+                          </div>
+                        </li>
+                        <li className="flex items-start gap-2.5">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                          <span>You are simulated as the system Owner, enabling all high-privilege operations.</span>
+                        </li>
+                        <li className="flex items-start gap-2.5">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                          <span>Real-time attachments, voice notes, and downloads render directly.</span>
+                        </li>
+                        <li className="flex items-start gap-2.5">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                          <div className="flex items-center flex-wrap gap-1">
+                            <span>Press </span>
+                            <HeroKbd keys={["enter"]}>Send</HeroKbd>
+                            <span> or </span>
+                            <HeroKbd keys={["ctrl", "enter"]}>Submit</HeroKbd>
+                          </div>
+                        </li>
                       </ul>
                     </Card>
 
                     <Card title="Quick Send" icon={Zap}>
                       <div className="flex flex-wrap gap-2">
-                        {[".ping", ".menu", ".joke", ".quote", ".truth", ".dare", ".roast me", ".rps rock", ".weather Bafoussam"].map((cmd) => (
+                        {[".ping", ".menu", ".anime", ".yts", ".ytv", ".ytm", ".w", ".sweb"].map((cmd) => (
                           <button
                             key={cmd}
                             onClick={() => simulateCommandFromDoc(cmd)}
@@ -3072,10 +3402,7 @@ export default function App() {
                               {CATEGORY_LIST.map((cat) => {
                                 const count = cat === "All"
                                   ? commands.length
-                                  : commands.filter(c => {
-                                      const pCat = (c.parentCategory || c.category).toLowerCase();
-                                      return pCat === cat.toLowerCase() || c.category.toLowerCase() === cat.toLowerCase();
-                                    }).length;
+                                  : commands.filter(c => commandMatchesCategory(c, cat)).length;
                                 return (
                                   <button
                                     key={cat}
@@ -3109,10 +3436,7 @@ export default function App() {
                                   cmd.name.toLowerCase().includes(cmdSearchQuery.toLowerCase()) ||
                                   cmd.description.toLowerCase().includes(cmdSearchQuery.toLowerCase()) ||
                                   cmd.category.toLowerCase().includes(cmdSearchQuery.toLowerCase());
-                                const pCat = (cmd.parentCategory || cmd.category).toLowerCase();
-                                const matchesCat = cmdCategoryFilter === "All" ||
-                                  pCat === cmdCategoryFilter.toLowerCase() ||
-                                  cmd.category.toLowerCase() === cmdCategoryFilter.toLowerCase();
+                                const matchesCat = cmdCategoryFilter === "All" || commandMatchesCategory(cmd, cmdCategoryFilter);
                                 return matchesSearch && matchesCat;
                               })
                               .map((cmd) => {
@@ -3154,10 +3478,7 @@ export default function App() {
                                 cmd.name.toLowerCase().includes(cmdSearchQuery.toLowerCase()) ||
                                 cmd.description.toLowerCase().includes(cmdSearchQuery.toLowerCase()) ||
                                 cmd.category.toLowerCase().includes(cmdSearchQuery.toLowerCase());
-                              const pCat = (cmd.parentCategory || cmd.category).toLowerCase();
-                              const matchesCat = cmdCategoryFilter === "All" ||
-                                pCat === cmdCategoryFilter.toLowerCase() ||
-                                cmd.category.toLowerCase() === cmdCategoryFilter.toLowerCase();
+                              const matchesCat = cmdCategoryFilter === "All" || commandMatchesCategory(cmd, cmdCategoryFilter);
                               return matchesSearch && matchesCat;
                             }).length === 0 && (
                               <div className="p-4 text-center text-xs text-zinc-500 italic">
@@ -3176,7 +3497,7 @@ export default function App() {
                               <label className="text-[10px] font-bold text-zinc-300">Command Trigger</label>
                               <input
                                 type="text"
-                                placeholder="e.g. quote"
+                                placeholder="e.g. salut"
                                 value={aiCmdName}
                                 onChange={(e) => setAiCmdName(e.target.value)}
                                 className="w-full px-3 py-2 border border-white/10 bg-black text-zinc-100 rounded-lg text-xs focus:outline-none focus:border-amber-400 placeholder-zinc-600 font-mono"
@@ -3207,7 +3528,7 @@ export default function App() {
                             <div className="space-y-1">
                               <label className="text-[10px] font-bold text-zinc-300">AI Prompt Instruction</label>
                               <textarea
-                                placeholder="e.g. Fetches a funny quote and responds in WhatsApp"
+                                placeholder="e.g. Salue le groupe et répond dans WhatsApp"
                                 value={aiPrompt}
                                 onChange={(e) => setAiPrompt(e.target.value)}
                                 rows={2}
@@ -3311,10 +3632,7 @@ export default function App() {
                           {CATEGORY_LIST.map((cat) => {
                             const count = cat === "All"
                               ? commands.length
-                              : commands.filter(c => {
-                                  const pCat = (c.parentCategory || c.category).toLowerCase();
-                                  return pCat === cat.toLowerCase() || c.category.toLowerCase() === cat.toLowerCase();
-                                }).length;
+                              : commands.filter(c => commandMatchesCategory(c, cat)).length;
                             return (
                               <button
                                 key={cat}
@@ -3349,10 +3667,7 @@ export default function App() {
                             <tbody className="divide-y divide-white/5 text-xs">
                               {commands
                                 .filter((cmd) => {
-                                  const pCat = (cmd.parentCategory || cmd.category).toLowerCase();
-                                  const matchesCategory = docSelectedCategory === "All" ||
-                                    pCat === docSelectedCategory.toLowerCase() ||
-                                    cmd.category.toLowerCase() === docSelectedCategory.toLowerCase();
+                                  const matchesCategory = docSelectedCategory === "All" || commandMatchesCategory(cmd, docSelectedCategory);
                                   const matchesSearch =
                                     cmd.name.toLowerCase().includes(docSearchQuery.toLowerCase()) ||
                                     cmd.description.toLowerCase().includes(docSearchQuery.toLowerCase()) ||
@@ -3603,6 +3918,11 @@ export default function App() {
                 </div>
               )}
 
+              {/* ============================================================ SYSTEM DIAGNOSTICS */}
+              {activeTab === "diagnostics" && (
+                <SystemDiagnostics />
+              )}
+
               {/* ============================================================ GEMINI COGNITIVE AI */}
               {activeTab === "gemini" && (
                 <div className="space-y-6">
@@ -3841,69 +4161,76 @@ export default function App() {
 
                   {/* Plugin Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                    {[
-                      { id: "baileys-core", name: "Baileys Multi-Device Core", category: "Core", desc: "WebSocket transport layer with auto-reconnect and auth state persistence.", latency: "12ms", author: "Nebula" },
-                      { id: "gemini-ai", name: "Gemini 2.5 Cognitive AI", category: "AI", desc: "Natural language conversations, image reasoning, and speech transcription.", latency: "420ms", author: "Google DeepMind" },
-                      { id: "media-downloader", name: "Media & Sticker Converter", category: "Utility", desc: "Convert images, videos, and GIFs into WhatsApp WebP animated stickers.", latency: "180ms", author: "FFmpeg" },
-                      { id: "group-guard", name: "Group Guard & Admin Suite", category: "Security", desc: "Welcome cards, farewell notifications, anti-link invites, and group broadcast.", latency: "15ms", author: "Nebula" },
-                      { id: "sticker-maker", name: "Universal Media Scraper", category: "Utility", desc: "Download high quality videos from YouTube, TikTok, Instagram, and Twitter.", latency: "650ms", author: "MediaAPI" },
-                      { id: "anti-spam", name: "Anti-Spam & Rate Limiter", category: "Security", desc: "Per-user token bucket rate limiter and blacklist phone number enforcement.", latency: "2ms", author: "SentryGuard" },
-                      { id: "voice-synthesis", name: "ElevenLabs / Gemini TTS", category: "AI", desc: "Transform responses into realistic voice audio notes sent directly to chats.", latency: "520ms", author: "ElevenLabs" },
-                      { id: "crypto-ticker", name: "Live Market & Crypto Ticker", category: "Utility", desc: "Real-time BTC, ETH, SOL, and Forex exchange rates with price alerts.", latency: "95ms", author: "CoinGecko" },
-                    ]
-                      .filter((p) => pluginFilter === "All" || p.category === pluginFilter)
-                      .map((plugin) => {
-                        const isEnabled = pluginStates[plugin.id] !== false;
-                        return (
-                          <div
-                            key={plugin.id}
-                            className="bg-[#0b0b0c] border border-white/10 rounded-2xl p-5 shadow-sm space-y-4 hover:border-white/20 transition flex flex-col justify-between"
-                          >
-                            <div className="space-y-3">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="flex items-center gap-2.5">
-                                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
-                                    <Package className="w-4 h-4" />
-                                  </div>
-                                  <div>
-                                    <h4 className="font-bold text-white text-sm tracking-tight">{plugin.name}</h4>
-                                    <div className="flex items-center gap-2 mt-0.5">
-                                      <span className="text-[10px] font-bold px-2 py-0.2 rounded bg-white/5 border border-white/10 text-zinc-400">
-                                        {plugin.category}
-                                      </span>
-                                      <span className="text-[10px] text-zinc-500 font-mono">{plugin.latency}</span>
+                    <AnimatePresence mode="popLayout">
+                      {[
+                        { id: "baileys-core", name: "Baileys Multi-Device Core", category: "Core", desc: "WebSocket transport layer with auto-reconnect and auth state persistence.", latency: "12ms", author: "Nebula" },
+                        { id: "gemini-ai", name: "Gemini 2.5 Cognitive AI", category: "AI", desc: "Natural language conversations, image reasoning, and speech transcription.", latency: "420ms", author: "Google DeepMind" },
+                        { id: "media-downloader", name: "Media & Sticker Converter", category: "Utility", desc: "Convert images, videos, and GIFs into WhatsApp WebP animated stickers.", latency: "180ms", author: "FFmpeg" },
+                        { id: "group-guard", name: "Group Guard & Admin Suite", category: "Security", desc: "Welcome cards, farewell notifications, anti-link invites, and group broadcast.", latency: "15ms", author: "Nebula" },
+                        { id: "sticker-maker", name: "Universal Media Scraper", category: "Utility", desc: "Download high quality videos from YouTube, TikTok, Instagram, and Twitter.", latency: "650ms", author: "MediaAPI" },
+                        { id: "anti-spam", name: "Anti-Spam & Rate Limiter", category: "Security", desc: "Per-user token bucket rate limiter and blacklist phone number enforcement.", latency: "2ms", author: "SentryGuard" },
+                        { id: "voice-synthesis", name: "ElevenLabs / Gemini TTS", category: "AI", desc: "Transform responses into realistic voice audio notes sent directly to chats.", latency: "520ms", author: "ElevenLabs" },
+                        { id: "crypto-ticker", name: "Live Market & Crypto Ticker", category: "Utility", desc: "Real-time BTC, ETH, SOL, and Forex exchange rates with price alerts.", latency: "95ms", author: "CoinGecko" },
+                      ]
+                        .filter((p) => pluginFilter === "All" || p.category === pluginFilter)
+                        .map((plugin) => {
+                          const isEnabled = pluginStates[plugin.id] !== false;
+                          return (
+                            <motion.div
+                              key={plugin.id}
+                              layout
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              exit={{ opacity: 0, scale: 0.9 }}
+                              transition={{ duration: 0.25, ease: "easeInOut" }}
+                              className="bg-[#0b0b0c] border border-white/10 rounded-2xl p-5 shadow-sm space-y-4 hover:border-white/20 transition flex flex-col justify-between"
+                            >
+                              <div className="space-y-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex items-center gap-2.5">
+                                    <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                                      <Package className="w-4 h-4" />
+                                    </div>
+                                    <div>
+                                      <h4 className="font-bold text-white text-sm tracking-tight">{plugin.name}</h4>
+                                      <div className="flex items-center gap-2 mt-0.5">
+                                        <span className="text-[10px] font-bold px-2 py-0.2 rounded bg-white/5 border border-white/10 text-zinc-400">
+                                          {plugin.category}
+                                        </span>
+                                        <span className="text-[10px] text-zinc-500 font-mono">{plugin.latency}</span>
+                                      </div>
                                     </div>
                                   </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setPluginStates((prev: Record<string, boolean>) => ({
+                                        ...prev,
+                                        [plugin.id]: !isEnabled,
+                                      }))
+                                    }
+                                    className={`w-10 h-5 flex items-center rounded-full p-0.5 transition duration-200 cursor-pointer ${
+                                      isEnabled ? "bg-amber-500 justify-end" : "bg-zinc-800 justify-start"
+                                    }`}
+                                  >
+                                    <span className={`w-4 h-4 rounded-full shadow-md ${isEnabled ? "bg-black" : "bg-zinc-400"}`} />
+                                  </button>
                                 </div>
 
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setPluginStates((prev: Record<string, boolean>) => ({
-                                      ...prev,
-                                      [plugin.id]: !isEnabled,
-                                    }))
-                                  }
-                                  className={`w-10 h-5 flex items-center rounded-full p-0.5 transition duration-200 cursor-pointer ${
-                                    isEnabled ? "bg-amber-500 justify-end" : "bg-zinc-800 justify-start"
-                                  }`}
-                                >
-                                  <span className={`w-4 h-4 rounded-full shadow-md ${isEnabled ? "bg-black" : "bg-zinc-400"}`} />
-                                </button>
+                                <p className="text-xs text-zinc-400 leading-relaxed">{plugin.desc}</p>
                               </div>
 
-                              <p className="text-xs text-zinc-400 leading-relaxed">{plugin.desc}</p>
-                            </div>
-
-                            <div className="pt-3 border-t border-white/5 flex items-center justify-between text-[11px] text-zinc-500">
-                              <span>Author: {plugin.author}</span>
-                              <span className={`font-semibold ${isEnabled ? "text-emerald-400" : "text-zinc-600"}`}>
-                                {isEnabled ? "Active" : "Disabled"}
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })}
+                              <div className="pt-3 border-t border-white/5 flex items-center justify-between text-[11px] text-zinc-500">
+                                <span>Author: {plugin.author}</span>
+                                <span className={`font-semibold ${isEnabled ? "text-emerald-400" : "text-zinc-600"}`}>
+                                  {isEnabled ? "Active" : "Disabled"}
+                                </span>
+                              </div>
+                            </motion.div>
+                          );
+                        })}
+                    </AnimatePresence>
                   </div>
                 </div>
               )}
@@ -4210,6 +4537,48 @@ export default function App() {
                         )}
                       </div>
 
+                                            {/* NVIDIA_NIM_API_KEY (AI fallback) */}
+                      <div className="p-4 bg-white/5 border border-white/10 rounded-xl space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="text-xs font-bold text-white block">NVIDIA_NIM_API_KEY</span>
+                            <span className="text-[10px] text-zinc-400">Optional — AI fallback when Gemini is unavailable (free key: build.nvidia.com)</span>
+                          </div>
+                          {nimSecretStatus?.configured ? (
+                            <span className="text-[10px] bg-emerald-950/60 text-emerald-400 border border-emerald-800/80 font-bold px-2.5 py-1 rounded-full flex items-center gap-1">
+                              <CheckCircle className="w-3 h-3" /> Configured ({nimSecretStatus.masked})
+                            </span>
+                          ) : (
+                            <span className="text-[10px] bg-zinc-900 text-zinc-400 border border-zinc-700 font-bold px-2.5 py-1 rounded-full">
+                              Not Configured
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex gap-2">
+                          <input
+                            type="password"
+                            value={nimSecretValue}
+                            onChange={(e) => setNimSecretValue(e.target.value)}
+                            placeholder="nvapi-..."
+                            className="flex-1 px-3.5 py-2.5 bg-black border border-white/10 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-amber-400 font-mono"
+                          />
+                          <button
+                            onClick={saveNimSecret}
+                            disabled={isSavingNimSecret || !nimSecretValue.trim()}
+                            className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-black font-bold text-xs rounded-xl transition cursor-pointer flex items-center gap-1.5"
+                          >
+                            {isSavingNimSecret ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                            Save Secret
+                          </button>
+                        </div>
+                        {nimSecretMessage && (
+                          <div className="p-2 bg-white/5 border border-white/5 rounded-lg text-xs text-amber-300 font-medium">
+                            {nimSecretMessage}
+                          </div>
+                        )}
+                      </div>
+
                       {/* OWNER_NUMBER */}
                       <div className="p-4 bg-white/5 border border-white/10 rounded-xl space-y-3">
                         <div className="flex items-center justify-between">
@@ -4233,7 +4602,7 @@ export default function App() {
                             type="text"
                             value={ownerSecretValue}
                             onChange={(e) => setOwnerSecretValue(e.target.value)}
-                            placeholder="e.g. 2376XXXXXXXX"
+                            placeholder="country code + number, e.g. 2250700000000"
                             className="flex-1 px-3.5 py-2.5 bg-black border border-white/10 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-amber-400 font-mono"
                           />
                           <button
@@ -4435,7 +4804,7 @@ export default function App() {
                       </p>
                     </div>
                     <a
-                      href="/api/bot/download-zip"
+                      href={botUrl("/api/bot/download-zip")}
                       className="px-6 py-3 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-sm rounded-xl flex items-center gap-2 transition shadow-lg shadow-amber-500/10 whitespace-nowrap cursor-pointer"
                     >
                       <FileDown className="w-4 h-4" />
@@ -4577,7 +4946,7 @@ export default function App() {
                         <input
                           type="text"
                           value={formConfig.ownerNumber || ""}
-                          placeholder="e.g. 2376XXXXXXXX"
+                          placeholder="country code + number, e.g. 2250700000000"
                           onChange={(e) => setFormConfig({ ...formConfig, ownerNumber: e.target.value })}
                           className="w-full px-3.5 py-2.5 border border-white/10 rounded-xl text-xs bg-black text-white focus:outline-none focus:border-amber-400 placeholder-zinc-600 transition shadow-sm font-mono"
                         />
@@ -4713,6 +5082,95 @@ export default function App() {
                     </div>
                   </Card>
 
+                  {/* Liquid Glass Aesthetic Customization */}
+                  <Card title="Liquid Glass Aesthetic" icon={Sparkles}>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="p-5 bg-black/40 rounded-xl border border-white/10 flex items-center justify-between gap-4">
+                        <div className="space-y-1">
+                          <p className="text-xs font-bold text-white">Adaptive Morphing</p>
+                          <p className="text-[10px] text-zinc-400">
+                            Uses JavaScript to randomize blob transition coordinates every 15s for organic liquidity
+                          </p>
+                        </div>
+                        <Switch
+                          checked={adaptiveMorphing}
+                          onChange={(checked) => setAdaptiveMorphing(checked)}
+                          id="switch-adaptive-morphing"
+                          name="adaptiveMorphing"
+                        />
+                      </div>
+
+                      <div className="p-5 bg-black/40 rounded-xl border border-white/10 flex items-center justify-between gap-4">
+                        <div className="space-y-1">
+                          <p className="text-xs font-bold text-white">Motion Sensitivity</p>
+                          <p className="text-[10px] text-zinc-400">
+                            Orgasmic scale adjustments on background orbs based on mouse movement and scroll speed
+                          </p>
+                        </div>
+                        <Switch
+                          checked={motionSensitivity}
+                          onChange={(checked) => setMotionSensitivity(checked)}
+                          id="switch-motion-sensitivity"
+                          name="motionSensitivity"
+                        />
+                      </div>
+
+                      <div className="p-5 bg-black/40 rounded-xl border border-white/10 space-y-3 flex flex-col justify-center">
+                        <div className="flex items-center justify-between">
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-white">Backdrop Blur Strength</p>
+                            <p className="text-[10px] text-zinc-400">
+                              Globally scale the depth-of-field glass blurring strength
+                            </p>
+                          </div>
+                          <span className="text-xs font-bold bg-white/5 border border-white/10 text-zinc-200 px-2.5 py-1 rounded-lg font-mono">
+                            {Math.round(blurIntensity * 100)}%
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-[10px] text-zinc-500 font-bold font-mono">0%</span>
+                          <input
+                            type="range"
+                            min="0"
+                            max="2"
+                            step="0.1"
+                            value={blurIntensity}
+                            onChange={(e) => setBlurIntensity(parseFloat(e.target.value))}
+                            className="flex-1 accent-[var(--theme-primary,#f59e0b)] bg-zinc-800 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                          <span className="text-[10px] text-zinc-500 font-bold font-mono">200%</span>
+                        </div>
+                      </div>
+
+                      <div className="p-5 bg-black/40 rounded-xl border border-white/10 space-y-3 flex flex-col justify-center">
+                        <div className="flex items-center justify-between">
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-white">Blob Animation Speed</p>
+                            <p className="text-[10px] text-zinc-400">
+                              Adjust morphing speed of background elements in real-time
+                            </p>
+                          </div>
+                          <span className="text-xs font-bold bg-white/5 border border-white/10 text-zinc-200 px-2.5 py-1 rounded-lg font-mono">
+                            {animationDuration}s
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-[10px] text-zinc-500 font-bold font-mono">4s (Fast)</span>
+                          <input
+                            type="range"
+                            min="4"
+                            max="40"
+                            step="1"
+                            value={animationDuration}
+                            onChange={(e) => setAnimationDuration(parseFloat(e.target.value))}
+                            className="flex-1 accent-[var(--theme-primary,#f59e0b)] bg-zinc-800 rounded-lg appearance-none h-1.5 cursor-pointer"
+                          />
+                          <span className="text-[10px] text-zinc-500 font-bold font-mono">40s (Chill)</span>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+
                   {/* Secrets */}
                   <Card title="API Secrets" icon={KeyRound}>
                     <div className="space-y-4">
@@ -4762,6 +5220,52 @@ export default function App() {
                         )}
                       </div>
 
+                                            {/* NVIDIA_NIM_API_KEY (AI fallback) */}
+                      <div className="space-y-2 border-b border-white/5 pb-4">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono font-bold text-xs text-white">NVIDIA_NIM_API_KEY</span>
+                          {nimSecretStatus?.configured ? (
+                            <span className="text-[10px] bg-emerald-950/60 text-emerald-400 border border-emerald-800/80 font-bold px-2 py-1 rounded-full flex items-center gap-1">
+                              <CheckCircle className="w-3 h-3" /> Configured ({nimSecretStatus.masked})
+                            </span>
+                          ) : (
+                            <span className="text-[10px] bg-zinc-900 text-zinc-400 border border-zinc-700 font-bold px-2 py-1 rounded-full">Not configured</span>
+                          )}
+                        </div>
+                        <div className="flex gap-2 flex-wrap">
+                          <input
+                            type="password"
+                            value={nimSecretValue}
+                            onChange={(e) => setNimSecretValue(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && saveNimSecret()}
+                            placeholder="Paste your NVIDIA NIM key (nvapi-...)..."
+                            autoComplete="off"
+                            className="flex-1 min-w-[220px] px-3.5 py-2.5 border border-white/10 rounded-xl text-xs bg-black text-white focus:outline-none focus:border-amber-400 transition shadow-sm font-mono"
+                          />
+                          <button
+                            onClick={saveNimSecret}
+                            disabled={isSavingNimSecret || !nimSecretValue.trim()}
+                            className="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-black font-bold text-xs rounded-xl flex items-center gap-1.5 transition shadow-sm cursor-pointer"
+                          >
+                            {isSavingNimSecret ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                            Save
+                          </button>
+                          {nimSecretStatus?.configured && (
+                            <button
+                              onClick={clearNimSecret}
+                              disabled={isSavingNimSecret}
+                              title="Remove the NVIDIA key"
+                              className="p-2.5 border border-white/10 hover:bg-rose-500/20 hover:border-rose-500/40 text-zinc-400 hover:text-rose-400 rounded-xl transition shadow-sm cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                        {nimSecretMessage && (
+                          <div className="p-2 bg-white/5 border border-white/5 rounded-lg text-xs text-amber-300 font-medium">{nimSecretMessage}</div>
+                        )}
+                      </div>
+
                       {/* OWNER_NUMBER */}
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
@@ -4780,7 +5284,7 @@ export default function App() {
                             value={ownerSecretValue}
                             onChange={(e) => setOwnerSecretValue(e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && saveOwnerSecret()}
-                            placeholder="e.g. 2376XXXXXXXX"
+                            placeholder="country code + number, e.g. 2250700000000"
                             autoComplete="off"
                             className="flex-1 min-w-[220px] px-3.5 py-2.5 border border-white/10 rounded-xl text-xs bg-black text-white focus:outline-none focus:border-amber-400 transition shadow-sm font-mono"
                           />
@@ -4877,7 +5381,7 @@ export default function App() {
                             setIsClearingAuth(true);
                             addSystemLog("🧹 Clearing session auth directory without reconnecting...");
                             try {
-                              const res = await fetch("/api/bot/clear-auth", { method: "POST" });
+                              const res = await fetch(botUrl("/api/bot/clear-auth"), { method: "POST" });
                               const data = await res.json().catch(() => ({}));
                               if (res.ok && data.success) {
                                 const count = data.filesRemoved || 0;
@@ -4945,6 +5449,7 @@ export default function App() {
           </AnimatePresence>
         </div>
       </main>
+        </ActiveBotProvider>
 
         {/* Footer */}
         <footer className="px-6 py-4 text-center text-zinc-500 text-xs border-t border-white/10 bg-black">

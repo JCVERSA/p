@@ -3,38 +3,24 @@ import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
 import pingCommand from "./commands/ping.js";
+import ytvideoCommand from "./commands/ytvideo.js";
+import songCommand from "./commands/song.js";
+import ytlinkCommand from "./commands/ytlink.js";
+import tiktokCommand from "./commands/tiktok.js";
+import instagramCommand from "./commands/instagram.js";
+import qrCommand from "./commands/qr.js";
+import base64Command from "./commands/base64.js";
+import getppCommand from "./commands/getpp.js";
+import whoisCommand from "./commands/whois.js";
+import traceCommand from "./commands/trace.js";
 import menuCommand from "./commands/menu.js";
 import aiCommand from "./commands/ai.js";
-import imageCommand from "./commands/image.js";
-import jokeCommand from "./commands/joke.js";
-import quoteCommand from "./commands/quote.js";
-import ownerCommand from "./commands/owner.js";
-import dareCommand from "./commands/dare.js";
-import truthCommand from "./commands/truth.js";
-import waifuCommand from "./commands/waifu.js";
-import roastCommand from "./commands/roast.js";
-import rpsCommand from "./commands/rps.js";
-import triviaCommand from "./commands/trivia.js";
-import weatherCommand from "./commands/weather.js";
-import calcCommand from "./commands/calc.js";
 import defineCommand from "./commands/define.js";
-import downloadCommand from "./commands/download.js";
-import translateCommand from "./commands/translate.js";
-import hidetagCommand from "./commands/hidetag.js";
-import antilinkCommand from "./commands/antilink.js";
-import antitagCommand from "./commands/antitag.js";
-import antibotCommand from "./commands/antibot.js";
-import membersCommand from "./commands/members.js";
-import kickCommand from "./commands/kick.js";
-import promoteCommand from "./commands/promote.js";
-import demoteCommand from "./commands/demote.js";
 import helpCommand from "./commands/help.js";
 import swebCommand from "./commands/sweb.js";
-import videoCommand from "./commands/video.js";
+import watchCommand from "./commands/watch.js";
 import animeCommand from "./commands/novabox.js";
-import accessCommand from "./commands/access.js";
 import { getCompiledPath } from "./commandCompiler.js";
-import { loadImportedCommands } from "./importedBridge.js";
 
 /**
  * Normalizes multi-level categories into a structured parent category
@@ -74,46 +60,57 @@ export function getCommandsDir(): string {
 // Keep a map and list of registered commands
 const commandsMap = new Map<string, BotCommand>();
 
+/** Disk files that are the SOURCE of a statically-imported built-in command
+ *  whose filename differs from its registered command name. */
+const BUILTIN_SOURCE_FILE_EXCEPTIONS = new Set(["novabox"]);
+
 /** Commands loaded from disk (name -> module), kept in memory between reloads. */
 const diskCommandCache = new Map<string, BotCommand>();
 
 // Built-in commands are statically imported so they always work, including in
 // the production bundle where dynamic .ts loading is unavailable.
-const defaultCommands = [
-  pingCommand,
-  menuCommand,
-  helpCommand,
-  aiCommand,
-  imageCommand,
-  jokeCommand,
-  quoteCommand,
-  ownerCommand,
-  dareCommand,
-  truthCommand,
-  waifuCommand,
-  roastCommand,
-  rpsCommand,
-  triviaCommand,
-  weatherCommand,
-  calcCommand,
-  defineCommand,
-  downloadCommand,
-  translateCommand,
-  hidetagCommand,
-  antilinkCommand,
-  antitagCommand,
-  antibotCommand,
-  membersCommand,
-  kickCommand,
-  promoteCommand,
-  demoteCommand,
-  swebCommand,
-  videoCommand,
-  animeCommand,
-  accessCommand,
-];
+// 8.80 (audit harnais F1) : la liste est construite DANS une fonction, plus
+// jamais au top-level du module. Le cycle registry -> commands/ai -> persona
+// -> commandKnowledge -> registry rendait aiCommand indefini (TDZ) quand
+// commands/ai.ts etait importe en premier ; differe au runtime, tous les
+// ordres d'entree sont surs.
+function getBuiltinCommands(): BotCommand[] {
+  return [
+    pingCommand,
+    menuCommand,
+    helpCommand,
+    aiCommand,
+    defineCommand,
+    swebCommand,
+    watchCommand,
+    animeCommand,
+    ytvideoCommand,
+    songCommand,
+    ytlinkCommand,
+    tiktokCommand,
+    instagramCommand,
+    qrCommand,
+    base64Command,
+    getppCommand,
+    whoisCommand,
+    traceCommand,
+  ];
+}
 
 function register(cmd: BotCommand) {
+  const key = cmd.name.toLowerCase();
+  // 8.80 (audit harnais F3) : ré-enregistrer une commande doit purger les
+  // alias de la version PRÉCÉDENTE — sinon une mise à jour avec moins
+  // d'alias laissait des entrées fantômes pointant sur l'ancien objet.
+  const previous = commandsMap.get(key);
+  if (previous?.aliases) {
+    for (const alias of previous.aliases) {
+      const aliasKey = alias.toLowerCase();
+      if (aliasKey !== key && commandsMap.get(aliasKey) === previous) {
+        commandsMap.delete(aliasKey);
+      }
+    }
+  }
   const parentCategory = cmd.parentCategory || getTopLevelCategory(cmd.category);
   const normalizedCmd: BotCommand = {
     ...cmd,
@@ -188,18 +185,19 @@ async function loadCommandModule(name: string): Promise<BotCommand | null> {
  * (Re)builds the registry: static built-ins first, then every command file
  * found on disk that does not collide with a built-in name.
  */
+/** True once initRegistry() has completed (call sites skip double boot init). */
+export function isRegistryReady(): boolean {
+  return registryInitialized;
+}
+
+let registryInitialized = false;
+
 export async function initRegistry(): Promise<void> {
   commandsMap.clear();
 
-  // 1. Register imported and bridged commands first
-  try {
-    const importedCmds = loadImportedCommands();
-    importedCmds.forEach(register);
-  } catch (err: any) {
-    console.error("[Registry] Failed to load bridged commands:", err.message);
-  }
-
-  // 2. Register static built-in commands next so they take precedence over imported ones
+  // Register the static built-ins (audit 8.56: the 145-file legacy corpus and
+  // its CJS bridge were REMOVED — owner decision; native commands only).
+  const defaultCommands = getBuiltinCommands();
   defaultCommands.forEach(register);
 
   const builtinNames = new Set(defaultCommands.map((cmd) => cmd.name.toLowerCase()));
@@ -214,6 +212,11 @@ export async function initRegistry(): Promise<void> {
   for (const file of files) {
     const name = file.replace(/\.ts$/, "").toLowerCase();
     if (builtinNames.has(name)) continue; // built-ins win to avoid duplicates
+    // Some built-in commands live in a source file whose name differs from
+    // the registered command name (novabox.ts exports the "anime" command).
+    // Loading those from disk is redundant in dev (skipped as duplicate) and
+    // impossible in production (plain Node cannot parse TS) — skip quietly.
+    if (BUILTIN_SOURCE_FILE_EXCEPTIONS.has(name)) continue;
     const cmd = await loadCommandModule(name);
     // L3: a disk file whose exported name is already registered (e.g.
     // novabox.ts exporting "anime", a static built-in) is a duplicate —
@@ -239,6 +242,7 @@ export async function initRegistry(): Promise<void> {
   }
 
   updateGlobalCommands();
+  registryInitialized = true;
   console.log(`[Registry] Ready: ${uniqueCommands().length} commands registered.`);
 }
 
@@ -256,7 +260,19 @@ export function registerCommand(cmd: BotCommand) {
 }
 
 export function removeCommand(name: string) {
-  commandsMap.delete(name.toLowerCase());
+  const key = name.toLowerCase();
+  const cmd = commandsMap.get(key);
+  // 8.79: retirer une commande doit aussi retirer ses alias — sinon la
+  // commande supprimée restait atteignable via `.alias` (trou trouvé par
+  // les tests du harnais IA). On ne retire un alias que s'il pointe encore
+  // sur CETTE commande (il a pu être ré-enregistré par une autre entre-temps).
+  if (cmd?.aliases) {
+    for (const alias of cmd.aliases) {
+      const aliasKey = alias.toLowerCase();
+      if (commandsMap.get(aliasKey) === cmd) commandsMap.delete(aliasKey);
+    }
+  }
+  commandsMap.delete(key);
   updateGlobalCommands();
 }
 
