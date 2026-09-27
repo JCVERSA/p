@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useBotUrl } from "../lib/botContext";
 import { motion, AnimatePresence } from "motion/react";
+import HeroChip from "./HeroChip";
 import {
   Download,
   FolderArchive,
@@ -76,6 +78,7 @@ export interface BatchDownloadStatusProps {
 export const BatchDownloadStatus: React.FC<BatchDownloadStatusProps> = ({
   className = "",
 }) => {
+  const botUrl = useBotUrl();
   const [jobs, setJobs] = useState<BatchDownloadJob[]>([]);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
@@ -101,7 +104,7 @@ export const BatchDownloadStatus: React.FC<BatchDownloadStatusProps> = ({
 
   const fetchBatchJobs = async () => {
     try {
-      const res = await fetch("/api/batch-downloads");
+      const res = await fetch(botUrl("/api/batch-downloads"));
       if (!res.ok) return;
       const data = await res.json();
       if (Array.isArray(data.jobs)) {
@@ -139,7 +142,7 @@ export const BatchDownloadStatus: React.FC<BatchDownloadStatusProps> = ({
   const handleStartSimulatedBatch = async () => {
     setIsSimulatingBatch(true);
     try {
-      const res = await fetch("/api/batch-downloads/simulate", {
+      const res = await fetch(botUrl("/api/batch-downloads/simulate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -159,7 +162,7 @@ export const BatchDownloadStatus: React.FC<BatchDownloadStatusProps> = ({
 
           if (simTriggerError) {
             setTimeout(async () => {
-              await fetch(`/api/batch-downloads/simulate-error/${data.job.id}`, {
+              await fetch(botUrl(`/api/batch-downloads/simulate-error/${data.job.id}`), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ errorType: "network" }),
@@ -181,7 +184,7 @@ export const BatchDownloadStatus: React.FC<BatchDownloadStatusProps> = ({
     setIsRetryingJob(jobId);
     setActionFeedback("Retrying batch download streams...");
     try {
-      const res = await fetch(`/api/batch-downloads/retry/${jobId}`, { method: "POST" });
+      const res = await fetch(botUrl(`/api/batch-downloads/retry/${jobId}`), { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         setActionFeedback("Batch retry initiated successfully!");
@@ -204,7 +207,7 @@ export const BatchDownloadStatus: React.FC<BatchDownloadStatusProps> = ({
   const handleRetryEpisode = async (jobId: string, epNum: number) => {
     setRetryingEpisode({ jobId, epNum });
     try {
-      const res = await fetch(`/api/batch-downloads/retry-episode/${jobId}/${epNum}`, { method: "POST" });
+      const res = await fetch(botUrl(`/api/batch-downloads/retry-episode/${jobId}/${epNum}`), { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         if (data.job) {
@@ -221,7 +224,7 @@ export const BatchDownloadStatus: React.FC<BatchDownloadStatusProps> = ({
 
   const handleInjectError = async (jobId: string, errorType: "network" | "episode", epNum?: number) => {
     try {
-      await fetch(`/api/batch-downloads/simulate-error/${jobId}`, {
+      await fetch(botUrl(`/api/batch-downloads/simulate-error/${jobId}`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ errorType, epNum }),
@@ -236,7 +239,7 @@ export const BatchDownloadStatus: React.FC<BatchDownloadStatusProps> = ({
     setIsCleaning(true);
     setCleanupMessage(null);
     try {
-      const res = await fetch("/api/batch-downloads/cleanup", { method: "POST" });
+      const res = await fetch(botUrl("/api/batch-downloads/cleanup"), { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         const cleaned = data.result?.cleanedFiles || 0;
@@ -288,21 +291,23 @@ export const BatchDownloadStatus: React.FC<BatchDownloadStatusProps> = ({
             <div className="flex items-center gap-2">
               <h3 className="font-bold text-xs text-white tracking-tight">Batch Download Monitor</h3>
               {activeJob && (
-                <span
-                  className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border ${
+                <HeroChip
+                  variant="dot"
+                  size="sm"
+                  color={
                     activeJob.status === "completed"
-                      ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-300"
+                      ? "success"
                       : activeJob.status === "failed"
-                      ? "bg-rose-500/20 border-rose-500/40 text-rose-300 animate-pulse"
+                      ? "danger"
                       : activeJob.status === "packaging"
-                      ? "bg-purple-500/20 border-purple-500/30 text-purple-300 animate-pulse"
+                      ? "secondary"
                       : activeJob.status === "downloading"
-                      ? "bg-amber-500/20 border-amber-500/30 text-amber-300 animate-pulse"
-                      : "bg-zinc-800 border-zinc-700 text-zinc-400"
-                  }`}
+                      ? "warning"
+                      : "default"
+                  }
                 >
                   {activeJob.status.toUpperCase()}
-                </span>
+                </HeroChip>
               )}
             </div>
             <p className="text-[10px] text-zinc-400">

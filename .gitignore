@@ -12,3 +12,15 @@ nebula_auth_info/
 src/bot/commands/.compiled/
 .test-tmp/
 recovery/
+
+# Python byte-code (uvr runner)
+__pycache__/
+*.pyc
+
+# Multi-bots (8.75) : config par installation — jamais dans le dépôt
+bots.json
+bots/*/auth/
+bots/*/data/
+
+# Cookies YouTube pour yt-dlp (8.87) — jamais dans le dépôt
+.yt-cookies.txt

@@ -12,7 +12,7 @@ function makeMsg(sender: string, text = ".menu", fromMe = false) {
 
 describe("Adapter ownership (H7)", () => {
   beforeAll(() => {
-    updateConfig({ ownerNumber: "237699999999" });
+    updateConfig({ ownerNumber: "10000000001" });
   });
 
   it("does not treat arbitrary UK/French number prefixes as owner", () => {
@@ -23,18 +23,18 @@ describe("Adapter ownership (H7)", () => {
   });
 
   it("treats the configured owner number as owner", () => {
-    const ctx = buildAdapterContext({} as any, makeMsg("237699999999@s.whatsapp.net"));
+    const ctx = buildAdapterContext({} as any, makeMsg("10000000001@s.whatsapp.net"));
     expect(ctx.isOwner).toBe(true);
   });
 
   it("treats self-sent messages as owner", () => {
-    const ctx = buildAdapterContext({} as any, makeMsg("237699999999@s.whatsapp.net", ".menu", true));
+    const ctx = buildAdapterContext({} as any, makeMsg("10000000001@s.whatsapp.net", ".menu", true));
     expect(ctx.isOwner).toBe(true);
   });
 
   it("uses the configured prefix", () => {
     updateConfig({ prefix: "!" });
-    const ctx = buildAdapterContext({} as any, makeMsg("237699999999@s.whatsapp.net", "!menu"));
+    const ctx = buildAdapterContext({} as any, makeMsg("10000000001@s.whatsapp.net", "!menu"));
     expect(ctx.prefix).toBe("!");
     expect(ctx.commandName).toBe("menu");
     updateConfig({ prefix: "." });

@@ -5,6 +5,12 @@
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --animate-shiny: shiny 5s linear infinite;
+
+  @keyframes shiny {
+    0% { background-position: -200% center; }
+    100% { background-position: 200% center; }
+  }
 }
 
 /* Subtle dotted background for the WhatsApp-style chat area */
@@ -790,6 +796,184 @@
     margin-left: 0px;
   }
 }
+
+/* ==========================================================================
+   Real Liquid Glass Styling & Ambient Glow Blobs
+   ========================================================================== */
+.liquid-blob {
+  position: absolute;
+  filter: blur(120px);
+  mix-blend-mode: screen;
+  opacity: 0.28;
+  border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
+  animation: liquid-morph var(--blob-animation-duration, 16s) ease-in-out infinite alternate, liquid-spin calc(var(--blob-animation-duration, 16s) * 2) linear infinite;
+  pointer-events: none !important;
+  z-index: -9999 !important;
+}
+
+.liquid-blob-adaptive {
+  animation: none !important;
+  transition: border-radius 15s ease-in-out, transform 15s ease-in-out !important;
+}
+
+@keyframes liquid-morph {
+  0% {
+    border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
+  }
+  34% {
+    border-radius: 70% 30% 50% 50% / 30% 60% 40% 70%;
+  }
+  67% {
+    border-radius: 50% 60% 30% 70% / 60% 30% 70% 40%;
+  }
+  100% {
+    border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
+  }
+}
+
+@keyframes liquid-spin {
+  0% {
+    transform: rotate(0deg) translate(0px, 0px);
+  }
+  50% {
+    transform: rotate(180deg) translate(50px, -80px);
+  }
+  100% {
+    transform: rotate(360deg) translate(0px, 0px);
+  }
+}
+
+/* ==========================================================================
+   Multi-Theme Palette Rules (Dynamic CSS Variable Mapping)
+   ========================================================================== */
+
+/* 1. Cyber Amber Theme (Default / Root) */
+:root {
+  --color-blob-1: #d97706;
+  --color-blob-2: #ea580c;
+  --speeder-color: #f59e0b;
+  --theme-primary: #f59e0b;
+  --theme-secondary: #d97706;
+  --theme-glow: rgba(245, 158, 11, 0.25);
+}
+
+/* 2. Sapphire Ocean Theme */
+.theme-sapphire {
+  --color-blob-1: #1d4ed8;
+  --color-blob-2: #0891b2;
+  --speeder-color: #3b82f6;
+  --theme-primary: #3b82f6;
+  --theme-secondary: #0891b2;
+  --theme-glow: rgba(59, 130, 246, 0.25);
+
+  /* Remap all Tailwind amber custom property classes instantly to sapphire cyan hues */
+  --color-amber-50: #f0f9ff;
+  --color-amber-100: #e0f2fe;
+  --color-amber-200: #bae6fd;
+  --color-amber-300: #7dd3fc;
+  --color-amber-400: #38bdf8;
+  --color-amber-500: #0ea5e9;
+  --color-amber-600: #0284c7;
+  --color-amber-700: #0369a1;
+  --color-amber-800: #075985;
+  --color-amber-900: #0c4a6e;
+  --color-amber-950: #082f49;
+}
+
+/* 3. Emerald Matrix Theme */
+.theme-emerald {
+  --color-blob-1: #047857;
+  --color-blob-2: #15803d;
+  --speeder-color: #10b981;
+  --theme-primary: #10b981;
+  --theme-secondary: #047857;
+  --theme-glow: rgba(16, 185, 129, 0.25);
+
+  /* Remap all Tailwind amber custom property classes instantly to terminal emerald green hues */
+  --color-amber-50: #f0fdf4;
+  --color-amber-100: #dcfce7;
+  --color-amber-200: #bbf7d0;
+  --color-amber-300: #86efac;
+  --color-amber-400: #4ade80;
+  --color-amber-500: #10b981;
+  --color-amber-600: #059669;
+  --color-amber-700: #047857;
+  --color-amber-800: #065f46;
+  --color-amber-900: #064e3b;
+  --color-amber-950: #022c22;
+}
+
+/* 4. Amethyst Void Theme */
+.theme-amethyst {
+  --color-blob-1: #7e22ce;
+  --color-blob-2: #db2777;
+  --speeder-color: #a855f7;
+  --theme-primary: #a855f7;
+  --theme-secondary: #7e22ce;
+  --theme-glow: rgba(168, 85, 247, 0.25);
+
+  /* Remap all Tailwind amber custom property classes instantly to cosmic magenta/violet hues */
+  --color-amber-50: #faf5ff;
+  --color-amber-100: #f3e8ff;
+  --color-amber-200: #e9d5ff;
+  --color-amber-300: #d8b4fe;
+  --color-amber-400: #c084fc;
+  --color-amber-500: #a855f7;
+  --color-amber-600: #9333ea;
+  --color-amber-700: #7e22ce;
+  --color-amber-800: #6b21a8;
+  --color-amber-900: #581c87;
+  --color-amber-950: #3b0764;
+}
+
+/* 5. Rose Catalyst Theme */
+.theme-rose {
+  --color-blob-1: #b91c1c;
+  --color-blob-2: #be123c;
+  --speeder-color: #f43f5e;
+  --theme-primary: #f43f5e;
+  --theme-secondary: #be123c;
+  --theme-glow: rgba(244, 63, 94, 0.25);
+
+  /* Remap all Tailwind amber custom property classes instantly to energetic rose ruby hues */
+  --color-amber-50: #fff1f2;
+  --color-amber-100: #ffe4e6;
+  --color-amber-200: #fecdd3;
+  --color-amber-300: #fda4af;
+  --color-amber-400: #fb7185;
+  --color-amber-500: #f43f5e;
+  --color-amber-600: #e11d48;
+  --color-amber-700: #be123c;
+  --color-amber-800: #9f1239;
+  --color-amber-900: #881337;
+  --color-amber-950: #4c0519;
+}
+
+/* Glassmorphism Overlays with varying opacity & blurs */
+.bg-\[\#0e0e11\] {
+  background-color: rgba(14, 14, 17, 0.45) !important;
+  backdrop-filter: blur(14px) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.bg-\[\#0b0b0c\] {
+  background-color: rgba(11, 11, 12, 0.55) !important;
+  backdrop-filter: blur(12px) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+aside {
+  background-color: rgba(14, 14, 17, 0.35) !important;
+  backdrop-filter: blur(18px) !important;
+  border-right-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.bg-black\/40 {
+  background-color: rgba(0, 0, 0, 0.25) !important;
+  backdrop-filter: blur(8px) !important;
+  border-color: rgba(255, 255, 255, 0.06) !important;
+}
+
 
 
 

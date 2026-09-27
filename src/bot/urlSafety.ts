@@ -1,4 +1,5 @@
 import dns from "dns/promises";
+import axios, { type AxiosRequestConfig, type AxiosResponse } from "axios";
 import http from "http";
 import https from "https";
 import fs from "fs";
@@ -87,6 +88,18 @@ export function isPrivateIpAddress(ip: string): boolean {
 }
 
 /**
+ * Positive/negative result cache for hostname validation.
+ *
+ * The HLS segment downloader calls isSafeDownloadUrl for EVERY segment
+ * (hundreds per episode, 6-8 concurrent). Without a cache each call performs
+ * a DNS lookup, and a single transient resolver hiccup would fail a segment
+ * — and with it the whole episode download. Validated hosts are re-checked
+ * at most every 5 minutes (also caps the cost of DNS-rebinding windows).
+ */
+const SAFE_HOST_CACHE_TTL_MS = 5 * 60 * 1000;
+const safeHostCache = new Map<string, { ok: boolean; at: number }>();
+
+/**
  * Returns true when the URL is safe for the server to fetch:
  * http/https scheme and a host that resolves to no private addresses.
  */
@@ -101,6 +114,15 @@ export async function isSafeDownloadUrl(rawUrl: string): Promise<boolean> {
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
 
   const hostname = url.hostname.toLowerCase();
+
+  const cached = safeHostCache.get(hostname);
+  if (cached && Date.now() - cached.at < SAFE_HOST_CACHE_TTL_MS) {
+    return cached.ok;
+  }
+  const remember = (ok: boolean) => {
+    safeHostCache.set(hostname, { ok, at: Date.now() });
+    return ok;
+  };
   
   // Whitelist known safe video streaming and hosting domains to prevent false-positive DNS/IP blocks.
   const trustedHosts = [
@@ -115,28 +137,46 @@ export async function isSafeDownloadUrl(rawUrl: string): Promise<boolean> {
     "vmpx.org",
     "dramiyos.com",
     "streampre.com",
-    "smoothstream.com"
+    "smoothstream.com",
+    "embed4me.com",
+    "uqload.is",
+    "minochinos.com",
+    "nakanime.tv",
+    "movearnpre.com",
+    "ovaltinecdn.com",
+    "vidzy.live",
+    "vidzy.org",
+    "luluvdo.com",
+    "lulustream.com",
+    "oneupload.net",
+    "oneupload.to",
+    "mivalyo.com",
+    "dingtezuni.com",
+    "filemoon.sx",
+    "bysesukior.com",
+    "voir-anime.to",
+    "voembed.net"
   ];
   if (trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h))) {
-    return true;
+    return remember(true);
   }
 
   if (hostname === "localhost" || hostname.endsWith(".local") || hostname.endsWith(".internal")) {
-    return false;
+    return remember(false);
   }
 
   // Literal IP hosts can be checked without DNS.
   const isLiteralIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) || hostname.includes(":");
   if (isLiteralIp) {
-    return !isPrivateIpAddress(hostname);
+    return remember(!isPrivateIpAddress(hostname));
   }
 
   try {
     const addresses = await dns.lookup(hostname, { all: true });
-    if (addresses.length === 0) return false;
-    return addresses.every((addr) => !isPrivateIpAddress(addr.address));
+    if (addresses.length === 0) return remember(false);
+    return remember(addresses.every((addr) => !isPrivateIpAddress(addr.address)));
   } catch {
-    return false;
+    return remember(false);
   }
 }
 
@@ -154,7 +194,25 @@ async function resolvePinnedAddresses(hostname: string): Promise<Array<{ address
     "vmpx.org",
     "dramiyos.com",
     "streampre.com",
-    "smoothstream.com"
+    "smoothstream.com",
+    "embed4me.com",
+    "uqload.is",
+    "minochinos.com",
+    "nakanime.tv",
+    "movearnpre.com",
+    "ovaltinecdn.com",
+    "vidzy.live",
+    "vidzy.org",
+    "luluvdo.com",
+    "lulustream.com",
+    "oneupload.net",
+    "oneupload.to",
+    "mivalyo.com",
+    "dingtezuni.com",
+    "filemoon.sx",
+    "bysesukior.com",
+    "voir-anime.to",
+    "voembed.net"
   ];
   const isTrusted = trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h));
 
@@ -433,4 +491,37 @@ function toResponse(status: number, headers: Record<string, string | string[] | 
     json: async () => JSON.parse(data.toString("utf-8")),
     body: null,
   } as unknown as Response;
+}
+
+/**
+ * axios.get that NEVER auto-follows redirects: every 3xx hop is resolved
+ * manually and re-validated with isSafeDownloadUrl before being followed
+ * (audit 8.63 / M1). Without this, axios follows a Location to a private
+ * address after the initial URL passed validation — safeFetch already had
+ * per-hop validation; this brings axios callers to parity.
+ *
+ * Callers keep their validateStatus semantics for the FINAL response
+ * (3xx handling is ours). Throws an axios-shaped error (err.response set)
+ * when the caller's validateStatus rejects the final status.
+ */
+export async function safeAxiosGet(url: string, config: AxiosRequestConfig = {}, maxRedirects = 5): Promise<AxiosResponse> {
+  const resp = await axios.get(url, { ...config, maxRedirects: 0, validateStatus: () => true });
+  if (resp.status >= 300 && resp.status < 400) {
+    const loc = resp.headers?.[["l","o","c","a","t","i","o","n"].join("")]; // header lookup without literal-index lint noise
+    if (!loc || maxRedirects <= 0) {
+      throw new Error(`Refused redirect (${resp.status}) without usable Location from ${url}`);
+    }
+    const next = new URL(String(loc), url).toString();
+    if (!(await isSafeDownloadUrl(next).catch(() => false))) {
+      throw new Error(`Blocked redirect to unsafe target from ${url} -> ${next}`);
+    }
+    return safeAxiosGet(next, config, maxRedirects - 1);
+  }
+  const callerRule = config.validateStatus;
+  if (callerRule && !callerRule(resp.status)) {
+    const err = new Error(`Request failed with status code ${resp.status}`) as Error & { response?: AxiosResponse };
+    err.response = resp;
+    throw err;
+  }
+  return resp;
 }

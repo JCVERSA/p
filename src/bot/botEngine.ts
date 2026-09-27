@@ -1,4 +1,11 @@
-import makeWASocket, {
+// NOTE: use the NAMED export only. This module is ESM-only ("type": "module")
+// with no CJS build; in the esbuild CJS production bundle a default import
+// compiles to `(0, import_baileys.default)(...)`, and esbuild's __toESM
+// interop sets `.default` to the whole require(esm) namespace instead of the
+// function — which crashed the bot with "(0, import_baileys.default) is not
+// a function". Named imports pass through the wrapper untouched.
+import {
+  makeWASocket,
   DisconnectReason,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
@@ -8,16 +15,24 @@ import pino from "pino";
 import { Boom } from "@hapi/boom";
 import fs from "fs";
 import { getConfig } from "./config.js";
-import { getCommand, initRegistry } from "./commandRegistry.js";
+import { getCommand, initRegistry, isRegistryReady } from "./commandRegistry.js";
 import { BotCommandContext, GroupMember } from "./types.js";
 import { incrementCommandStats } from "./commandStats.js";
-import { generateTextWithFallback } from "./geminiClient.js";
+import { generateTextWithFallback, isAIConfigured } from "./geminiClient.js";
+import { getPersonaPrompt } from "./persona.js";
+import {
+  getMemoryContext,
+  recordExchange,
+  compactIfNeeded,
+  defaultMemorySummarizer
+} from "./services/aiMemory.js";
 import { database } from "./database.js";
-import { inspectMessageSafety } from "./utils/antibot.js";
+import { extractQuotedMediaContent } from "./utils/quotedMedia.js";
 import { checkAIQuota, consumeAIQuota, withAIConcurrency } from "./aiQuota.js";
 import { authorizeCommand, resolveRole } from "./accessControl.js";
 import { getGroupPolicy } from "./groupAccessStore.js";
 import { recordAudit } from "./auditTrail.js";
+import { setWatchSender, startWatchScheduler } from "./services/episodeWatchService.js";
 
 
 const groupMetadataCache = new Map<string, { data: any; timestamp: number }>();
@@ -221,12 +236,11 @@ export async function simulateMessage(senderName: string, text: string): Promise
 
   // Check if starts with prefix
   if (!text.startsWith(prefix)) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey && apiKey !== "MY_GEMINI_API_KEY" && apiKey.trim() !== "") {
+    if (isAIConfigured()) {
       try {
         const aiAnswer = await generateTextWithFallback(
           text,
-          `You are ${config.botName}, an intelligent WhatsApp multi-device bot assistant in direct private chat. Provide helpful, conversational, natural, and crisp responses.`,
+          getPersonaPrompt("dm", config.botName),
           "gemini-3.7-flash"
         );
         addLog(`[Simulator Direct AI] Generated direct reply for "${maskLogText(text)}"`);
@@ -256,7 +270,7 @@ export async function simulateMessage(senderName: string, text: string): Promise
   let replyImageUrl: string | undefined = undefined;
   let reactionEmoji: string | undefined = undefined;
 
-  // Mock sock + msg so commands that send directly (roast, hidetag, download) work too.
+  // Mock sock + msg so commands that send directly (hidetag, download) work too.
   const mockSock = createMockSocket({
     replyText: () => replyText,
     setReply: (t) => { replyText = t; },
@@ -402,7 +416,7 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
   }
 
   try {
-    await initRegistry();
+    if (!isRegistryReady()) await initRegistry(); // 8.56: server.ts already init at boot
 
     // Auth state directory
     const authDir = process.env.NEBULA_AUTH_DIR || "nebula_auth_info";
@@ -534,6 +548,13 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
           const ownerJid = `${ownerDigits}@s.whatsapp.net`;
           sock.sendMessage(ownerJid, { text: `🌌 *${config.botName}* is online and connected!\nPrefix: \`${config.prefix}\`` }).catch(() => {});
         }
+
+        // Episode watcher (`.a watch`, audit S4): refresh the sender with the
+        // live socket on every (re)connection, then start the scheduler once.
+        setWatchSender(async (chatJid, text) => {
+          await sock.sendMessage(chatJid, { text });
+        });
+        startWatchScheduler();
       }
 
       if (connection === "close") {
@@ -732,82 +753,19 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         // Active Group Moderation Engine
         const isGroup = senderJid.endsWith("@g.us");
         let isSenderAdmin = false;
-        let isBotAdmin = false;
 
         if (isGroup && !isFromMe) {
-          const settings = database.getGroupSettings(senderJid);
-
           try {
             const groupMetadata = await getCachedGroupMetadata(sock, senderJid);
             if (groupMetadata) {
-              const botJid = sock.user?.id ? (sock.user.id.split(":")[0] + "@s.whatsapp.net") : "";
               const senderParticipant = groupMetadata.participants.find((p: any) => p.id.split("@")[0] === actualSenderNumber);
-              const botParticipant = groupMetadata.participants.find((p: any) => p.id.split("@")[0] === botJid.split("@")[0]);
-
               isSenderAdmin = senderParticipant?.admin === "admin" || senderParticipant?.admin === "superadmin";
-              isBotAdmin = botParticipant?.admin === "admin" || botParticipant?.admin === "superadmin";
             }
           } catch (e) {}
-
-          // 1. Antilink & Antibot Filtering using antibot utility
-          if ((settings.antilink || settings.antibot) && !isSenderAdmin && !isOwner) {
-            const safety = inspectMessageSafety(senderJid, text, msg, actualSenderJid);
-            if (safety.isViolation) {
-              addLog(`🛡️ [Security Violation] ${safety.description} from @${maskLogNumber(actualSenderNumber)} in group ${maskLogNumber(senderJid)}`);
-
-              if (isBotAdmin) {
-                await sock.sendMessage(senderJid, { delete: msg.key });
-
-                if (safety.action === "kick") {
-                  await sock.groupParticipantsUpdate(senderJid, [actualSenderJid], "remove");
-                  await sock.sendMessage(senderJid, {
-                    text: `🚫 *Security Enforcement:* @${actualSenderNumber} has been kicked.\n*Reason:* ${safety.description}`,
-                    mentions: [actualSenderJid]
-                  });
-                } else if (safety.action === "warn") {
-                  await sock.sendMessage(senderJid, {
-                    text: `⚠️ *Security Warning:* @${actualSenderNumber}, ${safety.description}`,
-                    mentions: [actualSenderJid]
-                  });
-                } else {
-                  await sock.sendMessage(senderJid, {
-                    text: `⚠️ *Notice:* Prohibited message from @${actualSenderNumber} has been removed.`,
-                    mentions: [actualSenderJid]
-                  });
-                }
-              }
-              continue; // Prevent command execution / normal message processing
-            }
-          }
-
-          // 2. Antitag (Mass Mentions) Filtering
-          if (settings.antitag && !isSenderAdmin && !isOwner) {
-            const ctxInfo = msg.message?.extendedTextMessage?.contextInfo || messageContent?.extendedTextMessage?.contextInfo;
-            const mentionedJids = ctxInfo?.mentionedJid || [];
-            if (mentionedJids.length >= 4) {
-              addLog(`🛡️ [Antitag] Mass mention (${mentionedJids.length} tags) detected from @${actualSenderNumber}`);
-
-              if (isBotAdmin) {
-                await sock.sendMessage(senderJid, { delete: msg.key });
-
-                if (settings.antitagAction === "kick") {
-                  await sock.groupParticipantsUpdate(senderJid, [actualSenderJid], "remove");
-                  await sock.sendMessage(senderJid, {
-                    text: `🚫 *Antitag enforcement:* @${actualSenderNumber} has been kicked for mass mentioning group members.`,
-                    mentions: [actualSenderJid]
-                  });
-                } else {
-                  await sock.sendMessage(senderJid, {
-                    text: `⚠️ *Antitag warning:* Mass mentions are disabled in this group, @${actualSenderNumber}.`,
-                    mentions: [actualSenderJid]
-                  });
-                }
-              }
-              continue; // Prevent command execution / normal message processing
-            }
-          }
         }
 
+        // Moderation hooks (antilink/antitag/antibot) were removed with the
+        // 8.59 command curation; welcome/goodbye and RoleGuard remain active.
         // Allow owner to run commands on their own session, but ignore regular self messages that don't start with prefix
         if (isFromMe && !text.startsWith(prefix)) {
           continue;
@@ -815,8 +773,7 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
 
         // Direct AI response in private chat when not starting with prefix
         if (!isGroup && !isFromMe && !text.startsWith(prefix)) {
-          const apiKey = process.env.GEMINI_API_KEY;
-          if (apiKey && apiKey !== "MY_GEMINI_API_KEY" && apiKey.trim() !== "") {
+          if (isAIConfigured()) {
             const quota = checkAIQuota(actualSenderJid);
             if (!quota.allowed) {
               await sock.sendMessage(senderJid, { text: `⚠️ ${quota.error}` }, { quoted: msg });
@@ -829,13 +786,17 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
                 } catch (pe) {}
               }
               consumeAIQuota(actualSenderJid);
+              const memoryBlock = getMemoryContext(senderJid);
               const answer = await withAIConcurrency(() =>
                 generateTextWithFallback(
                   text,
-                  `You are ${config.botName}, an intelligent WhatsApp multi-device bot assistant. You are chatting directly in a 1-on-1 private conversation. Keep responses helpful, direct, concise, natural, and clean.`,
+                  getPersonaPrompt("dm", config.botName) + (memoryBlock ? `\n\n${memoryBlock}` : ""),
                   "gemini-3.7-flash"
                 )
               );
+              // Per-conversation memory (audit 8.38) — fire and forget.
+              recordExchange(senderJid, text, answer);
+              compactIfNeeded(senderJid, defaultMemorySummarizer).catch(() => {});
               if (sock && typeof sock.sendPresenceUpdate === "function") {
                 try {
                   await sock.sendPresenceUpdate("paused", senderJid);
@@ -847,6 +808,16 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
             } catch (error: any) {
               console.error("[Private Chat AI Error]:", error);
               addLog(`❌ [Private Chat AI Error]: ${error.message}`);
+              // 8.71: users used to get TOTAL SILENCE when the AI chain
+              // failed (production logs: the same users retrying 3-5x).
+              // Honest French notice, same tone as the other messages.
+              try {
+                await sock.sendMessage(
+                  senderJid,
+                  { text: "😕 *L’IA est momentanément indisponible.*\n\n🔁 *Réessaie dans un instant.*\n_Si ça persiste, préviens l’administrateur du bot._" },
+                  { quoted: msg }
+                );
+              } catch {}
             }
           } else {
             // Friendly fallback guide if AI key is not yet configured
@@ -927,14 +898,25 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         // Sensible media handling - dynamic buffer downloader (operates on the unwrapped message)
         const mediaDownloader = async (): Promise<Buffer | null> => {
           try {
-            const messageType = Object.keys(messageContent)[0];
+            let messageType = Object.keys(messageContent)[0];
+            let mediaContent: any = messageContent;
             if (!["imageMessage", "videoMessage", "documentMessage", "audioMessage"].includes(messageType)) {
-              return null;
+              // Media toolkit UX (audit 8.48): when the invoking message has no
+              // media of its own, fall back to the QUOTED message's media
+              // ("reply to a video with .m gif").
+              const quoted = extractQuotedMediaContent(messageContent);
+              if (!quoted) return null;
+              messageType =
+                Object.keys(quoted).find(k =>
+                  ["imageMessage", "videoMessage", "documentMessage", "audioMessage"].includes(k)
+                ) || "";
+              if (!messageType) return null;
+              mediaContent = quoted;
             }
 
             addLog(`Downloading media content of type: ${messageType}`);
             const stream = await (sock as any).downloadContentFromMessage(
-              messageContent[messageType as keyof typeof messageContent],
+              mediaContent[messageType],
               messageType.replace("Message", "")
             );
 

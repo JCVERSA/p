@@ -1,0 +1,1021 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  NEBULA BOT — Script de gestion VPS
+#  Dépôt   : https://github.com/JCVERSA/nebula-p (branche main)
+#  Usage   : ./manage.sh <commande>   (voir: ./manage.sh help)
+#
+#  Commandes : start | stop | restart | pair | status | update | setup | clone
+#              env [list|set|get|unset|edit] | logs [filtre] | clean
+#              doctor | watchdog | version
+# ============================================================================
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+REPO_URL="https://github.com/JCVERSA/nebula-p"
+BRANCH="main"
+# Resolve the real script location THROUGH symlinks: the installer exposes
+# manage.sh as the `nebula` command (/usr/local/bin/nebula), so dirname of
+# BASH_SOURCE alone would point at the symlink's directory, not the repo.
+NEBULA_SRC="${BASH_SOURCE[0]}"
+while [ -L "${NEBULA_SRC}" ]; do
+  NEBULA_DIR="$(cd "$(dirname "${NEBULA_SRC}")" && pwd)"
+  NEBULA_SRC="$(readlink "${NEBULA_SRC}")"
+  case "${NEBULA_SRC}" in /*) ;; *) NEBULA_SRC="${NEBULA_DIR}/${NEBULA_SRC}" ;; esac
+done
+APP_DIR="$(cd "$(dirname "${NEBULA_SRC}")" && pwd)"   # le script vit dans le dépôt
+ENV_FILE="${APP_DIR}/.env"
+LOG_FILE="${LOG_FILE:-/root/bot.log}"
+TUNNEL_LOG="${TUNNEL_LOG:-/root/tunnel.log}"
+# 8.52 : le .env est la source de vérité pour le port du panneau. Certains
+# conteneurs exportent PORT (ex. 6080 = bureau web noVNC) et dotenv n'écrase
+# JAMAIS une variable déjà présente → le bot héritait du port du bureau web
+# et crashait en EADDRINUSE. Ordre de priorité : .env > environnement > 3000.
+_port_from_env="$(sed -n 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*"\{0,1\}\([0-9]\{2,5\}\)"\{0,1\}[[:space:]]*$/\1/p' "${ENV_FILE}" 2>/dev/null | tail -n 1)"
+if [ -n "${_port_from_env}" ]; then
+  PORT="${_port_from_env}"
+fi
+PORT="${PORT:-3000}"
+export PORT
+unset _port_from_env
+NODE_PATTERN="dist/server[.]cjs"
+AGE_STAGING_MIN=60      # débris cat_catch_*/batch_zip_* plus vieux que ça → purge
+AGE_TEMP_H=3            # fichiers nebula_temp_downloads plus vieux que ça → purge
+
+# ---------------------------------------------------------------------------
+# Couleurs (désactivées hors TTY, ex: cron)
+# ---------------------------------------------------------------------------
+if [ -t 1 ]; then
+  C_GREEN=$'\033[1;32m'; C_RED=$'\033[1;31m'; C_YELLOW=$'\033[1;33m'
+  C_CYAN=$'\033[1;36m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_RESET=$'\033[0m'
+else
+  C_GREEN=""; C_RED=""; C_YELLOW=""; C_CYAN=""; C_BOLD=""; C_DIM=""; C_RESET=""
+fi
+ok()   { echo "${C_GREEN}✔${C_RESET} $*"; }
+ko()   { echo "${C_RED}✘${C_RESET} $*"; }
+warn() { echo "${C_YELLOW}⚠${C_RESET} $*"; }
+info() { echo "${C_CYAN}ℹ${C_RESET} $*"; }
+hdr()  { echo; echo "${C_BOLD}${C_CYAN}═══ $* ═══${C_RESET}"; }
+die()  { ko "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+bot_pids() { pgrep -f "${NODE_PATTERN}" 2>/dev/null || true; }
+
+# Moteurs enfants multi-bots (8.75) : lancés par le panneau superviseur, ils
+# ne comptent pas dans is_running (le panneau seul prouve que le déploiement
+# est debout — un enfant orphelin s'auto-arrête quand son parent disparaît).
+ENGINE_PATTERN="dist/engine[.]cjs"
+engine_pids() { pgrep -f "${ENGINE_PATTERN}" 2>/dev/null || true; }
+
+is_running() { [ -n "$(bot_pids)" ]; }
+
+# --- Verrou de mise à jour (audit 8.30) -------------------------------------
+# Un watchdog cron (*/5 * * * * manage.sh start, voir docs/MIGRATION_NOUVEAU_VPS.md)
+# ne doit PAS relancer le bot pendant `nebula update` (install/build) : cela
+# réintroduirait la contention mémoire que l'update est justement censé éviter.
+UPDATE_LOCK_DIR="${TMPDIR:-/tmp}/nebula-update.lock"
+UPDATE_LOCK_STALE_MIN=15    # au-delà: verrou considéré comme débris (update planté)
+
+# --- Verrou watchdog (audit 8.51) -------------------------------------------
+# Cron tire chaque minute ; npm peut mettre >60 s à faire apparaître le
+# process node sur un conteneur throttled. Sans verrou, deux watchdogs
+# qui se chevauchent verraient tous deux « bot arrêté » → DEUX bots.
+WATCHDOG_LOCK_DIR="${TMPDIR:-/tmp}/nebula-watchdog.lock"
+WATCHDOG_LOCK_STALE_MIN=3   # un démarrage (npm + attente HTTP 45 s) ne dure jamais aussi longtemps
+
+update_lock_held() {        # 0 = un update FRAIS est en cours
+  [ -d "${UPDATE_LOCK_DIR}" ] || return 1
+  local age=$(( ( $(date +%s) - $(stat -c %Y "${UPDATE_LOCK_DIR}" 2>/dev/null || echo 0) ) / 60 ))
+  if [ "${age}" -ge "${UPDATE_LOCK_STALE_MIN}" ]; then
+    warn "Verrou d'update >${UPDATE_LOCK_STALE_MIN} min (update interrompu ?) — nettoyé."
+    rm -rf "${UPDATE_LOCK_DIR}"
+    return 1
+  fi
+  return 0
+}
+
+update_lock_acquire() {
+  if update_lock_held; then
+    die "Une mise à jour est déjà en cours (PID $(cat "${UPDATE_LOCK_DIR}/pid" 2>/dev/null || echo '?')) — réessaie dans quelques minutes."
+  fi
+  mkdir -p "${UPDATE_LOCK_DIR}" 2>/dev/null || die "Impossible de créer le verrou (${UPDATE_LOCK_DIR})."
+  echo "$$" > "${UPDATE_LOCK_DIR}/pid"
+  date -Is > "${UPDATE_LOCK_DIR}/since"
+}
+
+update_lock_release() { rm -rf "${UPDATE_LOCK_DIR}" 2>/dev/null || true; }
+
+# Valeur par défaut documentée dans .env.example (pour l'affichage du menu env)
+env_example_default() {
+  grep -E "^${1}=" "${APP_DIR}/.env.example" 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/^"//; s/"$//'
+}
+
+require_repo() {
+  [ -d "${APP_DIR}/.git" ] || die "Ce script doit vivre dans le dépôt git (${APP_DIR}). Utilise: ./manage.sh clone"
+  command -v git >/dev/null 2>&1 || die "git est introuvable (apt install git)"
+}
+
+env_value() { # $1 = clé → valeur brute ou vide
+  [ -f "${ENV_FILE}" ] || return 0
+  grep -E "^${1}=" "${ENV_FILE}" 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/^"//; s/"$//'
+}
+
+env_masked() { # $1 = clé → valeur masquée si secrète
+  local v; v="$(env_value "$1")"
+  [ -z "${v}" ] && echo "${C_DIM}(non défini)${C_RESET}" && return 0
+  case "$1" in
+    *TOKEN*|*KEY*|*SECRET*|*PASSWORD*)
+      if [ "${#v}" -le 6 ]; then echo "***"
+      else echo "${v:0:3}…${v: -2} (${#v} car.)"; fi
+      ;;
+    *) echo "${v}" ;;
+  esac
+}
+
+public_url() { env_value APP_URL | sed 's:/*$::'; }
+
+cgroup_max_mb() {
+  local v=""
+  if [ -r /sys/fs/cgroup/memory.max ]; then
+    v="$(cat /sys/fs/cgroup/memory.max)"
+    [ "${v}" = "max" ] && v=""
+  elif [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+    v="$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)"
+  fi
+  [ -n "${v}" ] && echo $(( v / 1048576 )) || echo ""
+}
+
+http_code() { # $1 = URL, timeout 5s → code HTTP ou "000"
+  local c
+  c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null)"
+  echo "${c:-000}"
+}
+
+wait_http() { # $1 = URL, $2 = timeout s → 0 si répondu
+  local deadline=$(( $(date +%s) + $2 ))
+  while [ "$(date +%s)" -lt "${deadline}" ]; do
+    [ "$(http_code "$1")" != "000" ] && return 0
+    sleep 2
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# START / STOP / RESTART
+# ---------------------------------------------------------------------------
+cmd_start() {
+  # 8.50: glibc arena fragmentation balloons RSS under Buffer churn in the
+  # ~954 MB cgroup (OOM kill mid-batch). Two arenas bound the fragmentation.
+  export MALLOC_ARENA_MAX="${NEBULA_MALLOC_ARENA_MAX:-2}"
+  require_repo
+  # Ne pas relancer le bot pendant une mise à jour (verrou posé par cmd_update).
+  # Exit 0 pour que le watchdog cron reste silencieux. Le flag interne
+  # UPDATE_IN_PROGRESS autorise les redémarrages de récupération de cmd_update.
+  if [ "${UPDATE_IN_PROGRESS:-0}" != "1" ] && update_lock_held; then
+    warn "Mise à jour en cours — démarrage différé (le bot redémarrera à la fin de l'update)."
+    exit 0
+  fi
+  if is_running; then
+    warn "Le bot tourne déjà (PID: $(bot_pids | tr '\n' ' ')). Utilise ./manage.sh restart."
+    exit 0
+  fi
+  [ -f "${APP_DIR}/dist/server.cjs" ] || die "dist/server.cjs absent — lance d'abord ./manage.sh update (ou setup)"
+  command -v npm >/dev/null 2>&1 || die "npm est introuvable"
+  [ -f "${ENV_FILE}" ] || warn "Aucun .env trouvé — ./manage.sh env pour le configurer"
+
+  hdr "Démarrage du bot"
+  # 8.75 multi-bots : le panneau superviseur ne charge plus Baileys (les
+  # moteurs enfants l'ont) — budget heap réduit, réglable. Lancement node
+  # direct (plus de wrapper npm) pour un pgrep/arrêt plus propres.
+  # 8.76 (audit ARCH-02) : le plafond se règle dans .env
+  # (NEBULA_PANEL_MEMORY_MB) — env shell prioritaire, fallback 256 Mo.
+  local panel_mem
+  panel_mem="${NEBULA_PANEL_MEMORY_MB:-$(env_value NEBULA_PANEL_MEMORY_MB)}"
+  case "${panel_mem}" in ''|*[!0-9]*) panel_mem="256" ;; esac
+  # 8.82 : redirection APPEND (>>) — après un truncate (LogGuard), les
+  # écritures retombent à l'EOF (= 0) ; avec l'ancien ">" le fd gardait
+  # son offset et le fichier re-gonflait en sparse. NEBULA_LOG_FILE
+  # active le garde de taille in-app (src/bot/logGuard.ts).
+  ( cd "${APP_DIR}" && NODE_ENV=production NEBULA_LOG_FILE="${LOG_FILE}" nohup node --max-old-space-size="${panel_mem}" --expose-gc dist/server.cjs >>"${LOG_FILE}" 2>&1 & )
+  info "Process lancé, log: ${LOG_FILE}"
+
+  info "Attente du panneau sur le port ${PORT} (45 s max)…"
+  if wait_http "http://127.0.0.1:${PORT}/" 45; then
+    ok "Bot en ligne (HTTP $(http_code "http://127.0.0.1:${PORT}/")). PID: $(bot_pids | tr '\n' ' ')"
+  else
+    ko "Le panneau ne répond pas après 45 s. Dernières lignes du log :"
+    tail -n 30 "${LOG_FILE}" 2>/dev/null | sed 's/^/    /'
+    warn "Inspecte avec: ./manage.sh logs"
+    exit 1
+  fi
+}
+
+cmd_stop() {
+  hdr "Arrêt du bot"
+  local pids; pids="$(bot_pids)"
+  if [ -z "${pids}" ]; then
+    info "Le panneau n'était pas en cours d'exécution."
+  else
+    info "PID(s): $(echo "${pids}" | tr '\n' ' ') — SIGTERM…"
+    kill ${pids} 2>/dev/null || true
+    local deadline=$(( $(date +%s) + 10 ))
+    while [ -n "$(bot_pids)" ] && [ "$(date +%s)" -lt "${deadline}" ]; do sleep 1; done
+    pids="$(bot_pids)"
+    if [ -n "${pids}" ]; then
+      warn "Ne s'est pas arrêté en 10 s — SIGKILL."
+      kill -9 ${pids} 2>/dev/null || true
+      sleep 1
+    fi
+    if [ -n "$(bot_pids)" ]; then ko "Échec de l'arrêt du panneau (PID: $(bot_pids | tr '\n' ' '))"; exit 1; fi
+    ok "Panneau arrêté proprement."
+  fi
+
+  # 8.75 multi-bots : balayage des moteurs enfants restants (normalement déjà
+  # arrêtés par le SIGTERM du panneau ou leur garde orpheline).
+  local epids; epids="$(engine_pids)"
+  if [ -z "${epids}" ]; then
+    ok "Aucun moteur enfant restant."
+    return 0
+  fi
+  info "Moteur(s) enfant(s) encore vivant(s) ($(echo "${epids}" | tr '\n' ' ')) — SIGTERM…"
+  kill ${epids} 2>/dev/null || true
+  local edeadline=$(( $(date +%s) + 8 ))
+  while [ -n "$(engine_pids)" ] && [ "$(date +%s)" -lt "${edeadline}" ]; do sleep 1; done
+  epids="$(engine_pids)"
+  if [ -n "${epids}" ]; then
+    warn "Moteur récalcitrant — SIGKILL."
+    kill -9 ${epids} 2>/dev/null || true
+    sleep 1
+  fi
+  if [ -n "$(engine_pids)" ]; then ko "Échec de l'arrêt d'un moteur enfant (PID: $(engine_pids | tr '\n' ' '))"; exit 1; fi
+  ok "Moteurs enfants arrêtés."
+}
+
+cmd_restart() { cmd_stop; cmd_start; }
+
+# ---------------------------------------------------------------------------
+# Connexion par code d'appariement (8.74) : appelle l'API panneau locale
+# (déjà protégée par PANEL_TOKEN) et affiche le code à saisir sur le téléphone.
+# ---------------------------------------------------------------------------
+cmd_pair() {
+  require_repo
+  # 8.75 : « pair <numéro> » (bot par défaut) ou « pair <bot> <numéro> ».
+  local bot="" phone_arg="${1:-}"
+  if [ $# -ge 2 ]; then
+    bot="${1}"
+    phone_arg="${2}"
+  fi
+  local phone
+  phone="$(printf '%s' "${phone_arg}" | tr -cd '0-9')"
+  if [ -z "$phone" ] || [ "${#phone}" -lt 8 ] || [ "${#phone}" -gt 16 ]; then
+    ko "Usage: $(basename "$0") pair [bot] <numero international>"
+    echo " Exemple : $(basename "$0") pair 237690000000"
+    echo " Exemple : $(basename "$0") pair bot2 237690000000  (bot précis, voir '$(basename "$0") bots')"
+    echo " (numéro WhatsApp complet avec indicatif pays, sans + ni espaces)"
+    return 1
+  fi
+  local pair_query=""
+  [ -n "$bot" ] && pair_query="?bot=${bot}"
+  local port token
+  port="$(env_value PORT)"; port="${port:-3000}"
+  token="$(env_value PANEL_TOKEN)"
+  if [ -z "$token" ]; then
+    ko "PANEL_TOKEN introuvable dans ${ENV_FILE} — définis ta clé via '$(basename "$0") env'"
+    return 1
+  fi
+  if ! curl -s -o /dev/null -m 5 "http://127.0.0.1:${port}/"; then
+    ko "Le panneau ne répond pas sur le port ${port} — lance d'abord : $(basename "$0") start"
+    return 1
+  fi
+  hdr "CONNEXION PAR CODE D'APPARIEMENT (+${phone})${bot:+ — bot ${bot}}"
+  echo " ℹ Arrêt de la session actuelle et demande d'un code aux serveurs WhatsApp…"
+  local resp out code
+  resp="$(curl -s -m 50 -X POST "http://127.0.0.1:${port}/api/bot/pair-code${pair_query}" \
+    -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
+    -d "{\"phoneNumber\":\"${phone}\"}")"
+  out="$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const j=JSON.parse(d);if(j.code)console.log("OK:"+j.code);else console.log("ERR:"+(j.error||"réponse inattendue du panneau"))}catch(e){console.log("ERR:réponse invalide du panneau")}})' 2>/dev/null || echo "ERR:node indisponible")"
+  case "$out" in
+    OK:*)
+      code="${out#OK:}"
+      ok "Code d'appariement généré"
+      echo
+      echo " ${C_BOLD}${C_CYAN}      ${code}      ${C_RESET}"
+      echo
+      echo " Sur ton téléphone WhatsApp :"
+      echo " ${C_BOLD}Paramètres > Appareils connectés > Connecter un appareil >${C_RESET}"
+      echo " ${C_BOLD}Connecter avec un numéro de téléphone à la place${C_RESET}"
+      echo " Saisis le code ci-dessus — le bot se connecte automatiquement."
+      ;;
+    *)
+      ko "${out#ERR:}"
+      echo " Vérifie que le bot n'est pas déjà connecté ('$(basename "$0") status') puis réessaie."
+      return 1
+      ;;
+  esac
+}
+
+
+# ---------------------------------------------------------------------------
+# MULTI-BOTS (8.75) : liste des bots et contrôle par bot
+# ---------------------------------------------------------------------------
+bots_api() {
+  # $1 = METHOD, $2 = chemin API — sort le corps brut (vide si panneau KO)
+  local port token
+  port="$(env_value PORT)"; port="${port:-3000}"
+  token="$(env_value PANEL_TOKEN)"
+  if [ -z "$token" ]; then
+    ko "PANEL_TOKEN introuvable dans ${ENV_FILE} — définis ta clé via '$(basename "$0") env'"
+    return 1
+  fi
+  if ! curl -s -o /dev/null -m 5 "http://127.0.0.1:${port}/"; then
+    ko "Le panneau ne répond pas sur le port ${port} — lance d'abord : $(basename "$0") start"
+    return 1
+  fi
+  curl -s -m 30 -X "$1" "http://127.0.0.1:${port}$2" \
+    -H "Authorization: Bearer ${token}" -H "Content-Type: application/json"
+}
+
+cmd_bots() {
+  require_repo
+  local resp out
+  resp="$(bots_api GET /api/bots)" || return 1
+  hdr "BOTS DU DÉPLOIEMENT"
+  out="$(printf '%s' "$resp" | node -e '
+    let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
+      let j; try { j=JSON.parse(d); } catch(e){ console.log("ERR:réponse invalide du panneau"); return; }
+      if (!j.bots) { console.log("ERR:"+(j.error||"réponse inattendue du panneau")); return; }
+      if (j.config && j.config.error) { console.log("CONFIG_ERR:"+j.config.error); return; }
+      for (const b of j.bots) {
+        const proc = b.process==="running" ? "lancé" : b.process==="starting" ? "démarrage" : b.process==="backoff" ? "relance planifiée" : "arrêté";
+        const wa = b.whatsapp && b.whatsapp.status ? String(b.whatsapp.status) : "inconnu";
+        const def = b.isDefault ? " · défaut" : "";
+        const en = b.enabled ? "" : " · désactivé (bots.json)";
+        console.log("BOT\t"+b.id+"\t"+b.name+def+en+"\t"+proc+"\tWhatsApp: "+wa+"\tPID "+(b.pid==null?"-":b.pid)+"\tport "+b.enginePort+"\t"+b.restarts+" relance(s)");
+      }
+    });' 2>/dev/null || echo "ERR:node indisponible")"
+  case "$out" in
+    ERR:*) ko "${out#ERR:}"; return 1 ;;
+    CONFIG_ERR:*)
+      ko "bots.json invalide — AUCUN bot lancé :"
+      echo " ${out#CONFIG_ERR:}"
+      echo " Corrige bots.json puis : $(basename "$0") restart"
+      return 1 ;;
+  esac
+  printf '%s\n' "$out" | while IFS=$'\t' read -r _ id name proc wa pid _port restarts; do
+    [ -n "${id:-}" ] || continue
+    printf " ${C_BOLD}%-12s${C_RESET} %-20s %-17s %-30s %-9s %s\n" "$id" "$name" "$proc" "$wa" "$pid" "$restarts"
+  done
+  echo
+  info "Connexion d'un numéro : $(basename "$0") pair [bot] <numéro>"
+  info "Contrôle par bot     : $(basename "$0") bot <id> <start|stop|restart|status>"
+}
+
+cmd_bot() {
+  require_repo
+  if [ $# -lt 2 ]; then
+    ko "Usage: $(basename "$0") bot <id> <start|stop|restart|status>"
+    echo " Bots connus : $(basename "$0") bots"
+    return 1
+  fi
+  local id="$1" action="$2" resp out
+  case "$action" in
+    start|stop|restart) ;;
+    status)
+      hdr "BOT ${id} — STATUT"
+      resp="$(bots_api GET "/api/bot/status?bot=${id}")" || return 1
+      out="$(printf '%s' "$resp" | node -e '
+        let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
+          let j; try { j=JSON.parse(d); } catch(e){ console.log("ERR:réponse invalide"); return; }
+          if (j.error) { console.log("ERR:"+j.error); return; }
+          console.log("STATUS\t"+(j.status||"?")+"\t"+(j.connectionMode||"")+"\t"+(j.pairingNumber||""));
+          const logs = Array.isArray(j.logs) ? j.logs.slice(-6) : [];
+          for (const l of logs) console.log("LOG\t"+l);
+        });' 2>/dev/null || echo "ERR:node indisponible")"
+      case "$out" in
+        ERR:*) ko "${out#ERR:}"; return 1 ;;
+      esac
+      printf '%s\n' "$out" | while IFS=$'\t' read -r tag a b c; do
+        case "$tag" in
+          STATUS) echo " ${C_BOLD}WhatsApp${C_RESET}: ${a}   ${C_BOLD}mode${C_RESET}: ${b}   ${C_BOLD}numéro${C_RESET}: ${c:-—}" ;;
+          LOG)    echo "   ${a}" ;;
+        esac
+      done
+      echo
+      info "Contrôle process : $(basename "$0") bot ${id} <start|stop|restart>"
+      return 0
+      ;;
+    *) ko "Action inconnue: ${action} (start|stop|restart|status)"; return 1 ;;
+  esac
+  hdr "BOT ${id} — ${action}"
+  resp="$(bots_api POST "/api/bots/${id}/${action}")" || return 1
+  out="$(printf '%s' "$resp" | node -e '
+    let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
+      let j; try { j=JSON.parse(d); } catch(e){ console.log("ERR:réponse invalide du panneau"); return; }
+      if (j.success) console.log("OK:"+(j.message||"fait"));
+      else console.log("ERR:"+(j.error||"échec"));
+    });' 2>/dev/null || echo "ERR:node indisponible")"
+  case "$out" in
+    OK:*) ok "${out#OK:}" ;;
+    *) ko "${out#ERR:}"; return 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# STATUS
+# ---------------------------------------------------------------------------
+cmd_status() {
+  require_repo
+  hdr "STATUT — $(date '+%d/%m/%Y %H:%M:%S')"
+
+  # Code
+  local rev="" branch=""
+  branch="$(git -C "${APP_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+  rev="$(git -C "${APP_DIR}" log -1 --format='%h %ad %s' --date=format:'%d/%m %H:%M' 2>/dev/null || echo '?')"
+  echo " ${C_BOLD}Dépôt${C_RESET}  : ${APP_DIR}"
+  echo " ${C_BOLD}Branche${C_RESET}: ${branch}   ${C_BOLD}Révision${C_RESET}: ${rev}"
+  local dirty; dirty="$(git -C "${APP_DIR}" status --porcelain 2>/dev/null | wc -l)"
+  [ "${dirty}" -gt 0 ] && warn "${dirty} fichier(s) local(aux) modifié(s) — ./manage.sh update fera un pull --ff-only" \
+                        || ok "Arborescence git propre"
+
+  # Process
+  echo
+  local pids; pids="$(bot_pids)"
+  if [ -n "${pids}" ]; then
+    for pid in ${pids}; do
+      local rss kb etime cmd
+      read -r rss etime <<<"$(ps -o rss=,etime= -p "${pid}" 2>/dev/null || echo '0 ?')"
+      rss=$((rss / 1024)); kb="$(cgroup_max_mb)"
+      local mem_note=""
+      [ -n "${kb}" ] && mem_note=" / ${kb} Mo cgroup ($(( rss * 100 / kb )) %)"
+      ok "Process ${pid} — RSS ${rss} Mo${mem_note} — uptime ${etime}"
+    done
+  else
+    ko "Bot ARRÊTÉ (aucun process node sur ${NODE_PATTERN})"
+  fi
+
+  # Réseau
+  echo
+  local code
+  code="$(http_code "http://127.0.0.1:${PORT}/")"
+  [ "${code}" != "000" ] && ok "Panneau local  :${PORT} → HTTP ${code}" || ko "Panneau local  :${PORT} → aucun réponse"
+  local pub; pub="$(public_url)"
+  if [ -n "${pub}" ]; then
+    code="$(http_code "${pub}/")"
+    [ "${code}" != "000" ] && ok "URL publique   : ${pub} → HTTP ${code}" || warn "URL publique   : ${pub} → injoignable (tunnel lancé ?)"
+  else
+    warn "URL publique   : APP_URL non défini dans .env"
+  fi
+
+  # Multi-bots (8.75) : aperçu des moteurs enfants
+  echo
+  local hcode token_bots
+  hcode="$(http_code "http://127.0.0.1:${PORT}/api/health")"
+  token_bots="$(env_value PANEL_TOKEN)"
+  if [ "${hcode}" != "000" ] && [ -n "${token_bots}" ]; then
+    curl -s -m 10 "http://127.0.0.1:${PORT}/api/bots" \
+      -H "Authorization: Bearer ${token_bots}" \
+      | node -e '
+        let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
+          let j; try { j=JSON.parse(d); } catch(e){ return; }
+          if (!j.bots) return;
+          for (const b of j.bots) {
+            const proc = b.process==="running" ? "lancé" : b.process==="starting" ? "démarrage" : b.process==="backoff" ? "relance planifiée" : "arrêté";
+            const wa = b.whatsapp && b.whatsapp.status ? String(b.whatsapp.status) : "inconnu";
+            console.log(" "+b.id.padEnd(12)+(b.name||b.id).padEnd(16)+proc.padEnd(18)+"WhatsApp: "+wa+(b.isDefault?"   (défaut)":""));
+          }
+        });' 2>/dev/null || true
+  else
+    info "Bots : panneau local injoignable ou PANEL_TOKEN absent"
+  fi
+
+  # Stockage
+  echo
+  local tmp="${TMPDIR:-/tmp}"
+  du -sh "${tmp}/nebula_temp_downloads" 2>/dev/null | awk '{print " 📦 Téléch. temporaires : " $1 " (" $2 ")"}' || info "📦 Téléch. temporaires : vide"
+  local n_staging; n_staging="$(find "${tmp}" -maxdepth 1 -name 'cat_catch_*' -o -maxdepth 1 -name 'batch_zip_*' 2>/dev/null | wc -l)"
+  [ "${n_staging}" -gt 0 ] && warn "🧹 ${n_staging} dossier(s) de staging orphelin(s) — ./manage.sh clean" \
+                           || ok "Aucun débris de staging"
+  command -v df >/dev/null && echo " 💾 Disque : $(df -h / | awk 'NR==2{print $4 " libres sur " $2}')"
+
+  # Logs
+  echo
+  [ -f "${LOG_FILE}" ] && echo " ${C_BOLD}Log${C_RESET}: ${LOG_FILE} ($(du -h "${LOG_FILE}" | cut -f1)) — ./manage.sh logs" \
+                       || info "Log absent (${LOG_FILE})"
+  [ -f "${TUNNEL_LOG}" ] && echo " ${C_BOLD}Log tunnel${C_RESET}: ${TUNNEL_LOG}"
+  echo
+}
+
+# ---------------------------------------------------------------------------
+# UPDATE / SETUP / CLONE
+# ---------------------------------------------------------------------------
+cmd_update() {
+  require_repo
+  update_lock_acquire
+  trap update_lock_release EXIT   # libéré même en cas de die()
+  UPDATE_IN_PROGRESS=1            # autorise cmd_start/cmd_restart internes
+  hdr "Mise à jour du dépôt"
+  local was_running="no"; is_running && was_running="yes"
+  local old_rev; old_rev="$(git -C "${APP_DIR}" rev-parse --short HEAD 2>/dev/null || echo '?')"
+
+  git -C "${APP_DIR}" config pull.ff only   # supprime le hint de divergence
+  info "git pull --ff-only origin ${BRANCH}…"
+  if ! ( cd "${APP_DIR}" && git pull --ff-only origin "${BRANCH}" 2>&1 | sed 's/^/    /' ); then
+    die "Pull refusé (commits locaux ou divergence) — résous avec git status/git stash puis relance."
+  fi
+  local new_rev; new_rev="$(git -C "${APP_DIR}" rev-parse --short HEAD)"
+  if [ "${old_rev}" = "${new_rev}" ]; then
+    ok "Déjà à jour (${new_rev})."
+    [ "${was_running}" = "yes" ] && info "Le bot tourne — pas de redémarrage nécessaire."
+    return 0
+  fi
+  ok "Code: ${old_rev} → ${new_rev}"
+  ( cd "${APP_DIR}" && git log --oneline "${old_rev}..${new_rev}" 2>/dev/null | sed 's/^/    /' )
+
+  # 8.85 : chemin ABSOLU du script À JOUR sur disque. BASH_SOURCE peut être
+  # relatif (ex. ./manage.sh) : un exec direct échouerait selon le cwd d'où
+  # l'owner a lancé la commande. Calculé APRÈS le pull — si un futur update
+  # déplace manage.sh, le repli cmd_restart prend le relais.
+  local self_path
+  self_path="$(cd "$(dirname "${NEBULA_SRC}")" && pwd)/$(basename "${NEBULA_SRC}")"
+
+  # Sur un conteneur ~1 Go, npm/vite en parallèle du bot vivant saturent la
+  # mémoire du cgroup → throttling → updates de 20-30 min (audit 8.29).
+  # On arrête le bot le temps d'installer/construire (~1 min) puis on le
+  # relance ; en cas d'échec, l'ancien build est relancé s'il existe encore.
+  update_fail() {
+    if [ "${was_running}" = "yes" ] && [ -f "${APP_DIR}/dist/server.cjs" ]; then
+      warn "Échec de l'étape — relance de l'ancien build…"
+      # 8.85 : relance via le manage.sh À JOUR sur disque (ce processus
+      # exécute encore l'ancien). L'env-prefix n'exporte UPDATE_IN_PROGRESS
+      # que pour ce fils : son cmd_start reste autorisé malgré le verrou
+      # que ce processus tient encore.
+      UPDATE_IN_PROGRESS=1 bash "${self_path}" start >/dev/null 2>&1 || true
+    fi
+    die "$1"
+  }
+  if [ "${was_running}" = "yes" ]; then
+    info "Arrêt du bot pendant l'installation (redémarrage automatique ensuite)…"
+    cmd_stop || true
+  fi
+
+  hdr "Dépendances"
+  if ( cd "${APP_DIR}" && git diff --name-only "${old_rev}" "${new_rev}" -- package.json package-lock.json | grep -q . ); then
+    info "package*.json modifié → npm install…"
+    ( cd "${APP_DIR}" && npm install --no-audit --no-fund --prefer-offline 2>&1 | tail -n 2 | sed 's/^/    /' ) || update_fail "npm install a échoué"
+  else
+    ok "Aucune dépendance modifiée — npm install sauté."
+  fi
+
+  hdr "Build"
+  ( cd "${APP_DIR}" && npm run build 2>&1 | tail -n 6 | sed 's/^/    /' ) || update_fail "Build échoué"
+
+  hdr "Rotation du log (audit 8.51)"
+  install_logrotate
+
+  hdr "Redémarrage"
+  if [ "${was_running}" = "yes" ]; then
+    # 8.85 : ce bash exécute encore l'ANCIEN manage.sh — le git pull ci-dessus
+    # a remplacé le fichier sur disque, mais le processus en cours continue
+    # sur l'ancien contenu (constaté en 8.84b : redémarrage par l'ancienne
+    # ligne de start → LogGuard non armé). On délègue au script À JOUR via
+    # exec : le nouveau bash ROUVRE le fichier présent sur disque. Un exec
+    # ne tire PAS le trap EXIT → verrou libéré explicitement ici ; les
+    # variables non exportées (UPDATE_IN_PROGRESS) ne traversent pas l'exec.
+    update_lock_release
+    if [ -f "${self_path}" ]; then
+      info "Redémarrage via le manage.sh à jour (exec)…"
+      exec bash "${self_path}" restart
+    fi
+    cmd_restart   # repli : script introuvable au chemin résolu (renommé ?)
+  else
+    info "Le bot était arrêté — relance avec: ./manage.sh start"
+  fi
+}
+
+# 8.51 : rotation du log du bot (idempotent — appelé par setup ET update :
+# l'owner ne passe QUE par update en routine).
+# 8.82 : quotidien + plafond 100 Mo (la couche crypto WhatsApp crache des
+# dumps géants par message reçu — l'hebdo sans plafond laissait le log
+# gonfler en Go entre deux passages). BEST-EFFORT : dans un conteneur
+# Docker sans cron, logrotate ne tourne pas — la protection PRINCIPALE est
+# le garde in-app (src/bot/logGuard.ts, branché par NEBULA_LOG_FILE).
+# copytruncate : le bot garde son fd ouvert, il ne faut PAS déplacer le fichier.
+# Heredoc NON quoté : le chemin est résolu ICI (logrotate ne fait aucune
+# expansion shell — un heredoc quoté écrirait un literal ${...} invalide).
+install_logrotate() {
+  local lr="/etc/logrotate.d/nebula-bot"
+  if command -v logrotate >/dev/null 2>&1 && cat > "${lr}" 2>/dev/null <<LR
+${LOG_FILE}
+{
+  daily
+  maxsize 100M
+  rotate 3
+  compress
+  missingok
+  notifempty
+  copytruncate
+}
+LR
+  then
+    ok "Rotation hebdomadaire du log installée (${lr}, 4 semaines conservées, compressé)"
+  else
+    warn "logrotate indisponible — surveille la taille de ${LOG_FILE} (./manage.sh clean ne le gère pas)"
+  fi
+}
+
+cmd_setup() {
+  require_repo
+  command -v npm >/dev/null 2>&1 || die "npm introuvable — installe Node.js ≥ 18 (https://nodejs.org)"
+  hdr "Installation des dépendances"
+  # ffmpeg système requis (remux HLS). L'ancienne dépendance npm ffmpeg-static
+  # téléchargeait ~70 Mo depuis GitHub à chaque install fraîche (source
+  # d'updates de 20-30 min) alors que le binaire système a toujours été
+  # préféré — elle a été retirée (audit 8.29).
+  command -v ffmpeg >/dev/null 2>&1 || warn "ffmpeg introuvable — apt install ffmpeg (sinon les téléchargements échoueront au remux)"
+  hdr "yt-dlp (téléchargeur universel — 8.67)"
+  if command -v yt-dlp >/dev/null 2>&1; then
+    ok "yt-dlp $(yt-dlp --version 2>/dev/null | head -1) déjà présent"
+  elif [ "$(id -u)" -eq 0 ] && command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+      -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp \
+      && ok "yt-dlp $(yt-dlp --version 2>/dev/null | head -1) installé" \
+      || warn "yt-dlp non installé (réseau ?) — relance nebula setup plus tard"
+  else
+    warn "yt-dlp non installé (root/curl requis) — manuel : curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp"
+  fi
+  ( cd "${APP_DIR}" && npm install --no-audit --no-fund --prefer-offline 2>&1 | tail -n 2 | sed 's/^/    /' ) || die "npm install a échoué"
+  hdr "Fichier .env"
+  if [ ! -f "${ENV_FILE}" ]; then
+    cp "${APP_DIR}/.env.example" "${ENV_FILE}" 2>/dev/null || true
+    warn ".env créé depuis l'exemple — configure-le : ./manage.sh env"
+  else
+    ok ".env déjà présent (clés: $(grep -cE '^[A-Z]' "${ENV_FILE}" 2>/dev/null || echo 0))"
+  fi
+  hdr "Build"
+  ( cd "${APP_DIR}" && npm run build 2>&1 | tail -n 4 | sed 's/^/    /' ) || die "Build échoué"
+  hdr "Rotation du log (audit 8.51)"
+  install_logrotate
+  ok "Installation terminée — démarre avec: ./manage.sh start"
+}
+
+cmd_clone() {
+  local dir="${1:-/root/p}"
+  [ -e "${dir}" ] && [ -n "$(ls -A "${dir}" 2>/dev/null)" ] && die "Le dossier ${dir} existe déjà et n'est pas vide."
+  hdr "Clonage de ${REPO_URL} (branche ${BRANCH}) → ${dir}"
+  mkdir -p "${dir}"
+  git clone -b "${BRANCH}" "${REPO_URL}" "${dir}" || die "Clonage échoué"
+  ok "Dépôt cloné."
+  ( cd "${dir}" && git config pull.ff only )
+  exec bash "${dir}/manage.sh" setup
+}
+
+# ---------------------------------------------------------------------------
+# ENV
+# ---------------------------------------------------------------------------
+ENV_KEYS=(
+  "APP_URL|URL publique du panneau (ex: https://bot.exemple.com) — obligatoire pour les liens + validation Host"
+  "PANEL_TOKEN|Clé d'accès au panneau (si vide: générée au démarrage et affichée une fois en console)"
+  "GEMINI_API_KEY|Clé Gemini pour l'IA (texte/image/transcription)"
+  "NVIDIA_NIM_API_KEY|Clé NVIDIA NIM (nvapi-…) — IA de secours si Gemini absent/épuisé (gratuite sur build.nvidia.com)"
+  "NEBULA_NIM_MODEL|Modèle NIM (défaut nvidia/nemotron-3-super-120b-a12b — l ancien llama-3.3-70b a été retiré par NVIDIA)"
+  "NEBULA_AI_GEMINI_BUDGET_MS|Budget max (ms) pour les essais Gemini avant bascule vers NIM (défaut 25000)"
+  "NEBULA_AI_PRIMARY|Moteur IA primaire pour le texte : gemini (défaut) ou nim — les images vont toujours à Gemini (NIM ne voit pas les images)"
+  "NEBULA_AI_PERSONALITY|Remplace TOUTE la personnalité IA (system prompt) — vide = persona Nebula intégrée"
+  "NEBULA_AI_MEMORY_TTL_HOURS|Durée de vie (heures) de la mémoire IA par discussion — glissante, 0 = désactivée (défaut 10)"
+  "NEBULA_AI_MEMORY_MAX_TURNS|Tours bruts gardés avant compaction en résumé (défaut 20)"
+  "OWNER_NUMBER|Numéro WhatsApp propriétaire (indicatif pays + numéro, sans + ni espaces)"
+  "PORT|Port du panneau (défaut 3000)"
+  "NEBULA_VF_DEFAULT|Mettre 0 pour désactiver la VF par défaut (défaut: VF d'abord)"
+  "NEBULA_VOIRANIME_DISABLED|Mettre 1 pour couper la source voir-anime.to"
+  "NEBULA_BATCH_CONCURRENCY|Épisodes téléchargés en parallèle (défaut 1 — séquentiel, recommandé: RAM)"
+  "NEBULA_BATCH_ZIP|Mettre 1 pour réactiver l'archive ZIP de saison (défaut: liens par épisode)"
+  "NEBULA_NOVABOX_MAX_EPISODES|Nb max d'épisodes par batch (défaut 12)"
+  "NEBULA_NOVABOX_MAX_BATCH_MB|Plafond Mo par batch (défaut 2048)"
+  "NEBULA_TEMP_MAX_BYTES|Plafond du stockage temporaire en octets (défaut 4 GiB)"
+  "NEBULA_FRANIME_ENABLED|Active l'oracle VF franime (vérité VF par titre/saison, catalogue public — sans FlareSolverr) — 1 = actif"
+  "FLARESOLVERR_URL|URL FlareSolverr (franime)"
+  "NEBULA_AI_DAILY_LIMIT|Budget IA/jour/utilisateur (défaut 40)"
+  "NEBULA_AI_MAX_CONCURRENT|Requêtes IA simultanées max (défaut 3)"
+  "NEBULA_DOWNLOAD_TIMEOUT_MS|Délai max global par téléchargement d'épisode en ms (défaut 600000 = 10 min)",
+  "NEBULA_WATCH_CRON|Planification cron de la veille épisodes (défaut toutes les 6 h)",
+  "NEBULA_WATCH_QUIET|Heures silencieuses de la veille, format H-H (défaut 23-7, off = désactivé)",
+  "NEBULA_WATCH_TZ|Fuseau horaire de la veille (défaut Africa/Douala)",
+  "DEBUG_MEDIA|Mettre true pour logs média verbeux"
+)
+
+env_upsert() { # $1 clé, $2 valeur
+  local k="$1" v="$2"
+  [ -z "${k}" ] && die "Clé vide"
+  case "${k}" in
+    NODE_ENV) die "NODE_ENV ne doit PAS être dans .env (npm start le définit déjà = production).";;
+    *[!A-Z0-9_]*) die "Clé invalide: ${k} (A-Z, 0-9, _ uniquement)";;
+  esac
+  # s'assurer que le fichier finit par un retour ligne avant l'ajout
+  [ -f "${ENV_FILE}" ] && [ -s "${ENV_FILE}" ] && [ -n "$(tail -c1 "${ENV_FILE}")" ] && echo >> "${ENV_FILE}"
+  local tmp="${ENV_FILE}.tmp"
+  { grep -vE "^${k}=" "${ENV_FILE}" 2>/dev/null; echo "${k}=\"${v}\""; } > "${tmp}" && mv "${tmp}" "${ENV_FILE}"
+  chmod 600 "${ENV_FILE}" 2>/dev/null || true   # 8.76 audit SEC-04 : clés API dedans
+  ok "${k} enregistré."
+}
+
+cmd_env() {
+  local sub="${1:-menu}"
+  case "${sub}" in
+    list)
+      hdr "Contenu du .env"
+      [ -f "${ENV_FILE}" ] || { warn "Aucun .env — ./manage.sh env set CLE valeur"; return 0; }
+      for line in "${ENV_KEYS[@]}"; do
+        local k desc; k="${line%%|*}"; desc="${line#*|}"
+        printf " ${C_BOLD}%-28s${C_RESET} = %s\n    ${C_DIM}%s${C_RESET}\n" "${k}" "$(env_masked "${k}")" "${desc}"
+      done
+      # clés inconnues présentes dans le fichier
+      while IFS='=' read -r k v; do
+        case "${k}" in ""|\#*) continue;; esac
+        local known=0
+        for line in "${ENV_KEYS[@]}"; do [ "${line%%|*}" = "${k}" ] && known=1; done
+        [ "${known}" = "0" ] && printf " ${C_BOLD}%-28s${C_RESET} = %s ${C_DIM}(clé avancée)${C_RESET}\n" "${k}" "$(env_masked "${k}")"
+      done < <(grep -E '^[A-Z]' "${ENV_FILE}" 2>/dev/null)
+      ;;
+    set)
+      [ $# -ge 3 ] || die "Usage: ./manage.sh env set CLE valeur"
+      env_upsert "$2" "${*:3}"
+      ;;
+    get)
+      [ $# -ge 2 ] || die "Usage: ./manage.sh env get CLE"
+      env_value "$2"
+      ;;
+    unset)
+      [ $# -ge 2 ] || die "Usage: ./manage.sh env unset CLE"
+      local tmp="${ENV_FILE}.tmp"
+      grep -vE "^$2=" "${ENV_FILE}" 2>/dev/null > "${tmp}" && mv "${tmp}" "${ENV_FILE}"
+      chmod 600 "${ENV_FILE}" 2>/dev/null || true   # 8.76 audit SEC-04
+      ok "$2 supprimée du .env"
+      ;;
+    edit)
+      [ -f "${ENV_FILE}" ] || cp "${APP_DIR}/.env.example" "${ENV_FILE}" 2>/dev/null || true
+      "${EDITOR:-nano}" "${ENV_FILE}"
+      ;;
+    menu|*)
+      hdr "Configuration du .env"
+      [ -f "${ENV_FILE}" ] || { cp "${APP_DIR}/.env.example" "${ENV_FILE}" 2>/dev/null || warn "Aucun .env.example — un .env vide sera créé."; }
+      while true; do
+        echo
+        local i=1
+        for line in "${ENV_KEYS[@]}"; do
+          local k desc dflt; k="${line%%|*}"; desc="${line#*|}"
+          if [ -z "$(env_value "${k}")" ] && [ -n "$(env_example_default "${k}")" ]; then
+            dflt="$(env_example_default "${k}")"
+            printf " ${C_BOLD}%2d)${C_RESET} %-28s ${C_DIM}(défaut: %s)${C_RESET}\n" "${i}" "${k}" "${dflt}"
+          else
+            printf " ${C_BOLD}%2d)${C_RESET} %-28s %s\n" "${i}" "${k}" "$(env_masked "${k}")"
+          fi
+          i=$((i+1))
+        done
+        echo "  0) Terminer"
+        echo
+        read -r -p "Numéro de la clé à modifier (0=quitter, e=éditeur complet) : " choice
+        [ "${choice}" = "0" ] && break
+        [ "${choice}" = "e" ] && { "${EDITOR:-nano}" "${ENV_FILE}"; continue; }
+        local chosen="" ck
+        chosen=""; i=1
+        for line in "${ENV_KEYS[@]}"; do
+          [ "${i}" = "${choice}" ] && chosen="${line%%|*}"
+          i=$((i+1))
+        done
+        if [ -z "${chosen}" ]; then warn "Choix invalide."; continue; fi
+        read -r -p "Valeur pour ${chosen} (vide = supprimer) : " val
+        if [ -z "${val}" ]; then
+          grep -vE "^${chosen}=" "${ENV_FILE}" 2>/dev/null > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "${ENV_FILE}"
+          ok "${chosen} supprimée."
+        else
+          env_upsert "${chosen}" "${val}"
+        fi
+      done
+      ok "Configuration .env terminée. Pense à ./manage.sh restart si le bot tourne."
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# LOGS / CLEAN / DOCTOR / VERSION
+# ---------------------------------------------------------------------------
+cmd_logs() {
+  [ -f "${LOG_FILE}" ] || die "Pas de log (${LOG_FILE}) — le bot a-t-il déjà tourné ?"
+  if [ $# -ge 1 ]; then
+    info "Filtre: $* (Ctrl+C pour quitter)"
+    tail -n 200 -f "${LOG_FILE}" | grep --line-buffered -iE "$*"
+  else
+    info "Suivi de ${LOG_FILE} (Ctrl+C pour quitter)"
+    tail -n 100 -f "${LOG_FILE}"
+  fi
+}
+
+cmd_clean() {
+  hdr "Nettoyage des fichiers temporaires"
+  local tmp="${TMPDIR:-/tmp}" freed=0 n=0
+  local before after
+  before="$(du -sk "${tmp}/cat_catch_"* "${tmp}/batch_zip_"* "${tmp}/nebula_temp_downloads" 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+  # staging de téléchargement (cat_catch_*, batch_zip_*) : > 60 min
+  while IFS= read -r -d '' p; do
+    rm -rf -- "${p}"; n=$((n+1))
+  done < <(find "${tmp}" -maxdepth 1 \( -name 'cat_catch_*' -o -name 'batch_zip_*' \) -mmin +${AGE_STAGING_MIN} -print0 2>/dev/null)
+  # fichiers servis (nebula_temp_downloads) : > 3 h (liens expirés de toute façon)
+  if [ -d "${tmp}/nebula_temp_downloads" ]; then
+    while IFS= read -r -d '' p; do
+      rm -rf -- "${p}"; n=$((n+1))
+    done < <(find "${tmp}/nebula_temp_downloads" -mindepth 1 -mmin +$(( AGE_TEMP_H * 60 )) -print0 2>/dev/null)
+  fi
+  after="$(du -sk "${tmp}/cat_catch_"* "${tmp}/batch_zip_"* "${tmp}/nebula_temp_downloads" 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+  freed=$(( before - after ))
+  if [ "${n}" -gt 0 ]; then
+    ok "${n} élément(s) purgé(s), $(( freed / 1024 )) Mo libérés."
+    warn "Nettoyage récent ignoré (<${AGE_STAGING_MIN} min) pour ne pas casser un téléchargement en cours."
+  else
+    ok "Rien à purger (les éléments récents sont conservés)."
+  fi
+}
+
+cmd_doctor() {
+  require_repo
+  hdr "DIAGNOSTIQUE"
+  local fails=0
+
+  # Outils
+  command -v node >/dev/null 2>&1 && ok "node $(node -v)" || { ko "node introuvable"; fails=$((fails+1)); }
+  command -v npm  >/dev/null 2>&1 && ok "npm $(npm -v 2>/dev/null)" || { ko "npm introuvable"; fails=$((fails+1)); }
+  command -v ffmpeg >/dev/null 2>&1 && ok "ffmpeg $(ffmpeg -version 2>/dev/null | head -1 | cut -d' ' -f3)" \
+                                        || { ko "ffmpeg introuvable (apt install ffmpeg)"; fails=$((fails+1)); }
+  command -v yt-dlp >/dev/null 2>&1 && ok "yt-dlp $(yt-dlp --version 2>/dev/null | head -1) (téléchargeur universel)" \
+                                        || warn "yt-dlp absent — nebula setup l'installe (Facebook/Twitter indisponibles)"
+  command -v git >/dev/null 2>&1 && ok "git $(git --version | cut -d' ' -f3)" || warn "git introuvable (utile pour update)"
+
+  # Dépôt
+  local branch; branch="$(git -C "${APP_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+  [ "${branch}" = "${BRANCH}" ] && ok "Branche: ${branch}" \
+                                  || warn "Branche: ${branch} (attendue: ${BRANCH})"
+  git -C "${APP_DIR}" remote get-url origin >/dev/null 2>&1 && ok "remote origin configuré" || warn "Pas de remote origin"
+
+  # .env
+  echo
+  if [ -f "${ENV_FILE}" ]; then
+    ok ".env présent (${ENV_FILE})"
+    [ -n "$(env_value PANEL_TOKEN)" ] && ok "PANEL_TOKEN défini" || warn "PANEL_TOKEN vide — une clé sera générée et persistée dans .env au premier démarrage (8.75)"
+    [ -n "$(env_value APP_URL)" ] && ok "APP_URL = $(env_value APP_URL)" || warn "APP_URL vide — les liens de téléchargement utiliseront une URL détectée (moins fiable)"
+  else
+    warn ".env ABSENT — ./manage.sh env"
+  fi
+
+  # RAM / disque
+  echo
+  local cg; cg="$(cgroup_max_mb)"
+  if [ -n "${cg}" ]; then
+    local mem_note=""
+    [ "${cg}" -lt 1500 ] && mem_note=" ${C_YELLOW}(serré — npm start plafonne déjà le tas V8 à 384 Mo)${C_RESET}"
+    echo " 🧠 Limite mémoire conteneur : ${cg} Mo${mem_note}"
+  else
+    info "Pas de limite cgroup détectée"
+  fi
+  local avail; avail="$(df -Pk / 2>/dev/null | awk 'NR==2{print int($4/1048576)}')"
+  [ -n "${avail}" ] && { [ "${avail}" -ge 2 ] && ok "Disque: ${avail} Go libres" || { ko "Disque: ${avail} Go libres (<2 Go) — ./manage.sh clean"; fails=$((fails+1)); }; }
+  # 8.51 : sans rotation, /root/bot.log finit par remplir le disque.
+  local botlog_size; botlog_size="$(du -m "${LOG_FILE}" 2>/dev/null | awk '{print $1}')"
+  if [ -f /etc/logrotate.d/nebula-bot ]; then
+    ok "Rotation du log active (logrotate hebdo)${botlog_size:+ — log actuel: ${botlog_size} Mo}"
+  else
+    if [ -n "${botlog_size}" ] && [ "${botlog_size}" -ge 200 ]; then
+      warn "Log ${LOG_FILE} = ${botlog_size} Mo SANS rotation — nebula setup (audit 8.51)"
+    else
+      info "Log non rotaté — nebula setup installe logrotate (audit 8.51)"
+    fi
+  fi
+
+  # Build / process / réseau
+  echo
+  [ -f "${APP_DIR}/dist/server.cjs" ] && ok "Build présent (dist/server.cjs)" || { ko "Pas de build — ./manage.sh update"; fails=$((fails+1)); }
+  is_running && ok "Bot en cours d'exécution (PID $(bot_pids | tr '\n' ' '))" || warn "Bot arrêté — ./manage.sh start"
+  # 8.50 : preuve que la protection OOM est active sur le process QUI TOURNE.
+  # 8.51 : npm start spawn aussi un wrapper `sh -c` que pgrep matche — ses
+  # /proc sont ceux du shell (RSS ~2 Mo, meaningless). On vise le vrai node.
+  local pid pid_
+  pid=""
+  for pid_ in $(bot_pids); do
+    if [ "$(cat "/proc/${pid_}/comm" 2>/dev/null)" = "node" ]; then pid="${pid_}"; break; fi
+  done
+  [ -z "${pid}" ] && pid="$(bot_pids | head -1)"
+  if [ -n "${pid}" ] && [ -r "/proc/${pid}/environ" ]; then
+    local bot_env; bot_env="$(tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null || true)"
+    if echo "${bot_env}" | grep -q '^MALLOC_ARENA_MAX='; then
+      ok "Arenas glibc bridées (MALLOC_ARENA_MAX=$(echo "${bot_env}" | grep '^MALLOC_ARENA_MAX=' | cut -d= -f2))"
+    else
+      warn "Bot lancé sans MALLOC_ARENA_MAX — ./manage.sh restart (protection OOM 8.50)"
+    fi
+    local vmrss; vmrss="$(awk '/^VmRSS:/{print $2}' "/proc/${pid}/status" 2>/dev/null)"
+    [ -n "${vmrss}" ] && info "RSS actuel du bot : $((vmrss/1024)) Mo (pause batch à 700 Mo)"
+  fi
+  local code; code="$(http_code "http://127.0.0.1:${PORT}/")"
+  [ "${code}" != "000" ] && ok "Panneau local : HTTP ${code}" || warn "Panneau local : pas de réponse (bot arrêté ?)"
+  local pub; pub="$(public_url)"
+  [ -n "${pub}" ] && { code="$(http_code "${pub}/")"; [ "${code}" != "000" ] && ok "URL publique ${pub} : HTTP ${code}" || warn "URL publique ${pub} : injoignable — tunnel à relancer ?"; }
+
+  # Débris
+  local tmp="${TMPDIR:-/tmp}"
+  local n_staging; n_staging="$(find "${tmp}" -maxdepth 1 \( -name 'cat_catch_*' -o -name 'batch_zip_*' \) -mmin +${AGE_STAGING_MIN} 2>/dev/null | wc -l)"
+  [ "${n_staging}" -gt 0 ] && warn "${n_staging} dossier(s) de staging orphelin(s) — ./manage.sh clean" || ok "Aucun débris de staging"
+
+  echo
+  [ "${fails}" -eq 0 ] && ok "Diagnostic global : RIEN DE BLOQUANT 🎉" || ko "${fails} problème(s) bloquant(s) à corriger."
+  [ "${fails}" -gt 0 ] && exit 1
+  return 0
+}
+
+cmd_watchdog() {
+  # 8.50: un OOM kill du cgroup a laissé le bot éteint jusqu'à intervention
+  # manuelle. Prévu pour cron (* * * * *) : ne relance que s'il est vraiment mort.
+  if is_running; then
+    exit 0
+  fi
+  # 8.51: jamais deux démarrages concurrents (voir WATCHDOG_LOCK_DIR ci-dessus).
+  if [ -d "${WATCHDOG_LOCK_DIR}" ]; then
+    local wl_age=$(( ( $(date +%s) - $(stat -c %Y "${WATCHDOG_LOCK_DIR}" 2>/dev/null || echo 0) ) / 60 ))
+    if [ "${wl_age}" -lt "${WATCHDOG_LOCK_STALE_MIN}" ]; then
+      exit 0   # une autre tentative de démarrage est en cours
+    fi
+    rm -rf "${WATCHDOG_LOCK_DIR}"   # verrou périmé (tentative morte) — on reprend la main
+  fi
+  mkdir "${WATCHDOG_LOCK_DIR}" 2>/dev/null || exit 0
+  trap 'rmdir "${WATCHDOG_LOCK_DIR}" 2>/dev/null' EXIT
+  echo "$(date '+%F %T') watchdog: bot down — restarting" >> "${LOG_DIR:-/root}/nebula_watchdog.log"
+  cmd_start
+}
+
+cmd_version() {
+  require_repo
+  echo "Nebula manage.sh — $(git -C "${APP_DIR}" log -1 --format='%h (%ad)' --date=format:'%d/%m/%Y %H:%M')"
+  echo "Branche: $(git -C "${APP_DIR}" rev-parse --abbrev-ref HEAD)"
+}
+
+cmd_help() {
+  local self; self="$(basename "$0")"
+  cat <<EOF
+${C_BOLD}${C_CYAN} ╔═══════════════════════════════════════════════════════════════╗
+ ║   NEBULA BOT — Gestion VPS                                      ║
+ ╚═══════════════════════════════════════════════════════════════╝${C_RESET}
+${C_BOLD}Usage:${C_RESET} ${self} <commande> [arguments]
+
+${C_BOLD}Cycle de vie${C_RESET}
+   ${C_BOLD}start${C_RESET}      Démarre le bot (nohup) et vérifie que le panneau répond
+   ${C_BOLD}stop${C_RESET}       Arrêt propre (SIGTERM puis SIGKILL si besoin)
+   ${C_BOLD}restart${C_RESET}    stop + start
+   ${C_BOLD}pair${C_RESET}      Connecte un numéro par code d'appariement (sans QR) : nebula pair [bot] 237690000000
+   ${C_BOLD}bots${C_RESET}      Liste les bots du déploiement (multi-bots) : état process + WhatsApp
+   ${C_BOLD}bot${C_RESET}       Contrôle un bot précis : nebula bot <id> <start|stop|restart|status>
+   ${C_BOLD}status${C_RESET}     État complet: process, RAM vs cgroup, panneau, tunnel, disque
+   ${C_BOLD}logs${C_RESET} [f]   Suit le log en direct (/root/bot.log); ex: nebula logs NOVABOX
+
+${C_BOLD}Installation / mise à jour${C_RESET}
+   ${C_BOLD}update${C_RESET}     git pull --ff-only + npm install (si besoin) + build + restart
+   ${C_BOLD}setup${C_RESET}      npm install + .env initial + build (après un clonage)
+   ${C_BOLD}clone${C_RESET} [d]  Clone le dépôt (défaut /root/p) puis lance setup
+
+${C_BOLD}Configuration${C_RESET}
+   ${C_BOLD}env${C_RESET}        Assistant interactif du .env (listes clés + descriptions)
+   ${C_BOLD}env list${C_RESET}   Affiche les clés (valeurs secrètes masquées)
+   ${C_BOLD}env set${C_RESET} K V  Définit une clé     ${C_BOLD}env get${C_RESET} K   Lit une valeur brute
+   ${C_BOLD}env unset${C_RESET} K  Supprime une clé   ${C_BOLD}env edit${C_RESET}    Ouvre l'éditeur
+
+${C_BOLD}Maintenance${C_RESET}
+   ${C_BOLD}clean${C_RESET}      Purge les temporaires orphelins (staging >1h, liens expirés >3h)
+   ${C_BOLD}doctor${C_RESET}     Diagnostic complet (node, ffmpeg, .env, RAM, disque, réseau…)
+   ${C_BOLD}version${C_RESET}    Révision git du script + de l'app
+   ${C_BOLD}watchdog${C_RESET}  Vérifie que le bot tourne, sinon le relance (pour cron)
+
+${C_DIM}Installé via scripts/install.sh → commande « nebula » disponible partout.${C_RESET}
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Point d'entrée
+# ---------------------------------------------------------------------------
+case "${1:-help}" in
+  start)   shift || true; cmd_start "$@" ;;
+  stop)    shift || true; cmd_stop "$@" ;;
+  restart) shift || true; cmd_restart "$@" ;;
+  pair)    shift || true; cmd_pair "$@" ;;
+  bots)    shift || true; cmd_bots "$@" ;;
+  bot)     shift || true; cmd_bot "$@" ;;
+  status)  shift || true; cmd_status "$@" ;;
+  update)  shift || true; cmd_update "$@" ;;
+  setup)   shift || true; cmd_setup "$@" ;;
+  clone)   shift || true; cmd_clone "${1:-}" ;;
+  env)     shift || true; cmd_env "$@" ;;
+  logs)    shift || true; cmd_logs "$@" ;;
+  clean)   shift || true; cmd_clean "$@" ;;
+  doctor)  shift || true; cmd_doctor "$@" ;;
+  watchdog) cmd_watchdog "$@" ;;
+  version) shift || true; cmd_version "$@" ;;
+  help|--help|-h) cmd_help ;;
+  *) ko "Commande inconnue: $1"; echo; cmd_help; exit 1 ;;
+esac

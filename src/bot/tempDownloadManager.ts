@@ -21,7 +21,28 @@ const ZIP_MAX_AGE_MS = 60 * 60 * 1000; // 60 minutes maximum retention for gener
 
 // Storage safety ceilings — an untrusted WhatsApp user must not be able to
 // fill the host disk via temp downloads.
-const TEMP_MAX_TOTAL_BYTES = Number(process.env.NEBULA_TEMP_MAX_BYTES || 4 * 1024 * 1024 * 1024); // 4 GB
+// 8.83 : défaut abaissé à 2 Go — calibré pour les petits conteneurs (7-8 Go)
+// où l'ancien 4 Go ne pouvait jamais être atteint sans remplir le disque.
+function getTempMaxTotalBytes(): number {
+  const raw = Number(process.env.NEBULA_TEMP_MAX_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2 * 1024 * 1024 * 1024;
+}
+
+/**
+ * 8.83 — TTL GLISSANT des liens de téléchargement (NEBULA_LINK_TTL_MIN).
+ * Défaut 30 min, borné [5, 120]. Chaque téléchargement (GET/HEAD, ranges
+ * inclus) relance le délai via touchTempDownload ; la vie TOTALE d'un lien
+ * reste plafonnée à 2 h (MAX_LIFETIME_MS) pour préserver l'invariant
+ * multi-bots du scan orphelin (seuil 3 h > 2 h de vie possible).
+ */
+export function getLinkTtlMinutes(): number {
+  const raw = Number(process.env.NEBULA_LINK_TTL_MIN);
+  const v = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 30;
+  return Math.min(120, Math.max(5, v));
+}
+
+/** Durée de vie TOTALE maximale d'un lien (de la création à la mort). */
+const MAX_LIFETIME_MS = 2 * 60 * 60 * 1000;
 const TEMP_MAX_RECORDS = 200;
 const ORPHAN_MAX_AGE_MS = 3 * 60 * 60 * 1000; // hard sweep for any orphan > 3h
 
@@ -102,9 +123,15 @@ export function registerTempDownload(
   const sizeBytes = stat.size;
   const sizeMB = Number((sizeBytes / (1024 * 1024)).toFixed(2));
   
-  // Generated ZIP archives have a strict 60 minutes TTL to optimize server storage
-  const defaultTtl = isZip ? 60 : 120;
-  const ttlMinutes = options?.ttlMinutes !== undefined ? (isZip ? Math.min(options.ttlMinutes, 60) : options.ttlMinutes) : defaultTtl;
+  // 8.83 : TTL glissant — défaut NEBULA_LINK_TTL_MIN (30 min) ; une valeur
+  // explicite reste honorée, bornée [5, 120]. L'ancien cap dur de 60 min
+  // des ZIP est remplacé par le plafond de vie totale (2 h) appliqué dans
+  // touchTempDownload.
+  const requestedTtl = options?.ttlMinutes;
+  const ttlMinutes =
+    requestedTtl !== undefined
+      ? Math.min(120, Math.max(5, Math.floor(requestedTtl)))
+      : getLinkTtlMinutes();
   const mimeType = options?.mimeType || (isZip ? "application/zip" : filename.endsWith(".mp4") ? "video/mp4" : "application/octet-stream");
 
   // Secure unguessable 48-char random token
@@ -113,7 +140,7 @@ export function registerTempDownload(
   if (activeDownloads.size >= TEMP_MAX_RECORDS) {
     throw new Error("Temporary download storage is full (record limit). Please try again later.");
   }
-  if (currentTotal + sizeBytes > TEMP_MAX_TOTAL_BYTES) {
+  if (currentTotal + sizeBytes > getTempMaxTotalBytes()) {
     throw new Error("Temporary download storage quota reached. Please try again later.");
   }
 
@@ -173,6 +200,25 @@ export function registerTempDownload(
 /**
  * Retrieve active download record by token, verifying TTL and file presence.
  */
+/**
+ * 8.83 — TTL glissant : chaque téléchargement relance le délai d'expiration
+ * de CE fichier. Ne ressuscite jamais un lien expiré, ne lève jamais, et ne
+ * dépasse jamais createdAt + 2 h (vie totale plafonnée).
+ */
+export function touchTempDownload(token: string): boolean {
+  const record = activeDownloads.get(token);
+  if (!record) return false;
+  const now = Date.now();
+  if (now > record.expiresAt) return false; // expiré : on ne ressuscite pas
+  try {
+    if (!fs.existsSync(record.filePath)) return false;
+  } catch {
+    return false;
+  }
+  record.expiresAt = Math.min(now + getLinkTtlMinutes() * 60 * 1000, record.createdAt + MAX_LIFETIME_MS);
+  return true;
+}
+
 export function getTempDownload(token: string): TempDownloadRecord | null {
   const record = activeDownloads.get(token);
   if (!record) return null;
@@ -209,8 +255,9 @@ export function cleanupExpiredZipFiles(): { cleanedFiles: number; freedBytes: nu
 
   // 1. Sweep expired in-memory active download records
   for (const [token, record] of activeDownloads) {
-    const isZip = record.filename.toLowerCase().endsWith(".zip") || record.mimeType === "application/zip";
-    const isExpired = now > record.expiresAt || (isZip && (now - record.createdAt) >= ZIP_MAX_AGE_MS);
+    // 8.83 : seul expiresAt décide (TTL glissant, plafonné à 2 h de vie
+    // totale) — l'ancienne clause « zip tué à 60 min d'âge » est retirée.
+    const isExpired = now > record.expiresAt;
 
     if (isExpired) {
       try {
@@ -227,19 +274,25 @@ export function cleanupExpiredZipFiles(): { cleanedFiles: number; freedBytes: nu
     }
   }
 
-  // 2. Scan TEMP_DOWNLOAD_DIR for orphaned files: ZIPs older than 60 min,
-  // any other file older than 3h (safety net for records that were never
-  // accessed after their TTL expired).
+  // 2. Scan TEMP_DOWNLOAD_DIR for orphaned files: anything older than 3h
+  // (safety net for records that were never accessed after their TTL
+  // expired). 8.83 : les fichiers ayant un record VIVANT dans CE moteur ne
+  // sont jamais purgés ici, même vieux — le TTL glissant peut les servir
+  // jusqu'à 2 h. Le seuil orphelin est unifié à 3 h (> vie totale max 2 h)
+  // pour ne jamais supprimer un fichier encore servi par un AUTRE moteur
+  // (dossier partagé, records non visibles entre moteurs).
+  const livePaths = new Set<string>();
+  for (const record of activeDownloads.values()) livePaths.add(record.filePath);
   try {
     if (fs.existsSync(TEMP_DOWNLOAD_DIR)) {
       const files = fs.readdirSync(TEMP_DOWNLOAD_DIR);
       for (const file of files) {
         const fullPath = path.join(TEMP_DOWNLOAD_DIR, file);
+        if (livePaths.has(fullPath)) continue;
         try {
           const stats = fs.statSync(fullPath);
           const ageMs = now - stats.mtimeMs;
-          const isZip = file.toLowerCase().endsWith(".zip");
-          const maxAge = isZip ? ZIP_MAX_AGE_MS : ORPHAN_MAX_AGE_MS;
+          const maxAge = ORPHAN_MAX_AGE_MS;
           if (ageMs >= maxAge) {
             freedBytes += stats.size;
             fs.unlinkSync(fullPath);
@@ -330,9 +383,60 @@ export function getTempStorageStats() {
   };
 }
 
+/**
+ * Startup purge (audit 8.16). The token registry lives in memory, so after a
+ * restart EVERY file in TEMP_DOWNLOAD_DIR is unreachable — including debris
+ * from OOM-killed runs (kernel kills bypass `finally` cleanup) that otherwise
+ * lingers up to 3h and saturates the 4 GB quota: a fresh batch then fails
+ * with "Temporary download storage quota reached" even though nothing valid
+ * is stored. Also removes cat_catch_* HLS staging dirs and batch_zip_* dirs
+ * from os.tmpdir(), which no other sweep covers. Safe with a single bot
+ * instance (the documented deployment); tokens of the previous process died
+ * with it, so the files are already unreachable.
+ */
+export function purgeStartupOrphans(): { cleanedItems: number; freedBytes: number } {
+  let cleanedItems = 0;
+  let freedBytes = 0;
+
+  try {
+    if (fs.existsSync(TEMP_DOWNLOAD_DIR)) {
+      for (const file of fs.readdirSync(TEMP_DOWNLOAD_DIR)) {
+        const fullPath = path.join(TEMP_DOWNLOAD_DIR, file);
+        try {
+          freedBytes += fs.statSync(fullPath).size;
+          fs.rmSync(fullPath, { recursive: true, force: true });
+          cleanedItems++;
+        } catch {}
+      }
+    }
+  } catch {}
+
+  try {
+    for (const entry of fs.readdirSync(os.tmpdir())) {
+      if (entry.startsWith("cat_catch_") || entry.startsWith("batch_zip_")) {
+        const fullPath = path.join(os.tmpdir(), entry);
+        try {
+          freedBytes += fs.statSync(fullPath).size;
+          fs.rmSync(fullPath, { recursive: true, force: true });
+          cleanedItems++;
+        } catch {}
+      }
+    }
+  } catch {}
+
+  if (cleanedItems > 0) {
+    console.log(
+      `[TempDownload] 🧹 Startup purge: ${cleanedItems} orphaned item(s) removed, ` +
+        `${(freedBytes / 1048576).toFixed(2)} MB freed.`
+    );
+  }
+  return { cleanedItems, freedBytes };
+}
+
 // Background cleanup task running every 5 minutes to guarantee ZIP files are cleaned up within 60 minutes
 const cleanupTimer = setInterval(sweepExpiredDownloads, 5 * 60 * 1000);
 cleanupTimer.unref();
 
-// Run immediate cleanup sweep on startup
+// Startup: purge unreachable debris first (audit 8.16), then the regular sweep
+purgeStartupOrphans();
 sweepExpiredDownloads();
