@@ -2,16 +2,22 @@ import fs from "fs";
 import path from "path";
 
 /**
- * 8.97 — mémoire des choix interactifs anime (owner request 2026-10-10).
+ * 8.97/8.98 — mémoire des choix interactifs anime (owner request 2026-10-10).
  *
- * Le bot se souvient du DERNIER téléchargement lancé dans chaque chat
- * (anime, catalogue, langue, saison, qualité, épisodes) — juste assez pour
- * que l'agent résolve « le même anime », « l'épisode suivant », « le même
- * mais en 720p » en commande exacte, sans rien deviner.
+ * Le bot se souvient des téléchargements lancés dans chaque chat (anime,
+ * catalogue, langue, saison, qualité, épisodes) — assez pour que l'agent
+ * résolve « le même anime », « l'épisode suivant », « le même mais en
+ * 720p » en commande exacte, sans rien deviner.
+ *
+ * 8.98 (owner : « 5 derniers en contexte », inspiré hermes-agent) :
+ *  - le store garde un HISTORIQUE par chat (cap 20), plus une seule entrée ;
+ *  - le bloc injecté dans le prompt détaille le DERNIER téléchargement et
+ *    liste les 4 précédents en une ligne compacte — l'IA peut répondre
+ *    « qu'est-ce qu'on avait pris la semaine dernière ? » ;
+ *  - budget de contexte gardé strict (test agentContextBudget) : la leçon
+ *    hermes est qu'une fiche qui gonfle fait perdre « le milieu » du prompt.
  *
  * Décisions :
- *  - UN enregistrement par chat (le dernier) : « le même qu'hier » désigne
- *    le dernier téléchargement, pas un historique complet ;
  *  - TTL fixe depuis l'enregistrement — défaut 7 jours,
  *    NEBULA_ANIME_CHOICES_TTL_HOURS ("0" = désactivé) ;
  *  - JSON à écriture atomique comme les autres stores, plafond de chats ;
@@ -31,12 +37,18 @@ export interface AnimeChoiceRecord {
   ts: number;
 }
 
-type ChoiceStore = Record<string, AnimeChoiceRecord>;
+type ChoiceStore = Record<string, AnimeChoiceRecord[]>;
 
 const DEFAULT_TTL_HOURS = 168; // 7 jours
 const MAX_TITLE_CHARS = 120;
 const MAX_FIELD_CHARS = 60;
 const MAX_STORED_CHATS = 500;
+/** Historique conservé par chat (le dernier + marge pour les anciens). */
+const MAX_HISTORY_PER_CHAT = 20;
+/** Entrées listées dans le bloc contexte : le dernier (détaillé) + ces lignes. */
+const PREVIOUS_IN_CONTEXT = 4;
+/** Budget strict du bloc contexte complet (test agentContextBudget, 8.98). */
+export const MAX_CONTEXT_BUDGET_EXPORT_FOR_TESTS = 900;
 
 function dataDir(): string {
   return process.env.NEBULA_DATA_DIR || path.join(process.cwd(), "database");
@@ -56,11 +68,36 @@ function isDisabled(): boolean {
   return getChoicesTtlMs() === 0;
 }
 
+/** 8.98 : migration — l'ancien format (8.97) stockait UNE fiche par chat. */
+function normalizeEntry(raw: any): AnimeChoiceRecord | null {
+  if (!raw || typeof raw !== "object" || typeof raw.ts !== "number") return null;
+  return {
+    title: String(raw.title || "").slice(0, MAX_TITLE_CHARS),
+    source: raw.source === "as" ? "as" : "va",
+    language: raw.language === "VF" ? "VF" : "VOSTFR",
+    seasonName: String(raw.seasonName || "").slice(0, MAX_FIELD_CHARS),
+    quality: String(raw.quality || "").slice(0, MAX_FIELD_CHARS),
+    episodesSpec: String(raw.episodesSpec || "").slice(0, MAX_FIELD_CHARS),
+    lastEpisode:
+      typeof raw.lastEpisode === "number" && Number.isFinite(raw.lastEpisode) && raw.lastEpisode > 0
+        ? Math.floor(raw.lastEpisode)
+        : null,
+    ts: raw.ts
+  };
+}
+
 function loadStore(): ChoiceStore {
   try {
     const raw = fs.readFileSync(storePath(), "utf-8");
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? (parsed as ChoiceStore) : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    const store: ChoiceStore = {};
+    for (const [chat, value] of Object.entries(parsed as Record<string, any>)) {
+      const list = Array.isArray(value) ? value : [value]; // 8.97 = fiche unique
+      const entries = list.map(normalizeEntry).filter((e): e is AnimeChoiceRecord => e !== null);
+      if (entries.length > 0) store[chat] = entries;
+    }
+    return store;
   } catch {
     return {};
   }
@@ -82,7 +119,12 @@ function cap(value: string | undefined | null, max = MAX_FIELD_CHARS): string {
   return v.length > max ? v.slice(0, max - 1) + "…" : v;
 }
 
-/** Enregistre le DERNIER téléchargement du chat (remplace le précédent). */
+function pruneExpired(list: AnimeChoiceRecord[], now: number): AnimeChoiceRecord[] {
+  const ttl = getChoicesTtlMs();
+  return list.filter((r) => now - r.ts <= ttl);
+}
+
+/** Enregistre un téléchargement — il devient LE dernier du chat (tête de liste). */
 export function recordAnimeChoice(
   chatJid: string,
   rec: {
@@ -97,8 +139,7 @@ export function recordAnimeChoice(
   now = Date.now()
 ): void {
   if (!chatJid || !rec?.title || isDisabled()) return;
-  const store = loadStore();
-  store[chatJid] = {
+  const entry: AnimeChoiceRecord = {
     title: cap(rec.title, MAX_TITLE_CHARS),
     source: rec.source === "as" ? "as" : "va",
     language: rec.language === "VF" ? "VF" : "VOSTFR",
@@ -111,24 +152,30 @@ export function recordAnimeChoice(
         : null,
     ts: now
   };
+  const store = loadStore();
+  const previous = pruneExpired(store[chatJid] || [], now).filter((r) => r.ts !== entry.ts);
+  store[chatJid] = [entry, ...previous].slice(0, MAX_HISTORY_PER_CHAT);
   // Plafond : éviction des plus anciens (lazy, sans scan externe).
   const keys = Object.keys(store);
   if (keys.length > MAX_STORED_CHATS) {
+    const oldestTs = (k: string) => Math.min(...store[k].map((r) => r.ts));
     keys
-      .sort((a, b) => store[a].ts - store[b].ts)
+      .sort((a, b) => oldestTs(a) - oldestTs(b))
       .slice(0, keys.length - MAX_STORED_CHATS)
       .forEach((k) => delete store[k]);
   }
   saveStore(store);
 }
 
+/** Historique complet du chat (récent → ancien), filtré par TTL. */
+export function getAnimeChoiceHistory(chatJid: string, now = Date.now()): AnimeChoiceRecord[] {
+  if (!chatJid || isDisabled()) return [];
+  return pruneExpired(loadStore()[chatJid] || [], now);
+}
+
 /** Dernier téléchargement du chat, ou null (absent / expiré / désactivé). */
 export function getAnimeChoice(chatJid: string, now = Date.now()): AnimeChoiceRecord | null {
-  if (!chatJid || isDisabled()) return null;
-  const rec = loadStore()[chatJid];
-  if (!rec || typeof rec.ts !== "number") return null;
-  if (now - rec.ts > getChoicesTtlMs()) return null;
-  return rec;
+  return getAnimeChoiceHistory(chatJid, now)[0] || null;
 }
 
 function relativeFr(ms: number): string {
@@ -143,11 +190,12 @@ function relativeFr(ms: number): string {
 /**
  * Bloc injecté dans le prompt système de l'agent (et du chat DM) : factuel,
  * compact, en français — les règles d'USAGE vivent dans la fiche agent
- * (commandKnowledge), pas ici.
+ * (commandKnowledge), pas ici. Budget gardé strict (agentContextBudget).
  */
 export function getAnimeChoiceContext(chatJid: string, now = Date.now()): string | null {
-  const rec = getAnimeChoice(chatJid, now);
-  if (!rec) return null;
+  const history = getAnimeChoiceHistory(chatJid, now);
+  if (history.length === 0) return null;
+  const rec = history[0];
   const parts = [
     `Titre : ${rec.title}`,
     `Catalogue : ${rec.source}`,
@@ -157,10 +205,17 @@ export function getAnimeChoiceContext(chatJid: string, now = Date.now()): string
     rec.episodesSpec ? `Épisodes : ${rec.episodesSpec}` : "",
     rec.lastEpisode ? `dernier épisode : ${rec.lastEpisode}` : ""
   ].filter(Boolean);
-  return (
+  let block =
     `[Historique anime — dernier téléchargement de ce chat, ${relativeFr(now - rec.ts)}]\n` +
-    parts.join(" · ")
-  );
+    parts.join(" · ");
+  const previous = history.slice(1, 1 + PREVIOUS_IN_CONTEXT);
+  if (previous.length > 0) {
+    const line = previous
+      .map((r) => `${r.title} (${[r.seasonName, r.language, relativeFr(now - r.ts)].filter(Boolean).join(", ")})`)
+      .join(" · ");
+    block += `\nPrécédents : ${line}`;
+  }
+  return block;
 }
 
 /** `.ai forget` efface aussi cette mémoire. Retourne true si quelque chose existait. */

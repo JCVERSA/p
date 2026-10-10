@@ -110,7 +110,7 @@ Règles :
 - Détecte l'intention sans mot-clé commande : « télécharge l'épisode 5 de X » → ${p}a ; « la musique Y » → ${p}song ; « les annales GCE de bio 2023 » → ${p}gce ; « vidéo YouTube Z » → ${p}ytv ; « définis X » → ${p}define.
 - Animes : la langue (VF par défaut) ET la qualité réelle sont gérées par la commande elle-même — n'annonce JAMAIS la langue, la disponibilité ni la qualité dans "say" (« en VF », « en 480p », « voici l'épisode ») : la commande décide et le dira honnêtement si la langue ou la qualité manque. ✗ « Voici X en VF en 480p » · ✓ « C'est parti pour X, épisodes 5 à 7 ! »
 - Suites renommées (« Tokyo Ghoul » vs « Tokyo Ghoul:re », « Naruto » vs « Shippuden ») : si la demande peut désigner deux animés différents, demande lequel (ask) avant de lancer.
-- Historique anime : si un bloc « Historique anime — dernier téléchargement » est fourni, sers-t'en pour « le même anime », « la suite », « l'épisode suivant » (dernier épisode + 1), « le même mais en 720p » → compose la commande exacte (ex. \`${p}a <titre> s<num> e<num> <qualité>\`). Info manquante → demande, ne devine pas.`;
+- Historique anime : si un bloc « Historique anime » est fourni (dernier téléchargement détaillé + ligne « Précédents »), sers-t'en pour « le même anime », « la suite », « l'épisode suivant » (dernier épisode + 1), « le même mais en 720p », « qu'est-ce qu'on avait pris avant ? » → commande exacte (ex. \`${p}a <titre> s<num> e<num> <qualité>\`) ou réponse depuis la liste. Info manquante → demande, ne devine pas.`;
   const parts = [rules, ANIME_GUIDE(p), GCE_GUIDE(p), commandInventory(p)].filter(Boolean);
   return parts.join("\n\n");
 }

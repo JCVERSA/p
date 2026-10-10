@@ -1,19 +1,22 @@
 /**
- * 8.97 — mémoire des choix interactifs anime.
+ * 8.97/8.98 — mémoire des choix interactifs anime.
  *
- * 1. Service pur (animeChoices.ts) : enregistrement, TTL, oubli, format du
- *    bloc injecté dans le prompt de l'agent.
+ * 1. Service pur (animeChoices.ts) : historique par chat (le dernier en
+ *    tête, cap 20), TTL, migration du format 8.97 (fiche unique), oubli,
+ *    format du bloc injecté dans le prompt de l'agent — dernier détaillé
+ *    + ligne « Précédents » (owner : 5 en contexte).
  * 2. Wiring : novabox enregistre au point de convergence, l'agent et le
  *    chat DM injectent le bloc, `.ai forget` efface tout.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { readFileSync } from "fs";
 import {
   recordAnimeChoice,
   getAnimeChoice,
+  getAnimeChoiceHistory,
   getAnimeChoiceContext,
   forgetAnimeChoices,
   getChoicesTtlMs
@@ -53,11 +56,35 @@ describe("animeChoices — service (8.97)", () => {
     expect(rec.ts).toBe(now);
   });
 
-  it("un nouvel enregistrement REMPLACE le précédent (le dernier gagne)", () => {
+  it("un nouvel enregistrement devient LE dernier (historique, 8.98)", () => {
     const now = Date.now();
     recordAnimeChoice("chat-1", REC, now);
     recordAnimeChoice("chat-1", { ...REC, title: "Naruto", lastEpisode: 3 }, now + 5000);
     expect(getAnimeChoice("chat-1", now + 6000)?.title).toBe("Naruto");
+    // L'ancien reste dans l'HISTORIQUE (récent → ancien).
+    expect(getAnimeChoiceHistory("chat-1", now + 6000).map((r) => r.title)).toEqual(["Naruto", "Tokyo Ghoul"]);
+  });
+
+  it("l'historique est plafonné à 20 entrées par chat", () => {
+    const now = Date.now();
+    for (let i = 0; i < 25; i++) {
+      recordAnimeChoice("chat-1", { ...REC, title: `Anime ${i}` }, now + i * 1000);
+    }
+    const history = getAnimeChoiceHistory("chat-1", now + 30_000);
+    expect(history.length).toBe(20);
+    expect(history[0].title).toBe("Anime 24"); // le plus récent en tête
+    expect(history[19].title).toBe("Anime 5"); // les plus vieux éjectés
+  });
+
+  it("migration 8.97 : une ancienne fiche unique devient un historique de 1", () => {
+    writeFileSync(
+      join(dir, "anime_choices.json"),
+      JSON.stringify({ "chat-old@s.whatsapp.net": { ...REC, ts: Date.now() - 1000 } }),
+      "utf-8"
+    );
+    const history = getAnimeChoiceHistory("chat-old@s.whatsapp.net");
+    expect(history.length).toBe(1);
+    expect(history[0].title).toBe("Tokyo Ghoul");
   });
 
   it("les chats sont indépendants", () => {
@@ -66,10 +93,12 @@ describe("animeChoices — service (8.97)", () => {
     expect(getAnimeChoice("chat-2", now)).toBeNull();
   });
 
-  it("TTL expiré → null (défaut 7 jours, réglable)", () => {
+  it("TTL expiré → purgé de l'historique (défaut 7 jours, réglable)", () => {
     const now = Date.now();
     recordAnimeChoice("chat-1", REC, now);
-    expect(getAnimeChoice("chat-1", now + getChoicesTtlMs() - 1)).not.toBeNull();
+    recordAnimeChoice("chat-1", { ...REC, title: "Vieux", lastEpisode: 1 }, now - getChoicesTtlMs() - 1000);
+    // Seul l'enregistrement frais survit : le vieux est expiré.
+    expect(getAnimeChoiceHistory("chat-1", now).map((r) => r.title)).toEqual(["Tokyo Ghoul"]);
     expect(getAnimeChoice("chat-1", now + getChoicesTtlMs() + 1)).toBeNull();
   });
 
@@ -93,7 +122,7 @@ describe("animeChoices — service (8.97)", () => {
   });
 });
 
-describe("animeChoices — bloc injecté dans le prompt (8.97)", () => {
+describe("animeChoices — bloc injecté dans le prompt (8.97/8.98)", () => {
   it("format compact et factuel : titre, langue, saison, qualité, épisodes", () => {
     const now = Date.now();
     recordAnimeChoice("chat-1", REC, now);
@@ -106,6 +135,19 @@ describe("animeChoices — bloc injecté dans le prompt (8.97)", () => {
     expect(block).toContain("Épisodes : e5-7");
     expect(block).toContain("dernier épisode : 7");
     expect(block).toContain("Catalogue : va");
+  });
+
+  it("8.98 : les téléchargements précédents apparaissent en ligne compacte (5 en contexte)", () => {
+    const now = Date.now();
+    recordAnimeChoice("chat-1", REC, now);
+    recordAnimeChoice("chat-1", { ...REC, title: "Naruto", seasonName: "Saison 2", language: "VF" }, now - 2 * 86_400_000);
+    recordAnimeChoice("chat-1", { ...REC, title: "One Piece", seasonName: "Saison 1" }, now - 5 * 86_400_000);
+    const block = getAnimeChoiceContext("chat-1", now)!;
+    expect(block).toContain("Titre : One Piece"); // le dernier (réenregistré en 3e) est en tête
+    expect(block).toContain("Précédents :");
+    expect(block).toContain("Naruto (Saison 2, VF");
+    expect(block).toContain("Tokyo Ghoul (Saison 1, VOSTFR");
+    expect(block).not.toContain("One Piece ("); // le dernier n'est pas répété dans les précédents
   });
 
   it("aucun bloc sans enregistrement (pas de bruit dans le prompt)", () => {
