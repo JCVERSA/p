@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Users,
   RefreshCw,
@@ -9,17 +9,21 @@ import {
   MessageSquare,
   UserPlus,
   Activity,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { useBotUrl } from "../lib/botContext";
 
 /**
- * 9.16 — Gestionnaire d'utilisateurs (décision owner : niveau « complet »).
+ * 9.16/9.17 — Gestionnaire d'utilisateurs (décision owner : niveau « complet »).
  *
- * Le répertoire se construit à l'usage : chaque personne qui écrit au bot
- * (ou participe activement dans un groupe du bot) apparaît ici avec son
- * activité. Actions : bannir/réhabiliter (un banni est ignoré par tout le
- * moteur — le propriétaire ne peut jamais l'être), réinitialiser les
- * quotas IA/web/vocal du jour, DM rapide.
+ * Répertoire construit sur les interactions réelles. Actions : bannir/
+ * réhabiliter (un banni est ignoré par tout le moteur — l'owner ne peut
+ * jamais l'être : badge 👑 + double garde), reset quotas IA/web/vocal du
+ * jour, DM rapide.
+ *
+ * 9.17 (audit J-3) : recherche + segment + pagination CÔTÉ SERVEUR —
+ * le polling ne transporte plus que la page affichée.
  */
 
 interface KnownUser {
@@ -31,7 +35,7 @@ interface KnownUser {
   commandCount: number;
   lastCommand: string | null;
   banned: boolean;
-  isOwner?: boolean; // 9.16b — calculé côté moteur (digits OWNER_NUMBER / LID reconnu)
+  isOwner?: boolean;
 }
 
 interface KnownGroup {
@@ -43,6 +47,8 @@ interface KnownGroup {
 }
 
 type Segment = "all" | "active7d" | "new30d" | "banned";
+
+const PAGE_SIZE = 200;
 
 function relTime(ts: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -56,6 +62,9 @@ export default function UsersPanel() {
   const botUrl = useBotUrl();
   const [users, setUsers] = useState<KnownUser[]>([]);
   const [groups, setGroups] = useState<KnownGroup[]>([]);
+  const [counts, setCounts] = useState({ all: 0, active7d: 0, new30d: 0, banned: 0 });
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -65,27 +74,53 @@ export default function UsersPanel() {
   const [confirmBan, setConfirmBan] = useState<string | null>(null);
   const [dmFor, setDmFor] = useState<string | null>(null);
   const [dmText, setDmText] = useState("");
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch(botUrl("/api/bot/users"), { credentials: "same-origin" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setUsers(Array.isArray(data.users) ? data.users : []);
-      setGroups(Array.isArray(data.groups) ? data.groups : []);
-      setError(null);
-    } catch (e: any) {
-      setError(e?.message || "impossible de charger le répertoire");
-    } finally {
-      setLoading(false);
-    }
-  }, [botUrl]);
+  const load = useCallback(
+    async (opts: { q?: string; segment?: Segment; offset?: number } = {}) => {
+      const q = opts.q ?? search;
+      const seg = opts.segment ?? segment;
+      const off = opts.offset ?? 0;
+      const params = new URLSearchParams({ segment: seg, limit: String(PAGE_SIZE), offset: String(off) });
+      if (q.trim()) params.set("q", q.trim());
+      try {
+        const res = await fetch(botUrl(`/api/bot/users?${params.toString()}`), { credentials: "same-origin" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setUsers(Array.isArray(data.users) ? data.users : []);
+        setGroups(Array.isArray(data.groups) ? data.groups : []);
+        setCounts(data.counts || { all: 0, active7d: 0, new30d: 0, banned: 0 });
+        setTotal(typeof data.total === "number" ? data.total : 0);
+        setError(null);
+      } catch (e: any) {
+        setError(e?.message || "impossible de charger le répertoire");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [botUrl, search, segment]
+  );
 
   useEffect(() => {
     void load();
-    const t = setInterval(() => void load(), 15_000);
+    const t = setInterval(() => void load({ offset }), 15_000);
     return () => clearInterval(t);
-  }, [load]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, offset]);
+
+  // Recherche : debouncée côté serveur (audit J-3)
+  const onSearch = (value: string) => {
+    setSearch(value);
+    setOffset(0);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => void load({ q: value, offset: 0 }), 300);
+  };
+
+  const onSegment = (seg: Segment) => {
+    setSegment(seg);
+    setOffset(0);
+    void load({ segment: seg, offset: 0 });
+  };
 
   const act = useCallback(
     async (jid: string, action: string, text?: string) => {
@@ -108,7 +143,7 @@ export default function UsersPanel() {
           setDmFor(null);
           setDmText("");
         }
-        await load();
+        await load({ offset });
       } catch (e: any) {
         setNotice(`❌ ${e?.message || "action impossible"}`);
       } finally {
@@ -116,28 +151,11 @@ export default function UsersPanel() {
         setConfirmBan(null);
       }
     },
-    [botUrl, load]
+    [botUrl, load, offset]
   );
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const weekAgo = Date.now() - 7 * 86400_000;
-    const monthAgo = Date.now() - 30 * 86400_000;
-    return users.filter((u) => {
-      if (segment === "active7d" && u.lastSeen < weekAgo) return false;
-      if (segment === "new30d" && u.firstSeen < monthAgo) return false;
-      if (segment === "banned" && !u.banned) return false;
-      if (segment !== "banned" && u.banned) return false;
-      if (!q) return true;
-      return (
-        u.jid.toLowerCase().includes(q) ||
-        (u.name || "").toLowerCase().includes(q)
-      );
-    });
-  }, [users, search, segment]);
-
-  const activeCount = users.filter((u) => u.lastSeen > Date.now() - 7 * 86400_000 && !u.banned).length;
-  const bannedCount = users.filter((u) => u.banned).length;
+  const hasPrev = offset > 0;
+  const hasNext = offset + PAGE_SIZE < total;
 
   return (
     <div className="space-y-6">
@@ -147,21 +165,21 @@ export default function UsersPanel() {
           <div className="flex items-center gap-2 text-zinc-400 text-xs font-bold uppercase tracking-wider">
             <Users className="w-4 h-4 text-amber-400" /> Utilisateurs connus
           </div>
-          <div className="text-3xl font-extrabold text-white mt-2 tabular-nums">{users.length}</div>
+          <div className="text-3xl font-extrabold text-white mt-2 tabular-nums">{counts.all}</div>
           <p className="text-[11px] text-zinc-500 mt-1">Chaque personne qui a écrit au bot au moins une fois.</p>
         </div>
         <div className="bg-[#0b0b0c] border border-white/10 rounded-2xl p-5">
           <div className="flex items-center gap-2 text-zinc-400 text-xs font-bold uppercase tracking-wider">
             <Activity className="w-4 h-4 text-emerald-400" /> Actifs (7 j)
           </div>
-          <div className="text-3xl font-extrabold text-white mt-2 tabular-nums">{activeCount}</div>
+          <div className="text-3xl font-extrabold text-white mt-2 tabular-nums">{counts.active7d}</div>
           <p className="text-[11px] text-zinc-500 mt-1">{groups.length} groupe(s) connu(s) — visibles dans Annonces.</p>
         </div>
         <div className="bg-[#0b0b0c] border border-white/10 rounded-2xl p-5">
           <div className="flex items-center gap-2 text-zinc-400 text-xs font-bold uppercase tracking-wider">
             <Ban className="w-4 h-4 text-rose-400" /> Bannis
           </div>
-          <div className="text-3xl font-extrabold text-white mt-2 tabular-nums">{bannedCount}</div>
+          <div className="text-3xl font-extrabold text-white mt-2 tabular-nums">{counts.banned}</div>
           <p className="text-[11px] text-zinc-500 mt-1">Un banni est ignoré par tout le moteur.</p>
         </div>
       </div>
@@ -173,7 +191,7 @@ export default function UsersPanel() {
           <input
             type="text"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => onSearch(e.target.value)}
             placeholder="Rechercher un numéro ou un nom…"
             className="w-full pl-9 pr-3 py-2 bg-black border border-white/10 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-amber-400"
           />
@@ -187,7 +205,7 @@ export default function UsersPanel() {
           ] as Array<[Segment, string]>).map(([id, label]) => (
             <button
               key={id}
-              onClick={() => setSegment(id)}
+              onClick={() => onSegment(id)}
               className={`px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
                 segment === id
                   ? "bg-amber-500 text-black"
@@ -198,7 +216,7 @@ export default function UsersPanel() {
             </button>
           ))}
           <button
-            onClick={() => void load()}
+            onClick={() => void load({ offset })}
             className="px-3 py-2 rounded-xl text-xs font-bold bg-black border border-white/10 text-zinc-400 hover:text-white transition cursor-pointer flex items-center gap-1.5"
             title="Rafraîchir"
           >
@@ -222,9 +240,9 @@ export default function UsersPanel() {
       <div className="bg-[#0b0b0c] border border-white/10 rounded-2xl overflow-hidden">
         {loading && !users.length ? (
           <div className="p-8 text-center text-xs text-zinc-500">Chargement du répertoire…</div>
-        ) : !filtered.length ? (
+        ) : !users.length ? (
           <div className="p-8 text-center text-xs text-zinc-500">
-            {users.length
+            {counts.all
               ? "Aucun utilisateur ne correspond à ce filtre."
               : "Personne n'a encore écrit au bot — le répertoire se remplit dès le premier message."}
           </div>
@@ -243,7 +261,7 @@ export default function UsersPanel() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.slice(0, 200).map((u) => (
+                {users.map((u) => (
                   <tr key={u.jid} className={`border-b border-white/5 hover:bg-white/[0.02] ${u.banned ? "opacity-60" : ""}`}>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
@@ -350,11 +368,43 @@ export default function UsersPanel() {
                 ))}
               </tbody>
             </table>
-            {filtered.length > 200 && (
-              <div className="px-4 py-2.5 text-[11px] text-zinc-500 border-t border-white/10">
-                {filtered.length - 200} autre(s) utilisateur(s) — affiné ta recherche pour les voir.
-              </div>
-            )}
+            <div className="px-4 py-2.5 text-[11px] text-zinc-500 border-t border-white/10 flex items-center justify-between gap-2">
+              <span>
+                {users.length} affiché(s) sur {total}
+                {segment === "banned" ? " (bannis)" : ""}
+              </span>
+              {(hasPrev || hasNext) && (
+                <span className="flex items-center gap-1.5">
+                  <button
+                    disabled={!hasPrev}
+                    onClick={() => {
+                      const off = Math.max(0, offset - PAGE_SIZE);
+                      setOffset(off);
+                      void load({ offset: off });
+                    }}
+                    className="p-1.5 rounded-lg bg-black border border-white/10 text-zinc-400 hover:text-white disabled:opacity-30 transition cursor-pointer"
+                    title="Page précédente"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="tabular-nums">
+                    {Math.floor(offset / PAGE_SIZE) + 1}/{Math.max(1, Math.ceil(total / PAGE_SIZE))}
+                  </span>
+                  <button
+                    disabled={!hasNext}
+                    onClick={() => {
+                      const off = offset + PAGE_SIZE;
+                      setOffset(off);
+                      void load({ offset: off });
+                    }}
+                    className="p-1.5 rounded-lg bg-black border border-white/10 text-zinc-400 hover:text-white disabled:opacity-30 transition cursor-pointer"
+                    title="Page suivante"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </span>
+              )}
+            </div>
           </div>
         )}
       </div>

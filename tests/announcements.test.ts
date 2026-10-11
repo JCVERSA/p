@@ -124,6 +124,13 @@ describe("9.16 — announcementService (envoi progressif)", () => {
     await vi.waitFor(() => expect(getAnnouncementStatus()?.status).toBe("done"), { timeout: 3000 });
     const job = getAnnouncementStatus();
     expect(job?.sentCount).toBe(0);
+    // 9.17 (audit J-1) : la trace est écrite dans l'historique PERSISTANT
+    // — plus de disparition silencieuse au job suivant.
+    await vi.waitFor(() => expect(getAnnouncementHistory()).toHaveLength(1), { timeout: 2000 });
+    const [entry] = getAnnouncementHistory();
+    expect(entry.total).toBe(1);
+    expect(entry.sent).toBe(0);
+    expect(entry.failed).toBe(1);
   });
 
   it("sendDirectMessage : passe par le sender, texte requis", async () => {

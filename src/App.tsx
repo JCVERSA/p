@@ -471,9 +471,6 @@ export default function App() {
   const [isTestingGemini, setIsTestingGemini] = useState<boolean>(false);
 
 
-  // Group Tools
-
-
   // ------------------------------------------------------------- data fetch
   const [isSyncingSession, setIsSyncingSession] = useState(false);
 

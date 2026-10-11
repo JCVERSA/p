@@ -7,6 +7,7 @@ import {
   isBannedUser,
   listGroups,
   listUsers,
+  MAX_DIRECTORY_USERS,
   recordCommandUse,
   setUserBanned,
   touchGroup,
@@ -115,5 +116,24 @@ describe("9.16 — userDirectory (répertoire)", () => {
     const fs2 = await import("fs");
     const dispatch = fs2.readFileSync(path.resolve(process.cwd(), "src/bot/commandDispatch.ts"), "utf-8");
     expect(dispatch).toContain("recordCommandUse(info.actorJid, commandName)");
+  });
+
+  it("9.17 (audit J-2) — cap LRU : le répertoire ne croît pas au-delà du plafond, les bannis sont épargnés", () => {
+    const t0 = Date.now() - 86_400_000;
+    // Le banni d'abord : ancien, inactif, banni — l'éviction doit l'épargner
+    touchUser("2376999999999@s.whatsapp.net", { name: "Ancien banni", now: t0 - 1000 });
+    setUserBanned("2376999999999@s.whatsapp.net", true);
+    // Puis on déborde largement le plafond avec des lastSeen croissants
+    for (let i = 0; i < MAX_DIRECTORY_USERS + 60; i++) {
+      touchUser(`2377${String(i).padStart(11, "0")}@s.whatsapp.net`, { name: `U${i}`, now: t0 + i });
+    }
+    touchUser("2376999999998@s.whatsapp.net", { name: "pousse finale", now: Date.now() });
+
+    const users = listUsers();
+    expect(users.length).toBeLessThanOrEqual(MAX_DIRECTORY_USERS); // cap tenu, banni INCLUS dans le décompte
+    // Les plus anciens non-bannis sont partis, les plus récents restent
+    expect(users.find((u) => u.jid === "237700000000000@s.whatsapp.net")).toBeUndefined(); // U0 (le plus vieux)
+    expect(users.find((u) => u.jid === `2377${String(MAX_DIRECTORY_USERS + 59).padStart(11, "0")}@s.whatsapp.net`)).toBeTruthy();
+    expect(users.find((u) => u.jid === "2376999999999@s.whatsapp.net")?.banned).toBe(true); // banni conservé malgré son âge
   });
 });

@@ -31,6 +31,10 @@ const NORMAL_RESPONSES: Record<string, unknown> = {
     groups: [
       { jid: "120363000000000000@g.us", name: "Groupe Test", firstSeen: Date.now() - 86400000, lastSeen: Date.now(), messageCount: 40 },
     ],
+    total: 2,
+    counts: { all: 2, active7d: 2, new30d: 0, banned: 0 },
+    limit: 200,
+    offset: 0,
   },
   "/api/bot/announce/status": { job: null, history: [] },
   "/api/bot/secrets": { secrets: [{ name: "GEMINI_API_KEY", configured: false, masked: null }] },
@@ -52,7 +56,9 @@ function mockFetch(handler: (url: string, init?: any) => Promise<{ ok: boolean; 
   }) as unknown as typeof fetch;
 }
 
-function normalHandler(url: string): Promise<{ ok: boolean; status: number; json: () => Promise<any> }> {
+function normalHandler(rawUrl: string): Promise<{ ok: boolean; status: number; json: () => Promise<any> }> {
+  // 9.17 : /api/bot/users?segment=…&limit=… — lookup sur le chemin seul
+  const url = rawUrl.split("?")[0];
   const body = NORMAL_RESPONSES[url] ?? {};
   return Promise.resolve({ ok: true, status: 200, json: async () => body });
 }

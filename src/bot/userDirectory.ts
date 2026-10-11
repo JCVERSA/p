@@ -90,6 +90,26 @@ function safeKey(jid: string): string {
   return String(jid || "").replace(/[^0-9a-zA-Z@.:_-]/g, "").slice(0, 80);
 }
 
+/**
+ * 9.17 (audit J-2) — plafond du répertoire : le JSON croissait à vie, un
+ * expéditeur par personne ayant jamais écrit au bot. Au-delà du cap, les
+ * fiches les moins récemment actives partent — SAUF les bannis (leur fiche
+ * est la mémoire du ban : la garder verrouille l'état, même silencieux).
+ */
+export const MAX_DIRECTORY_USERS = 5000;
+
+function evictIfNeeded(): void {
+  const keys = Object.keys(store.users);
+  if (keys.length <= MAX_DIRECTORY_USERS) return;
+  const evictable = keys
+    .filter((k) => !store.users[k].banned)
+    .sort((a, b) => store.users[a].lastSeen - store.users[b].lastSeen);
+  const toRemove = keys.length - MAX_DIRECTORY_USERS;
+  for (let i = 0; i < Math.min(toRemove, evictable.length); i++) {
+    delete store.users[evictable[i]];
+  }
+}
+
 /** Enregistre un message d'un utilisateur (création à la volée). */
 export function touchUser(jid: string, opts: { name?: string; now?: number } = {}): void {
   const key = safeKey(jid);
@@ -113,6 +133,7 @@ export function touchUser(jid: string, opts: { name?: string; now?: number } = {
     // Le pushName change quand un contact met à jour son nom — on garde le plus frais non vide.
     if (opts.name && opts.name !== existing.name) existing.name = String(opts.name).slice(0, 60);
   }
+  evictIfNeeded(); // 9.17 — cap LRU : la croissance reste bornée
   scheduleSave();
 }
 

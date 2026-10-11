@@ -336,6 +336,11 @@ describe("Project archive download", () => {
       expect(res.status).toBe(404);
     }
   });
+
+  it("2026-10-11 (audit J-5) : le zip exige l'auth panneau — SANS session → 401, jamais public", async () => {
+    const res = await request(app).get("/nebula-bot-latest.zip");
+    expect(res.status).toBe(401);
+  });
 });
 
 describe("Rate limiting", () => {

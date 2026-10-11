@@ -523,7 +523,7 @@ export function createApp(): express.Express {
   // 9.16 — Répertoire utilisateurs + annonces (gestionnaire users, sélection
   // DM/groupes, envoi progressif anti-ban, brouillon IA, historique).
   // ---------------------------------------------------------------------------
-  app.get("/api/bot/users", rateLimit(30, 60_000), (_req, res) => {
+  app.get("/api/bot/users", rateLimit(30, 60_000), (req, res) => {
     // 9.16b — flag isOwner par fiche : digits OWNER_NUMBER (multi-candidats),
     // LID owner reconnu ce cycle de vie, ou NEBULA_OWNER_LID (froid).
     const ownerCandidates = String(process.env.OWNER_NUMBER || getConfig().ownerNumber || "")
@@ -542,9 +542,39 @@ export function createApp(): express.Express {
         recordAudit("panel", "user.auto-unban-owner", u.jid, "le propriétaire ne peut pas être banni — état auto-corrigé");
       }
     }
+    // 9.17 (audit J-3) — pagination + recherche + segment CÔTÉ SERVEUR :
+    // renoyer tout le répertoire à chaque polling ne passe pas à l'échelle.
+    const all = listUsers().map((u) => ({ ...u, isOwner: isOwnerJid(u.jid) }));
+    const weekAgo = Date.now() - 7 * 86400_000;
+    const monthAgo = Date.now() - 30 * 86400_000;
+    const counts = {
+      all: all.length,
+      active7d: all.filter((u) => u.lastSeen >= weekAgo && !u.banned).length,
+      new30d: all.filter((u) => u.firstSeen >= monthAgo && !u.banned).length,
+      banned: all.filter((u) => u.banned).length,
+    };
+    const segment = String(req.query.segment || "all");
+    const q = String(req.query.q || "").trim().toLowerCase();
+    let filtered = all;
+    if (segment === "active7d") filtered = filtered.filter((u) => u.lastSeen >= weekAgo && !u.banned);
+    else if (segment === "new30d") filtered = filtered.filter((u) => u.firstSeen >= monthAgo && !u.banned);
+    else if (segment === "banned") filtered = filtered.filter((u) => u.banned);
+    else filtered = filtered.filter((u) => !u.banned); // « Tous » = non bannis
+    if (q) {
+      filtered = filtered.filter(
+        (u) => u.jid.toLowerCase().includes(q) || (u.name || "").toLowerCase().includes(q)
+      );
+    }
+    const total = filtered.length;
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
     res.json({
-      users: listUsers().map((u) => ({ ...u, isOwner: isOwnerJid(u.jid) })),
-      groups: listGroups(),
+      users: filtered.slice(offset, offset + limit),
+      groups: listGroups().slice(0, 500),
+      total,
+      counts,
+      limit,
+      offset,
     });
   });
 
