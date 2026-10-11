@@ -10,7 +10,7 @@
 **WhatsApp Media &amp; AI Command Center** — anime VF downloader, an autonomous AI agent that runs the bot for you, YouTube/TikTok/Instagram, temporary share links, multi-bot and a full web control panel. One container, one command.
 
 [![CI](https://github.com/JCVERSA/p/actions/workflows/ci.yml/badge.svg?style=for-the-badge)](https://github.com/JCVERSA/p/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-1041%20%E2%9C%85-brightgreen?style=for-the-badge&logo=vitest)](#-tests)
+[![Tests](https://img.shields.io/badge/tests-1042%20%E2%9C%85-brightgreen?style=for-the-badge&logo=vitest)](#-tests)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](./tsconfig.json)
 [![Node](https://img.shields.io/badge/Node.js-%E2%89%A522-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org)
 [![WhatsApp](https://img.shields.io/badge/WhatsApp-Baileys%20multi--device-25D366?style=for-the-badge&logo=whatsapp&logoColor=white)](https://github.com/WhiskeySockets/Baileys)
@@ -352,7 +352,7 @@ Copy `.env.example` to `.env` (or run `./manage.sh env`). Highlights:
 | `NEBULA_HEALTH_SWEEP_MS` / `NEBULA_HEALTH_FAILS` | no | Supervisor health sweep (8.78): probe interval (60 s) and consecutive failures before a frozen engine is force-restarted (3) |
 | `NEBULA_LOG_FILE` / `NEBULA_LOG_MAX_MB` | no | In-app log size guard (8.82): log path (set by `manage.sh`) and cap before truncation (150 MB) — the WhatsApp crypto layer dumps large session traces per message, and in Docker containers cron/logrotate often never runs |
 | `NEBULA_AI_DAILY_LIMIT` / `_MAX_CONCURRENT` | no | AI budget (40/day/user) and concurrency (3) |
-| `NEBULA_ASR_ENABLED` / `NEBULA_ASR_MODEL` | no | Voice-note transcription for the agent (9.13): `0` disables; model defaults to `whisper-large-v3` — copy the exact audio model id from build.nvidia.com if it differs. Needs the NIM key; 10 transcriptions/hour/user |
+| `NEBULA_ASR_ENABLED` / `NEBULA_ASR_MODEL` | no | Voice-note transcription for the agent (9.13, pivoted 9.15d): `0` disables; transcription uses GEMINI native audio (model defaults to `gemini-3.7-flash`) — needs the Gemini key; 10 transcriptions/hour/user |
 | `NEBULA_REUSE_ENABLED` / `_TTL_HOURS` / `_MAX_MB` | no | Media reuse cache (9.15): `0` disables; sliding window (24 h, 1-168) and disk cap (1024 MB, 64-4096) with LRU eviction |
 | `NEBULA_PANEL_COMMANDS` | no | `off` disables sandboxed panel-created commands |
 | `NEBULA_ENABLE_LEGACY` | no | `1` re-enables the vendored legacy command corpus (quarantined by default) |
@@ -363,7 +363,7 @@ Secrets can also be managed from the panel (**Settings &amp; Access → API Secr
 ## 🧪 Tests
 
 ```bash
-npm test           # vitest — 1041 tests across 93 files
+npm test           # vitest — 1042 tests across 93 files
 npm run lint       # strict TypeScript typecheck
 npm run build      # production build (client + server)
 npm start          # serve the production build (capped V8 heap, gc exposed)
