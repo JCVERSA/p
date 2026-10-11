@@ -114,7 +114,15 @@ export type StreamResult =
   | { ok: true; bytes: number }
   | { ok: false; reason: "tooBig" | "empty"; bytes: number };
 
-/** Écrit le média dans destPath en streaming ; pur vis-à-vis de Baileys. */
+/**
+ * Écrit le média dans destPath en streaming ; pur vis-à-vis de Baileys.
+ *
+ * Race 9.5b (constatée en CI) : l'open d'un fs.WriteStream est asynchrone
+ * (threadpool). Détruire le flux puis unlink de suite fait aboutir l'open
+ * APRÈS la suppression → ENOENT émis sur le flux → exception non gérée.
+ * On attend donc TOUJOURS la fermeture réelle (callback de destroy/end)
+ * avant de supprimer, et toute erreur d'écriture est capturée.
+ */
 export async function streamMediaToFile(
   node: any,
   kind: string,
@@ -124,8 +132,24 @@ export async function streamMediaToFile(
 ): Promise<StreamResult> {
   const stream = await openStream(node, kind.replace("Message", ""));
   const out = fs.createWriteStream(destPath);
+  let writeError: Error | null = null;
+  out.on("error", (e) => { writeError = e; }); // jamais d'erreur non gérée
   let bytes = 0;
   let tooBig = false;
+
+  // 'close' (autoClose) = fd réellement fermé — y compris si l'open
+  // asynchrone était encore en vol au moment du destroy.
+  const settle = (destroy: boolean) =>
+    new Promise<void>((resolve) => {
+      if (out.closed) return resolve();
+      out.once("close", () => resolve());
+      if (destroy) out.destroy();
+      else out.end();
+    });
+  const cleanup = () => {
+    try { fs.unlinkSync(destPath); } catch { /* déjà parti */ }
+  };
+
   try {
     for await (const chunk of stream) {
       bytes += chunk.length;
@@ -137,12 +161,18 @@ export async function streamMediaToFile(
         await new Promise<void>((resolve) => out.once("drain", () => resolve()));
       }
     }
-  } finally {
-    if (tooBig || out.destroyed) out.destroy();
-    else await new Promise<void>((resolve) => out.end(() => resolve()));
+  } catch (err) {
+    await settle(true); // ferme le flux AVANT de supprimer
+    cleanup();
+    throw err; // téléchargement échoué → remonte au catch de execute
+  }
+  await settle(tooBig || out.destroyed);
+  if (writeError) {
+    cleanup();
+    throw writeError; // disque plein, etc. → message honnête de execute
   }
   if (tooBig || bytes === 0) {
-    try { fs.unlinkSync(destPath); } catch { /* déjà parti */ }
+    cleanup();
     return { ok: false, reason: tooBig ? "tooBig" : "empty", bytes };
   }
   return { ok: true, bytes };
