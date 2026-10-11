@@ -116,6 +116,16 @@ et `stop`. Règles :
 - les SECRETS ne sont jamais renvoyés en clair (masqués — écriture seule) ;
 - la réponse indique si la variable s'applique à chaud (quota web, Tavily)
   ou nécessite un redémarrage ;
+
+Cookies YouTube collés (9.4) — mêmes principes :
+- validation stricte AVANT écriture : format Netscape (7 champs tabulés),
+  au moins un cookie du domaine youtube.com, aucun fichier entièrement
+  expiré, 512 Ko max ;
+- le CONTENU (session YouTube) n'est JAMAIS renvoyé par l'API — le GET
+  ne retourne que des métadonnées (nombre, domaines, expiration) ;
+- écriture atomique 0600 à côté du .env ; chemin NEBULA_YTDLP_COOKIES
+  configuré automatiquement ; remplacement à chaud, suppression propre
+  (fichier + variable).
 - « Arrêter » affiche un avertissement explicite : rien ne redémarre
   tout seul, seule une relance SSH `nebula start` est possible.
 
