@@ -1,0 +1,203 @@
+# 🔒 SAFETY.md — Modèle de sécurité de l'agent IA
+
+> Version 8.98 (10 oct. 2026). Ce document décrit noir sur blanc ce que
+> l'agent IA du bot peut et ne peut pas faire, et pourquoi. Il est inspiré
+> des leçons de [hermes-agent](https://github.com/NousResearch/hermes-agent)
+> et [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
+> (voir §7).
+
+L'agent (8.93+) traduit le langage naturel en **commandes existantes** du
+bot et les exécute. Ce n'est **pas** un agent universel : pas d'accès
+terminal, pas de navigation web, pas d'outils propres. Sa puissance est
+volontairement minuscule et son périmètre, verrouillé.
+
+---
+
+## 1. Périmètre
+
+| Où | Comportement |
+|---|---|
+| **DM privé** | L'agent comprend et **exécute** (aux droits de l'expéditeur) |
+| **Groupes** | **Jamais d'exécution** (beta) — l'IA guide seulement, elle donne la commande exacte à taper |
+
+Le déclenchement en DM est automatique (message sans préfixe). `.agent` / `.ag` forcent l'agent explicitement.
+
+## 2. Ce que l'agent peut faire
+
+- Exécuter une **commande déjà enregistrée** dans le bot (registre dynamique) ;
+- **Aux droits de l'expéditeur** : RoleGuard s'applique exactement comme si la personne tapait la commande elle-même ;
+- **Une seule** commande par décision.
+
+## 3. Ce qu'il ne peut JAMAIS faire
+
+- **Denylist stricte** : `.ai` et `.agent` (pas de méta-récursion), plus toutes les commandes de groupe ;
+- **Inventer** une commande, des arguments ou une capacité : réponse honnête + alternative la plus proche ;
+- Annoncer la **langue, la disponibilité ou la qualité** d'un anime dans son `say` (la commande décide et le dit honnêtement — leçon du terrain 8.95b) ;
+- Nommer les **sources privées** des catalogues anime (audit 8.42, test `sourcePrivacy`).
+
+## 4. Fail-closed partout
+
+- **Commande lourde** (téléchargements, plages d'épisodes, `purge`, `watch`, commandes owner/admin) → **confirmation explicite « OK »** exigée sous 2 minutes. Silence = rien ne se lance ;
+- **JSON de l'IA non conforme** → zéro confiance : dégradation en **guidage classique**, jamais d'exécution au jugé ;
+- **Commande en échec** → un seul tour de **rattrapage** (l'IA explique, propose la commande corrigée) qui exige **aussi** un OK ;
+- **Bascule de catalogue** (8.94/8.96) → offre déterministe, zéro appel IA supplémentaire, confirmation OK requise ;
+- Priorité des réponses nues : un « oui »/« non » nu répond **à la question en cours** (novabox ou agent), il ne redémarre pas une conversation (8.95b).
+
+## 4quater. Boucle d'observation de l'agent (9.1)
+
+L'agent peut enchaîner plusieurs commandes par message (ex. `.a mushoku
+tensei s3 e12 480p` puis `.a 1` pour choisir dans la liste) parce qu'il
+OBSERVE les réponses des commandes qu'il exécute. Bornes :
+- **3 décisions IA max par message** (décision owner) — quota IA
+  re-vérifié avant chaque décision ;
+- **anti-dérive** : la même commande avec les mêmes arguments ne
+  s'exécute JAMAIS deux fois dans un même message ;
+- CHAQUE itération repasse la validation locale zéro confiance
+  (registre + denylist), le guardrail d'arguments et la règle
+  lourd = confirmation fail-closed ;
+- la mémoire d'écran (dernière sortie interactive, TTL 10 min,
+  en RAM, aucun fichier) ne contient que ce que le bot a déjà envoyé ;
+- les questions de PRÉFÉRENCE (VF/VOSTFR, qualité non demandée) sont
+  toujours relées à l'utilisateur — jamais auto-répondues ;
+- au plafond ou en cas d'échec de parsing : relais propre (« réponds
+  directement au message ci-dessus ») — jamais de boucle silencieuse.
+
+## 4ter. Outils web (9.0) — .search / .fetch / .wiki
+
+Recherche DÉTERMINISTE : aucun token IA, aucune synthèse par le modèle —
+les résultats partent tels quels à l'utilisateur. Le texte extrait par
+`.fetch` est une DONNÉE affichée : aucune IA ne le lit, aucune commande
+ne s'exécute à partir de lui (anti-injection de prompt par construction).
+
+Tout le réseau sortant passe par `safeFetch` (urlSafety.ts, déjà utilisé
+par le téléchargeur) : localhost, IPs privées, IPv6-mappées et `.internal`
+sont REFUSÉS — le panneau et le moteur (même conteneur) restent
+injoignables ; le DNS est épinglé pour empêcher un rebond de redirection
+vers le réseau interne. Plafonds : 2 Mo / 15 s par requête, 4 redirections.
+
+Budget partagé par utilisateur (`NEBULA_WEB_DAILY_LIMIT`, défaut 20/jour,
+débité uniquement en cas de succès) pour ne pas faire bloquer l'IP du
+serveur par les moteurs. Transparence M11 : le moteur utilisé
+(DuckDuckGo, Tavily si clé, Wikipédia) voit la requête — dit dans la
+réponse du bot.
+
+## 4bis. Guardrail d'arguments (8.99)
+
+Même après validation de la commande, les arguments produits par l'IA sont
+**nettoyés avant exécution** : URLs retirées (SAUF pour les commandes qui
+déclarent `acceptsUrlArgs` — ytv/ytm/sweb/fetch/tiktok/instagram, où l'URL
+est la cible légitime ; cap dédié 500 chars, hors budget texte — 9.3b),
+backticks/quotes écorchés,
+flags shell (`--x`) supprimés, tokens plafonnés (80 chars) et budget total
+(200 chars). Un nettoyage actif est audité (`agent.args.sanitized`) et
+l'exécution utilise les arguments nettoyés — la commande revalide ses
+propres arguments ensuite (défense en profondeur).
+
+## 4quinquies. Console admin du panneau (9.2)
+
+La section « Système » du panneau peut lancer `nebula update`, `restart`
+et `stop`. Règles :
+- AUCUNE entrée utilisateur n'atteint un shell : les routes POST lancent
+  EXACTEMENT `bash manage.sh <action>` (script versionné du dépôt) ;
+- routes derrière la session panneau (protectApiRoutes) + rate limiter
+  dédié (4/min) ;
+- verrou manage.sh honoré : un update déjà en cours répond 409 ;
+- le script est lancé DÉTACHÉ (groupe de process propre) car il arrête
+  le panneau lui-même ; sa sortie part dans un log dédié (nebula-manage.log) ;
+- le tail de bot.log est plafonné (1-300 lignes, jamais le fichier de
+  150 Mo) et reste derrière l'authentification ;
+
+Éditeur .env (9.3) — mêmes routes, mêmes règles :
+- LISTE BLANCHE STRICTE des clés éditables (spécifications codées) ;
+- validation par type avant écriture : entiers bornés, énumérés, booléens,
+  et AUCUN retour ligne/guillemet (rien d'injectable dans le .env) ;
+- écriture atomique (tmp+rename) au format manage.sh (KEY="valeur"),
+  chmod 600 ;
+- les SECRETS ne sont jamais renvoyés en clair (masqués — écriture seule) ;
+- la réponse indique si la variable s'applique à chaud (quota web, Tavily)
+  ou nécessite un redémarrage ;
+
+Cookies YouTube collés (9.4) — mêmes principes :
+- validation stricte AVANT écriture : format Netscape (7 champs tabulés),
+  au moins un cookie du domaine youtube.com, aucun fichier entièrement
+  expiré, 512 Ko max ;
+- le CONTENU (session YouTube) n'est JAMAIS renvoyé par l'API — le GET
+  ne retourne que des métadonnées (nombre, domaines, expiration) ;
+- écriture atomique 0600 à côté du .env ; chemin NEBULA_YTDLP_COOKIES
+  configuré automatiquement ; remplacement à chaud, suppression propre
+  (fichier + variable).
+- « Arrêter » affiche un avertissement explicite : rien ne redémarre
+  tout seul, seule une relance SSH `nebula start` est possible.
+
+Partage de fichiers via `.up` (9.5) :
+- même mécanique que les liens d'épisodes : route publique `/d/<token>`,
+  TTL 2 h GLISSANT (chaque téléchargement relance le délai, vie totale
+  plafonnée à 2 h), fichier posé dans le dépôt temporaire purgé ;
+- QUOTA : 50 uploads / heure / utilisateur (refus honnête au-delà) ;
+- TAILLE contrôlée AVANT traitement (`NEBULA_UPLOAD_MAX_MB`, défaut
+  500 Mo, bornes 10-4096 via l'éditeur .env du panneau) ;
+- nom de fichier assaini (caractères de chemin interdits → `_`, 120
+  caractères max) : aucune traversée de chemin possible ;
+- téléchargement EN STREAMING vers le disque, coupé net dès que la limite
+  est dépassée (jamais tamponné en RAM : heap 192 Mo < limite 500 Mo).
+
+## 5. Budgets et quotas
+
+| Ressource | Plafond |
+|---|---|
+| Appels IA (chat + agent) | 40 / jour / utilisateur |
+| Exécutions agent | 10 / heure / utilisateur |
+| Fichiers partagés (`.up`) | 50 / heure / utilisateur · 500 Mo max (`NEBULA_UPLOAD_MAX_MB`) |
+| Concurrence IA | globale, file d'attente |
+| Fiche agent (contexte) | < 6 000 caractères (test CI `agentContextBudget`) |
+| Historique anime dans le prompt | uniquement si le message parle d'anime (8.99, leçon Mastra) |
+| Prompt système total estimé | < 18 000 caractères |
+
+La mémoire de conversation (8.38) et la mémoire des choix anime (8.97/8.98) sont **plafonnées et compactées** : tours bruts + résumé glissant, TTL 10 h (conversation) / 7 jours (`NEBULA_ANIME_CHOICES_TTL_HOURS`) — le bloc historique est gardé sous 900 caractères.
+
+## 6. Vie privée et données
+
+- **Audit sans contenus** : `agent.exec`, `agent.confirm.pending`, `agent.deny`… numéros masqués, jamais le texte des messages ;
+- **Filtre anti-secrets** à l'écriture en mémoire (mots de passe, tokens, PIN…) ;
+- **`.ai forget`** efface la conversation **et** l'historique anime du chat ;
+- Les noms des catalogues privés n'apparaissent dans aucun message utilisateur.
+
+## 7. Leçons externes intégrées
+
+1. **hermes-agent a supprimé son scanner de sécurité heuristique** (tirith, oct. 2026) : 14/16 commandes d'attaque attrapées, mais 12/24 commandes bénignes bloquées — un ratio de faux positifs invivable. Nous : **allowlist de commandes existantes + denylist + confirmations explicites**, pas d'heuristique de contenu.
+2. **hermes-agent a découvert que sa fiche de contexte de 38,7k caractères débordait son budget** : « chaque session perdait son milieu ». Nous : budget de fiche **verrouillé par un test CI** (8.98).
+3. **deepseek-harness** : infrastructure de tests en couches (e2e, snapshot, stress). Nous : harness de replay agent (`scripts/agent-replay.ts`) pour rejouer de vraies conversations contre l'IA réelle — hors CI (clés requises), lancement manuel.
+
+## 8. Métriques de l'agent (8.99)
+
+Chaque tour est tracé SANS contenu de message : action (execute/ask/reply/
+degraded/denied/error), moteur, latence, décision conforme oui/non, args
+nettoyés. Agrégat 24 h via `/api/bot/agent-health` (carte « AI Agent —
+last 24 h » du panneau) et dans le digest quotidien du propriétaire.
+
+## 9. Harness de replay (tests agent avec la vraie IA)
+
+Rejoue des conversations réelles de référence et vérifie les décisions de
+l'agent (commande, arguments, say). **Nécessite une clé IA configurée**
+(la même que le bot).
+
+```bash
+# build (une fois, après un changement de code)
+npm run build
+
+# dans le conteneur Docker (déploiement owner) :
+docker exec -it <nom-du-conteneur> node dist/agent-replay.cjs
+
+# ou n'importe où avec node_modules + .env :
+node dist/agent-replay.cjs
+```
+
+Sortie : un rapport par scénario (✓/✗ + raison), code de sortie non nul si
+un scénario échoue. Les scénarios vivent dans `scripts/agent-replay.ts`
+(les ajouter = éditer le tableau `SCENARIOS`).
+
+## 10. Ce qui resterait à faire (v3 éventuelle)
+
+- Tâches planifiées en langage naturel (cron) — nécessite un cadre d'approbation ;
+- Mémoire auto-curée par l'agent (hermes-style) — risque de dérive à cadrer ;
+- Sous-agents parallèles — hors périmètre actuel, volontairement.

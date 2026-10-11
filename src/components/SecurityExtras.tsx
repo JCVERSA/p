@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useBotUrl } from "../lib/botContext";
 import { History, Download, Upload, RefreshCw, Trash2 } from "lucide-react";
 
 interface AuditEvent {
@@ -12,6 +13,7 @@ interface AuditEvent {
 
 /** M13-adjacent observability: audit trail + backup/restore + AI usage. */
 export default function SecurityExtras() {
+  const botUrl = useBotUrl();
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -21,7 +23,7 @@ export default function SecurityExtras() {
   const loadAudit = async () => {
     setAuditLoading(true);
     try {
-      const res = await fetch("/api/bot/audit?limit=60", { credentials: "same-origin" });
+      const res = await fetch(botUrl("/api/bot/audit?limit=60"), { credentials: "same-origin" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setEvents(json.events || []);
@@ -34,7 +36,7 @@ export default function SecurityExtras() {
 
   const loadAiUsage = async () => {
     try {
-      const res = await fetch("/api/bot/analytics", { credentials: "same-origin" });
+      const res = await fetch(botUrl("/api/bot/analytics"), { credentials: "same-origin" });
       if (!res.ok) return;
       const json = await res.json();
       if (json.aiUsage) setAiUsage(json.aiUsage);
@@ -49,7 +51,7 @@ export default function SecurityExtras() {
   const downloadBackup = async () => {
     setMessage("");
     try {
-      const res = await fetch("/api/bot/backup", { credentials: "same-origin" });
+      const res = await fetch(botUrl("/api/bot/backup"), { credentials: "same-origin" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
@@ -70,7 +72,7 @@ export default function SecurityExtras() {
     try {
       const text = await file.text();
       const json = JSON.parse(text);
-      const res = await fetch("/api/bot/backup/restore", {
+      const res = await fetch(botUrl("/api/bot/backup/restore"), {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
@@ -89,7 +91,7 @@ export default function SecurityExtras() {
   const clearAudit = async () => {
     if (!window.confirm("Clear the entire audit trail? This action is itself recorded.")) return;
     try {
-      const res = await fetch("/api/bot/audit", { method: "DELETE", credentials: "same-origin" });
+      const res = await fetch(botUrl("/api/bot/audit"), { method: "DELETE", credentials: "same-origin" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setMessage("🧹 Audit trail cleared.");
       loadAudit();
@@ -108,21 +110,21 @@ export default function SecurityExtras() {
           </div>
           <div>
             <h3 className="text-sm font-bold text-white">Backup &amp; Restore</h3>
-            <p className="text-[10px] text-zinc-400">Exports config, group settings, warnings, stats, access policies and panel commands. Secrets and session material are never included.</p>
+            <p className="text-[11px] text-zinc-400">Exports config, group settings, warnings, stats, access policies and panel commands. Secrets and session material are never included.</p>
           </div>
         </div>
         {aiUsage && (
           <div className="grid grid-cols-3 gap-2 max-w-md">
             <div className="p-2.5 bg-white/5 border border-white/10 rounded-lg text-center">
-              <div className="text-[10px] text-zinc-400">AI used today</div>
+              <div className="text-[11px] text-zinc-400">AI used today</div>
               <div className="text-sm font-bold text-amber-400">{aiUsage.todayCount}/{aiUsage.dailyLimit}</div>
             </div>
             <div className="p-2.5 bg-white/5 border border-white/10 rounded-lg text-center">
-              <div className="text-[10px] text-zinc-400">AI concurrency cap</div>
+              <div className="text-[11px] text-zinc-400">AI concurrency cap</div>
               <div className="text-sm font-bold text-zinc-200">{aiUsage.maxConcurrent}</div>
             </div>
             <div className="p-2.5 bg-white/5 border border-white/10 rounded-lg text-center">
-              <div className="text-[10px] text-zinc-400">Audit events</div>
+              <div className="text-[11px] text-zinc-400">Audit events</div>
               <div className="text-sm font-bold text-zinc-200">{events.length}</div>
             </div>
           </div>
@@ -158,7 +160,7 @@ export default function SecurityExtras() {
             </div>
             <div>
               <h3 className="text-sm font-bold text-white">Security Audit Trail</h3>
-              <p className="text-[10px] text-zinc-400">Login/logout, RoleGuard policy changes, ACL denials, panel command saves, restores.</p>
+              <p className="text-[11px] text-zinc-400">Login/logout, RoleGuard policy changes, ACL denials, panel command saves, restores.</p>
             </div>
           </div>
           <div className="flex gap-2">
@@ -178,12 +180,12 @@ export default function SecurityExtras() {
             <div key={e.id} className="p-2.5 bg-black/40 border border-white/5 rounded-lg flex flex-col gap-0.5">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-mono text-amber-300">{e.action}</span>
-                <span className="text-[10px] text-zinc-500 font-mono">{e.at.slice(0, 19).replace("T", " ")}</span>
+                <span className="text-[11px] text-zinc-500 font-mono">{e.at.slice(0, 19).replace("T", " ")}</span>
               </div>
-              <div className="text-[10px] text-zinc-400">
+              <div className="text-[11px] text-zinc-400">
                 <span className="text-zinc-500">actor:</span> {e.actor} · <span className="text-zinc-500">target:</span> {e.target || "—"}
               </div>
-              {e.detail && <div className="text-[10px] text-zinc-500 truncate">{e.detail}</div>}
+              {e.detail && <div className="text-[11px] text-zinc-500 truncate">{e.detail}</div>}
             </div>
           ))}
         </div>

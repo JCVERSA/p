@@ -1,23 +1,44 @@
-import makeWASocket, {
+// NOTE: use the NAMED export only. This module is ESM-only ("type": "module")
+// with no CJS build; in the esbuild CJS production bundle a default import
+// compiles to `(0, import_baileys.default)(...)`, and esbuild's __toESM
+// interop sets `.default` to the whole require(esm) namespace instead of the
+// function — which crashed the bot with "(0, import_baileys.default) is not
+// a function". Named imports pass through the wrapper untouched.
+import {
+  makeWASocket,
   DisconnectReason,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
   fetchLatestBaileysVersion
 } from "@whiskeysockets/baileys";
 import pino from "pino";
+// 9.0c (SEC) : avant toute connexion — libsignal console.info des sessions
+// complètes (rootKey/privKey…) à la fermeture ; on les avale ICI.
+import "./suppressLibsignalNoise.js";
 import { Boom } from "@hapi/boom";
 import fs from "fs";
 import { getConfig } from "./config.js";
-import { getCommand, initRegistry } from "./commandRegistry.js";
-import { BotCommandContext, GroupMember } from "./types.js";
+import { resolveOwnerIdentity } from "./ownerIdentity.js";
+import { getCommand, initRegistry, isRegistryReady } from "./commandRegistry.js";
+import { BotCommandContext } from "./types.js";
 import { incrementCommandStats } from "./commandStats.js";
-import { generateTextWithFallback } from "./geminiClient.js";
+import { generateTextWithFallback, isAIConfigured } from "./geminiClient.js";
+import { getPersonaPrompt } from "./persona.js";
+import {
+  getMemoryContext,
+  recordExchange,
+  compactIfNeeded,
+  defaultMemorySummarizer
+} from "./services/aiMemory.js";
 import { database } from "./database.js";
-import { inspectMessageSafety } from "./utils/antibot.js";
 import { checkAIQuota, consumeAIQuota, withAIConcurrency } from "./aiQuota.js";
-import { authorizeCommand, resolveRole } from "./accessControl.js";
-import { getGroupPolicy } from "./groupAccessStore.js";
-import { recordAudit } from "./auditTrail.js";
+import { setWatchSender, startWatchScheduler } from "./services/episodeWatchService.js";
+import { setDigestSender, startDigestScheduler } from "./services/digestService.js";
+import { dispatchBotCommand, type DispatchInfo } from "./commandDispatch.js";
+import { handleAgentMessage } from "./services/agentRunner.js";
+import { peekPendingConfirmation } from "./services/agentBrain.js";
+import { hasPendingLanguageConfirm, bareLanguageAnswer } from "./commands/novabox.js";
+import { getAnimeChoiceContext, messageSuggestsAnimeHistory } from "./services/animeChoices.js";
 
 
 const groupMetadataCache = new Map<string, { data: any; timestamp: number }>();
@@ -32,7 +53,7 @@ export function invalidateGroupMetadataCache(groupId?: string) {
   }
 }
 
-async function getCachedGroupMetadata(sock: any, groupId: string) {
+export async function getCachedGroupMetadata(sock: any, groupId: string) {
   const cached = groupMetadataCache.get(groupId);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     return cached.data;
@@ -125,7 +146,7 @@ export function clearLogs() {
 }
 
 /** Decodes a data: URI into a Buffer (used for AI-generated images). */
-function bufferFromDataUri(dataUri: string): Buffer | null {
+export function bufferFromDataUri(dataUri: string): Buffer | null {
   const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(dataUri);
   if (!match) return null;
   try {
@@ -221,12 +242,11 @@ export async function simulateMessage(senderName: string, text: string): Promise
 
   // Check if starts with prefix
   if (!text.startsWith(prefix)) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey && apiKey !== "MY_GEMINI_API_KEY" && apiKey.trim() !== "") {
+    if (isAIConfigured()) {
       try {
         const aiAnswer = await generateTextWithFallback(
           text,
-          `You are ${config.botName}, an intelligent WhatsApp multi-device bot assistant in direct private chat. Provide helpful, conversational, natural, and crisp responses.`,
+          getPersonaPrompt("dm", config.botName),
           "gemini-3.7-flash"
         );
         addLog(`[Simulator Direct AI] Generated direct reply for "${maskLogText(text)}"`);
@@ -256,7 +276,7 @@ export async function simulateMessage(senderName: string, text: string): Promise
   let replyImageUrl: string | undefined = undefined;
   let reactionEmoji: string | undefined = undefined;
 
-  // Mock sock + msg so commands that send directly (roast, hidetag, download) work too.
+  // Mock sock + msg so commands that send directly (hidetag, download) work too.
   const mockSock = createMockSocket({
     replyText: () => replyText,
     setReply: (t) => { replyText = t; },
@@ -402,7 +422,7 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
   }
 
   try {
-    await initRegistry();
+    if (!isRegistryReady()) await initRegistry(); // 8.56: server.ts already init at boot
 
     // Auth state directory
     const authDir = process.env.NEBULA_AUTH_DIR || "nebula_auth_info";
@@ -534,6 +554,23 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
           const ownerJid = `${ownerDigits}@s.whatsapp.net`;
           sock.sendMessage(ownerJid, { text: `🌌 *${config.botName}* is online and connected!\nPrefix: \`${config.prefix}\`` }).catch(() => {});
         }
+
+        // Episode watcher (`.a watch`, audit S4): refresh the sender with the
+        // live socket on every (re)connection, then start the scheduler once.
+        setWatchSender(async (chatJid, text) => {
+          await sock.sendMessage(chatJid, { text });
+        });
+        startWatchScheduler();
+
+        // 8.99 — digest quotidien du propriétaire (8 h, NEBULA_DIGEST=0 off)
+        // : même pattern que le watcher — sender réinjecté à chaque
+        // (re)connexion, planificateur démarré une seule fois.
+        setDigestSender(async (text) => {
+          if (ownerDigits.length >= 8) {
+            await sock.sendMessage(`${ownerDigits}@s.whatsapp.net`, { text });
+          }
+        });
+        startDigestScheduler();
       }
 
       if (connection === "close") {
@@ -721,8 +758,12 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         const actualSenderNumber = actualSenderJid.split("@")[0].replace(/[^0-9]/g, "");
         const envOwnerNumber = (process.env.OWNER_NUMBER || "").trim();
         const configuredOwner = envOwnerNumber || config.ownerNumber;
-        const cleanedOwner = configuredOwner.replace(/[^0-9]/g, "");
-        const isOwner = cleanedOwner ? (actualSenderNumber === cleanedOwner) : false;
+        // 8.89 : le message peut arriver d'un jid @lid (WhatsApp « masquer mon
+        // numéro ») — résolution LID→numéro via Baileys puis comparaison
+        // EXACTE (helper partagé avec whois ; comportement IDENTIQUE pour les
+        // jids téléphone). Fallback NEBULA_OWNER_LID si la table est inconnue.
+        const ownerCheck = await resolveOwnerIdentity(sock, actualSenderJid, configuredOwner);
+        const isOwner = ownerCheck.isOwner;
 
         // Add visual live logs to the dashboard so the user knows messages are being processed
         if (text.trim()) {
@@ -732,91 +773,77 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         // Active Group Moderation Engine
         const isGroup = senderJid.endsWith("@g.us");
         let isSenderAdmin = false;
-        let isBotAdmin = false;
 
         if (isGroup && !isFromMe) {
-          const settings = database.getGroupSettings(senderJid);
-
           try {
             const groupMetadata = await getCachedGroupMetadata(sock, senderJid);
             if (groupMetadata) {
-              const botJid = sock.user?.id ? (sock.user.id.split(":")[0] + "@s.whatsapp.net") : "";
               const senderParticipant = groupMetadata.participants.find((p: any) => p.id.split("@")[0] === actualSenderNumber);
-              const botParticipant = groupMetadata.participants.find((p: any) => p.id.split("@")[0] === botJid.split("@")[0]);
-
               isSenderAdmin = senderParticipant?.admin === "admin" || senderParticipant?.admin === "superadmin";
-              isBotAdmin = botParticipant?.admin === "admin" || botParticipant?.admin === "superadmin";
             }
           } catch (e) {}
-
-          // 1. Antilink & Antibot Filtering using antibot utility
-          if ((settings.antilink || settings.antibot) && !isSenderAdmin && !isOwner) {
-            const safety = inspectMessageSafety(senderJid, text, msg, actualSenderJid);
-            if (safety.isViolation) {
-              addLog(`🛡️ [Security Violation] ${safety.description} from @${maskLogNumber(actualSenderNumber)} in group ${maskLogNumber(senderJid)}`);
-
-              if (isBotAdmin) {
-                await sock.sendMessage(senderJid, { delete: msg.key });
-
-                if (safety.action === "kick") {
-                  await sock.groupParticipantsUpdate(senderJid, [actualSenderJid], "remove");
-                  await sock.sendMessage(senderJid, {
-                    text: `🚫 *Security Enforcement:* @${actualSenderNumber} has been kicked.\n*Reason:* ${safety.description}`,
-                    mentions: [actualSenderJid]
-                  });
-                } else if (safety.action === "warn") {
-                  await sock.sendMessage(senderJid, {
-                    text: `⚠️ *Security Warning:* @${actualSenderNumber}, ${safety.description}`,
-                    mentions: [actualSenderJid]
-                  });
-                } else {
-                  await sock.sendMessage(senderJid, {
-                    text: `⚠️ *Notice:* Prohibited message from @${actualSenderNumber} has been removed.`,
-                    mentions: [actualSenderJid]
-                  });
-                }
-              }
-              continue; // Prevent command execution / normal message processing
-            }
-          }
-
-          // 2. Antitag (Mass Mentions) Filtering
-          if (settings.antitag && !isSenderAdmin && !isOwner) {
-            const ctxInfo = msg.message?.extendedTextMessage?.contextInfo || messageContent?.extendedTextMessage?.contextInfo;
-            const mentionedJids = ctxInfo?.mentionedJid || [];
-            if (mentionedJids.length >= 4) {
-              addLog(`🛡️ [Antitag] Mass mention (${mentionedJids.length} tags) detected from @${actualSenderNumber}`);
-
-              if (isBotAdmin) {
-                await sock.sendMessage(senderJid, { delete: msg.key });
-
-                if (settings.antitagAction === "kick") {
-                  await sock.groupParticipantsUpdate(senderJid, [actualSenderJid], "remove");
-                  await sock.sendMessage(senderJid, {
-                    text: `🚫 *Antitag enforcement:* @${actualSenderNumber} has been kicked for mass mentioning group members.`,
-                    mentions: [actualSenderJid]
-                  });
-                } else {
-                  await sock.sendMessage(senderJid, {
-                    text: `⚠️ *Antitag warning:* Mass mentions are disabled in this group, @${actualSenderNumber}.`,
-                    mentions: [actualSenderJid]
-                  });
-                }
-              }
-              continue; // Prevent command execution / normal message processing
-            }
-          }
         }
 
+        // Moderation hooks (antilink/antitag/antibot) were removed with the
+        // 8.59 command curation; welcome/goodbye and RoleGuard remain active.
         // Allow owner to run commands on their own session, but ignore regular self messages that don't start with prefix
         if (isFromMe && !text.startsWith(prefix)) {
           continue;
         }
 
+        // 8.93 : infos de dispatch partagées entre le chemin préfixe et l'agent.
+        const dispatchInfo: DispatchInfo = {
+          senderJid,
+          senderName,
+          senderNumber,
+          isOwner,
+          isAdmin: isSenderAdmin,
+          isGroup,
+          prefix,
+          text,
+          messageContent,
+        };
+
         // Direct AI response in private chat when not starting with prefix
         if (!isGroup && !isFromMe && !text.startsWith(prefix)) {
-          const apiKey = process.env.GEMINI_API_KEY;
-          if (apiKey && apiKey !== "MY_GEMINI_API_KEY" && apiKey.trim() !== "") {
+          // 8.95b : question novabox en attente (« continuer en VOSTFR ? ») —
+          // un « oui »/« non » nu doit RÉPONDRE À CETTE QUESTION, pas partir
+          // dans l'agent IA (qui reformulerait une nouvelle demande).
+          // Priorité à la confirmation de l'agent si les deux pendent (elle
+          // est alors plus récente : l'agent vient de poser sa question).
+          const bareAnswer = bareLanguageAnswer(text);
+          if (
+            bareAnswer &&
+            hasPendingLanguageConfirm(senderJid) &&
+            !peekPendingConfirmation(actualSenderJid)
+          ) {
+            await dispatchBotCommand(sock, msg, dispatchInfo, "a", [bareAnswer], "agent");
+            continue;
+          }
+          if (isAIConfigured()) {
+            // 8.93 agent beta (privé uniquement) : l'IA traduit la demande
+            // naturelle en commande existante et l'exécute aux droits de
+            // l'utilisateur (RoleGuard inchangé). Renvoie false → l'IA
+            // n'est pas configurée : laisser le chemin normal répondre.
+            const handledByAgent = await handleAgentMessage(
+              sock,
+              msg,
+              {
+                senderJid,
+                actorJid: actualSenderJid,
+                actorNumber: actualSenderNumber,
+                senderName,
+                isOwner,
+                text,
+                botName: config.botName,
+                prefix,
+              },
+              (commandName, args) =>
+                dispatchBotCommand(sock, msg, dispatchInfo, commandName, args, "agent")
+            );
+            if (handledByAgent) {
+              continue;
+            }
             const quota = checkAIQuota(actualSenderJid);
             if (!quota.allowed) {
               await sock.sendMessage(senderJid, { text: `⚠️ ${quota.error}` }, { quoted: msg });
@@ -829,13 +856,25 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
                 } catch (pe) {}
               }
               consumeAIQuota(actualSenderJid);
+              const memoryBlock = getMemoryContext(senderJid);
+              // 8.97/8.99 — dernier téléchargement anime du chat, comme
+              // l'agent — mais SEULEMENT si le message y ressemble (leçon
+              // Mastra : pas d'historique inutile dans « salut ça va »).
+              const choiceBlock = messageSuggestsAnimeHistory(text)
+                ? getAnimeChoiceContext(senderJid)
+                : null;
               const answer = await withAIConcurrency(() =>
                 generateTextWithFallback(
                   text,
-                  `You are ${config.botName}, an intelligent WhatsApp multi-device bot assistant. You are chatting directly in a 1-on-1 private conversation. Keep responses helpful, direct, concise, natural, and clean.`,
+                  getPersonaPrompt("dm", config.botName) +
+                    (memoryBlock ? `\n\n${memoryBlock}` : "") +
+                    (choiceBlock ? `\n\n${choiceBlock}` : ""),
                   "gemini-3.7-flash"
                 )
               );
+              // Per-conversation memory (audit 8.38) — fire and forget.
+              recordExchange(senderJid, text, answer);
+              compactIfNeeded(senderJid, defaultMemorySummarizer).catch(() => {});
               if (sock && typeof sock.sendPresenceUpdate === "function") {
                 try {
                   await sock.sendPresenceUpdate("paused", senderJid);
@@ -847,6 +886,16 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
             } catch (error: any) {
               console.error("[Private Chat AI Error]:", error);
               addLog(`❌ [Private Chat AI Error]: ${error.message}`);
+              // 8.71: users used to get TOTAL SILENCE when the AI chain
+              // failed (production logs: the same users retrying 3-5x).
+              // Honest French notice, same tone as the other messages.
+              try {
+                await sock.sendMessage(
+                  senderJid,
+                  { text: "😕 *L’IA est momentanément indisponible.*\n\n🔁 *Réessaie dans un instant.*\n_Si ça persiste, préviens l’administrateur du bot._" },
+                  { quoted: msg }
+                );
+              } catch {}
             }
           } else {
             // Friendly fallback guide if AI key is not yet configured
@@ -867,184 +916,9 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         const body = text.slice(prefix.length).trim();
         const args = body.split(/\s+/);
         const commandName = args.shift()?.toLowerCase() || "";
-
-        const command = getCommand(commandName);
-        if (!command) {
-          addLog(`⚠️ Unknown or dynamically excluded command: "${commandName}"`);
-          continue;
-        }
-
-        // Build dynamic reply and react handlers
-        const replyHandler = async (textStr: string, mediaUrl?: string) => {
-          try {
-            // Typing simulation to enhance interaction realism
-            if (sock && typeof sock.sendPresenceUpdate === "function") {
-              try {
-                await sock.sendPresenceUpdate("composing", senderJid);
-                // Simulated typing delay depending on text length (approx 15ms per character, capped between 600ms and 2.5s)
-                const typingDelay = Math.min(Math.max(textStr.length * 15, 600), 2500);
-                await new Promise((resolve) => setTimeout(resolve, typingDelay));
-                await sock.sendPresenceUpdate("paused", senderJid);
-              } catch (presErr: any) {
-                addLog(`[Presence] Failed to send typing simulation: ${presErr.message}`);
-              }
-            }
-
-            if (mediaUrl) {
-              // Decode data: URIs (e.g. AI-generated images) into a buffer —
-              // Baileys cannot fetch data URIs directly.
-              if (mediaUrl.startsWith("data:")) {
-                const buffer = bufferFromDataUri(mediaUrl);
-                if (buffer) {
-                  return await sock.sendMessage(senderJid, {
-                    image: buffer,
-                    caption: textStr
-                  }, { quoted: msg });
-                }
-              }
-              return await sock.sendMessage(senderJid, {
-                image: { url: mediaUrl },
-                caption: textStr
-              }, { quoted: msg });
-            } else {
-              return await sock.sendMessage(senderJid, { text: textStr }, { quoted: msg });
-            }
-          } catch (e: any) {
-            addLog(`Error sending message: ${e.message}`);
-          }
-        };
-
-        const reactHandler = async (emoji: string) => {
-          try {
-            return await sock.sendMessage(senderJid, {
-              react: { text: emoji, key: msg.key }
-            });
-          } catch (e: any) {
-            addLog(`Error reacting: ${e.message}`);
-          }
-        };
-
-        // Sensible media handling - dynamic buffer downloader (operates on the unwrapped message)
-        const mediaDownloader = async (): Promise<Buffer | null> => {
-          try {
-            const messageType = Object.keys(messageContent)[0];
-            if (!["imageMessage", "videoMessage", "documentMessage", "audioMessage"].includes(messageType)) {
-              return null;
-            }
-
-            addLog(`Downloading media content of type: ${messageType}`);
-            const stream = await (sock as any).downloadContentFromMessage(
-              messageContent[messageType as keyof typeof messageContent],
-              messageType.replace("Message", "")
-            );
-
-            let buffer = Buffer.alloc(0);
-            const MAX_MEDIA_BYTES = 100 * 1024 * 1024; // WhatsApp media ceiling
-            for await (const chunk of stream) {
-              buffer = Buffer.concat([buffer, chunk]);
-              if (buffer.length > MAX_MEDIA_BYTES) {
-                addLog("Media download aborted: exceeds the 100 MB memory cap.");
-                return null;
-              }
-            }
-
-            // Log memory safe usage
-            addLog(`Media download finished. Buffer size: ${Math.round(buffer.length / 1024)} KB.`);
-            return buffer;
-          } catch (err: any) {
-            addLog(`Media download failed: ${err.message}`);
-            return null;
-          }
-        };
-
-        const context: BotCommandContext = {
-          sender: senderJid,
-          senderName,
-          isOwner,
-          isAdmin: isSenderAdmin,
-          prefix,
-          commandName,
-          args,
-          fullMessage: text,
-          reply: replyHandler,
-          react: reactHandler,
-          downloadMedia: mediaDownloader,
-          getGroupMetadata: async (jid: string) => {
-            return await getCachedGroupMetadata(sock, jid);
-          },
-          getGroupMembers: async (jid: string): Promise<GroupMember[]> => {
-            const meta = await getCachedGroupMetadata(sock, jid);
-            if (meta && Array.isArray(meta.participants)) {
-              return meta.participants.map((p: any) => ({
-                id: p.id,
-                number: p.id.split("@")[0].replace(/[^0-9]/g, ""),
-                admin: p.admin || null,
-              }));
-            }
-            return [];
-          },
-          updateParticipants: async (jid: string, participants: string[], action: "add" | "remove" | "promote" | "demote") => {
-            if (sock && typeof sock.groupParticipantsUpdate === "function") {
-              return await sock.groupParticipantsUpdate(jid, participants, action);
-            }
-            return null;
-          },
-          kickMember: async (jid: string, participantJid: string) => {
-            if (sock && typeof sock.groupParticipantsUpdate === "function") {
-              return await sock.groupParticipantsUpdate(jid, [participantJid], "remove");
-            }
-            return null;
-          },
-          promoteMember: async (jid: string, participantJid: string) => {
-            if (sock && typeof sock.groupParticipantsUpdate === "function") {
-              return await sock.groupParticipantsUpdate(jid, [participantJid], "promote");
-            }
-            return null;
-          },
-          demoteMember: async (jid: string, participantJid: string) => {
-            if (sock && typeof sock.groupParticipantsUpdate === "function") {
-              return await sock.groupParticipantsUpdate(jid, [participantJid], "demote");
-            }
-            return null;
-          },
-        };
-
-        addLog(`💬 Executing dynamic command: [${commandName}] for ${senderName} (${maskLogNumber(senderNumber)})`);
-
-        // RoleGuard (M1): declarative ACL gate — fail closed on any error so a
-        // policy/registry problem can never escalate to "everyone allowed".
-        try {
-          const accessPolicy = getGroupPolicy(senderJid);
-          const aclDecision = authorizeCommand(
-            { name: commandName, category: command.category || "misc" },
-            resolveRole({ isOwner, isAdmin: isSenderAdmin, isGroup }),
-            accessPolicy,
-            {
-              ownerOnly: (command as any).ownerOnly,
-              adminOnly: (command as any).adminOnly,
-              groupOnly: (command as any).groupOnly,
-              privateOnly: (command as any).privateOnly,
-            }
-          );
-          if (!aclDecision.allowed) {
-            addLog(`⛔ RoleGuard denied [${commandName}] for ${senderName} (${maskLogNumber(senderNumber)}): ${aclDecision.reason}`);
-            recordAudit(`wa:${maskLogNumber(senderNumber)}`, "roleguard.deny", commandName, aclDecision.reason);
-            await replyHandler(`⛔ *Access Denied:* ${aclDecision.reason}.`);
-            return;
-          }
-        } catch (aclErr: any) {
-          addLog(`⛔ RoleGuard error on [${commandName}] for ${senderName}: ${aclErr.message || aclErr} (fail-closed)`);
-          await replyHandler(`⛔ *Access Denied:* unable to verify permission for this command.`);
-          return;
-        }
-
-        try {
-          incrementCommandStats(commandName);
-          await command.execute(sock, msg, context);
-        } catch (err: any) {
-          addLog(`❌ Error in ${commandName}: ${err.message || err}`);
-          await replyHandler(`❌ *Nebula Error:* Failed to execute command \`${commandName}\`.\nReason: ${err.message || err}`);
-        }
+        // 8.93 : le dispatch (contexte, RoleGuard, stats, exécution) vit dans
+        // commandDispatch.ts — source unique partagée avec l'agent IA.
+        await dispatchBotCommand(sock, msg, dispatchInfo, commandName, args, "prefix");
       }
     });
 

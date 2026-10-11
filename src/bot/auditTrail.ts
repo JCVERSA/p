@@ -11,7 +11,7 @@ import path from "path";
 export interface AuditEvent {
   id: string;
   at: string; // ISO timestamp
-  actor: string; // e.g. "panel", "owner:237…", "group:1203…@g.us"
+  actor: string; // e.g. "panel", "owner:<number>", "group:<gid>@g.us"
   action: string;
   target: string;
   detail?: string;

@@ -22,7 +22,7 @@ describe("Audit trail", () => {
 
 describe("Log redaction (M6)", () => {
   it("masks numbers down to the last 4 digits", () => {
-    expect(maskLogNumber("237699999999@s.whatsapp.net")).toBe("…9999");
+    expect(maskLogNumber("10000000001@s.whatsapp.net")).toBe("…0001");
     expect(maskLogNumber("123")).toBe("…123");
   });
 

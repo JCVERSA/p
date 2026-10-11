@@ -9,6 +9,8 @@
  *   .a demon slayer s2 ep4 720p
  */
 
+import type { AnimeSourceId } from "../services/animeSources.js";
+
 export interface QuickDownloadParams {
   rawInput: string;
   animeQuery: string;
@@ -19,6 +21,8 @@ export interface QuickDownloadParams {
   parsedEpisodeNumbers?: number[]; // 1-indexed numbers
   resolutionChoice?: string; // "r1", "r2", "r3", "r4", "1080P", "720P", "480P", "360P"
   language?: "VF" | "VOSTFR";
+  /** Catalog flag (`as` / `va`) — first token only (refonte 2026-09-21). */
+  source?: AnimeSourceId;
   isQuickCommand: boolean;
 }
 
@@ -121,6 +125,18 @@ export function parseQuickDownloadParams(input: string[] | string): QuickDownloa
   let episodesMode: "all" | "single" | "list" | "range" | undefined;
   let parsedEpisodeNumbers: number[] | undefined;
 
+  // 0. Catalog flag (`as` / `va`, optional trailing "=") — FIRST token only,
+  // and only when a title follows (`.a as` alone stays a literal query).
+  // Refonte 2026-09-21: one catalog per query, chosen by the user.
+  let source: AnimeSourceId | undefined;
+  if (tokens.length > 1) {
+    const first = tokens[0].toLowerCase().replace(/=+$/, "");
+    if (first === "as" || first === "va") {
+      source = first;
+      tokens.shift();
+    }
+  }
+
   // Working copy of tokens to mutate
   const remainingTokens: string[] = [];
 
@@ -214,6 +230,43 @@ export function parseQuickDownloadParams(input: string[] | string): QuickDownloa
       continue;
     }
 
+    // D-bis. 9.1 — français naturel : « épisode 12 », « episode12 », « ép12 »
+    // (retour terrain : l'agent transmettait les mots de l'utilisateur tels
+    // quels et ils finissaient dans le titre → recherche cassée).
+    const epFrMatch = lower.match(/^(?:épisode|episode|ép|epis)(\d+)$/i);
+    if (epFrMatch) {
+      episodesSpec = token;
+      episodesMode = "single";
+      parsedEpisodeNumbers = [parseInt(epFrMatch[1], 10)];
+      continue;
+    }
+    if (/^(?:épisode|episode|ép|e|ep)$/i.test(lower) && i + 1 < tokens.length && /^\d+$/.test(tokens[i + 1])) {
+      episodesSpec = tokens[i + 1];
+      episodesMode = "single";
+      parsedEpisodeNumbers = [parseInt(tokens[i + 1], 10)];
+      i++; // consomme le numéro
+      continue;
+    }
+
+    // D-ter. 9.1 — mots de liaison : « en 480p », « en vf », « qualité 720p »…
+    // Consommés UNIQUEMENT si le token suivant est un marqueur reconnu (un
+    // « en » au milieu d'un titre reste dans le titre).
+    if (/^(?:en|dans|avec|qualité|qualite|en\s+qualité)$/i.test(lower) && i + 1 < tokens.length) {
+      const nxt = tokens[i + 1].toLowerCase();
+      const nextIsMarker =
+        /^(?:vf|vostfr)$/i.test(nxt) ||
+        /^(?:1080p|720p|480p|360p)$/i.test(nxt) ||
+        /^r\d+$/i.test(nxt) ||
+        /^(?:s|saison|season)\d*$/i.test(nxt) ||
+        /^(?:épisode|episode|ép|e|ep)\d*$/i.test(nxt) ||
+        // Chaine de mots de liaison (« en qualité 720p ») : chaque filler
+        // sera consommé à son tour s'il débouche sur un marqueur.
+        /^(?:en|dans|avec|qualité|qualite)$/i.test(nxt);
+      if (nextIsMarker) {
+        continue; // le marqueur sera traité à son tour
+      }
+    }
+
     // Otherwise, this token is likely part of the anime title
     remainingTokens.push(token);
   }
@@ -245,6 +298,7 @@ export function parseQuickDownloadParams(input: string[] | string): QuickDownloa
     parsedEpisodeNumbers,
     resolutionChoice,
     language,
+    source,
     isQuickCommand
   };
 }
@@ -297,6 +351,26 @@ export function isExactAnimeMatch(
 }
 
 /**
+ * Maps a quick-mode resolution choice to its CANONICAL quality label:
+ * r1=480P, r2=360P, r3=720P, r4=1080P (the menu shown to users), plus the
+ * explicit forms (480p/720p/…). Quick mode has no visible variant list, so
+ * rN must NEVER be treated as an index into a mirror-specific track list
+ * (audit §8.3: `.a rezero s5 ep2 r2` once resolved to 1080P because the
+ * first extractable mirror only exposed [720P, 1080P]).
+ */
+export function canonicalResolutionForChoice(choice: string): string {
+  const c = (choice || "").trim().toLowerCase();
+  const m = c.match(/^r(\d+)$/);
+  if (m) {
+    const idx = parseInt(m[1], 10);
+    const map = ["480P", "360P", "720P", "1080P"];
+    return map[Math.min(Math.max(idx, 1), map.length) - 1];
+  }
+  if (/^(1080p|720p|480p|360p)$/.test(c)) return c.toUpperCase();
+  return "480P";
+}
+
+/**
  * Resolves the requested season from an anime's parsed season list
  */
 export function resolveRequestedSeason(
@@ -316,10 +390,16 @@ export function resolveRequestedSeason(
     }
   }
 
-  // 2. Fallback to 1-based index if within range
+  // 2. Fallback to 1-based index ONLY when the entry at that position is
+  // actually a season (not a film/OAV) — otherwise ".a <anime> s3" on a
+  // 2-season + film catalog would silently download the film (audit R6).
   const idx = requestedSeasonNumber - 1;
   if (idx >= 0 && idx < seasons.length) {
-    return { season: seasons[idx], index: idx };
+    const candidate = seasons[idx];
+    const looksLikeSeason = /saison|season/i.test(candidate.name) || /saison\d+|season\d+/i.test(candidate.subPath);
+    if (looksLikeSeason) {
+      return { season: candidate, index: idx };
+    }
   }
 
   return { season: null, index: -1 };
