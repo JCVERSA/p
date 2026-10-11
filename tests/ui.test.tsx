@@ -141,7 +141,12 @@ describe("Nebula dashboard UI", () => {
     await screen.findAllByText("Overview", {}, { timeout: 5000 });
     await clickNav("Système");
     // La cellule Build affiche le rev du marqueur une fois l'info chargée
-    await waitFor(() => expect(screen.getByTestId("system-build").textContent).toBe("a320964"));
+    // Marge 5 s : sur un runner CI chargé, le 1 s par défaut de waitFor a
+    // fait flaker le run push (le run PR du même SHA était vert).
+    await waitFor(
+      () => expect(screen.getByTestId("system-build").textContent).toBe("a320964"),
+      { timeout: 5000 },
+    );
     const warn = screen.getByTestId("system-build-warning");
     expect(warn.textContent).toContain("9c18c01");
     expect(warn.textContent).toContain("a320964");
