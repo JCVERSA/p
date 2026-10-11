@@ -9,7 +9,8 @@ import {
   DisconnectReason,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  downloadContentFromMessage
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 // 9.0c (SEC) : avant toute connexion — libsignal console.info des sessions
@@ -41,6 +42,7 @@ import { getRecentMessage, recordRecentMessage } from "./services/recentMessages
 import { peekPendingConfirmation } from "./services/agentBrain.js";
 import { hasPendingLanguageConfirm, bareLanguageAnswer } from "./commands/novabox.js";
 import { bareYtvChoiceAnswer, hasPendingYtvChoice } from "./commands/ytvideo.js";
+import { checkAsrBudget, chargeAsrBudget, isAsrEnabled, transcribeVoiceNote } from "./services/voiceTranscribe.js";
 import { getAnimeChoiceContext, messageSuggestsAnimeHistory } from "./services/animeChoices.js";
 
 
@@ -832,6 +834,81 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
                 }
                 if (!quotedTextExcerpt) quotedTextExcerpt = extractQuotedText(stored);
               }
+            }
+          }
+        }
+
+        // 9.13 : note vocale adressée au bot → transcription NIM, puis tour
+        // agent sur le texte obtenu. DM : toujours ; groupe : seulement si le
+        // message s'adresse au bot (mention/reply — même porte que 9.11).
+        // Échec = réponse honnête, jamais de tour IA sur un texte vide.
+        if (!isFromMe && !text.trim() && messageContent.audioMessage) {
+          const voiceAddressed = !isGroup || messageAddressesBot(msg, sock?.user?.id);
+          if (voiceAddressed) {
+            if (!isAsrEnabled()) {
+              await sock.sendMessage(senderJid, {
+                text: "🎙️ Je ne peux pas encore écouter les notes vocales (transcription désactivée ou clé NVIDIA NIM absente) — écris-moi ton message."
+              }, { quoted: msg });
+              continue;
+            }
+            const budget = checkAsrBudget(actualSenderJid);
+            if (!budget.allowed) {
+              await sock.sendMessage(senderJid, {
+                text: `⏳ Budget transcription atteint (10 notes vocales/heure) — réessaie dans ${budget.retryAfterMin} min ou écris-moi.`
+              }, { quoted: msg });
+              continue;
+            }
+            await sock.sendPresenceUpdate("recording", senderJid).catch(() => {});
+            try {
+              const stream = await downloadContentFromMessage(messageContent.audioMessage, "audio");
+              let buffer = Buffer.alloc(0);
+              for await (const chunk of stream) {
+                buffer = Buffer.concat([buffer, chunk]);
+                if (buffer.length > 16 * 1024 * 1024) break;
+              }
+              const asr = await transcribeVoiceNote(buffer);
+              if (!asr.ok) {
+                addLog(`[ASR] Échec transcription : ${asr.error}`);
+                await sock.sendMessage(senderJid, {
+                  text: `🎙️ Je n'ai pas réussi à transcrire cette note vocale (${asr.error}).`
+                }, { quoted: msg });
+                continue;
+              }
+              chargeAsrBudget(actualSenderJid);
+              addLog(`[ASR] Note vocale transcrite (${asr.text.length} caractères) de ${maskLogNumber(actualSenderNumber)}`);
+              if (isAIConfigured()) {
+                const handled = await handleAgentMessage(
+                  sock,
+                  msg,
+                  {
+                    senderJid,
+                    actorJid: actualSenderJid,
+                    actorNumber: actualSenderNumber,
+                    senderName,
+                    isOwner,
+                    text: asr.text,
+                    voiceNote: true,
+                    botName: config.botName,
+                    prefix,
+                    mediaHint: null,
+                    quotedTextExcerpt: null
+                  },
+                  (commandName, args) =>
+                    dispatchBotCommand(sock, msg, dispatchInfo, commandName, args, "agent")
+                );
+                if (handled) continue;
+              } else {
+                await sock.sendMessage(senderJid, {
+                  text: `🎙️ (transcription) « ${asr.text.slice(0, 800)} »\n\n_L'agent IA est désactivé — la transcription brute ci-dessus._`
+                }, { quoted: msg });
+                continue;
+              }
+            } catch (err: any) {
+              addLog(`[ASR] Erreur inattendue : ${err?.message || err}`);
+              await sock.sendMessage(senderJid, {
+                text: "🎙️ Erreur inattendue pendant la transcription — réessaie ou écris-moi."
+              }, { quoted: msg });
+              continue;
             }
           }
         }

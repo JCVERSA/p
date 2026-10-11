@@ -70,6 +70,8 @@ export interface AgentMessageInfo {
   mediaHint?: { what: string; how: "joint" | "reply" } | null;
   /** 9.11 (audit B4) — extrait du message cité (lien, titre…) si l'utilisateur a répondu en reply. */
   quotedTextExcerpt?: string | null;
+  /** 9.13 — le message est la transcription d'une note vocale. */
+  voiceNote?: boolean;
 }
 
 export type AgentExecutor = (
@@ -196,6 +198,11 @@ export async function handleAgentMessage(
     const mediaBlock = info.mediaHint
       ? `## Média en contexte\nLe message de l'utilisateur ${info.mediaHint.how === "joint" ? "a joint" : "répond (reply) à"} ${info.mediaHint.what} — « ça », « ce fichier », « un lien pour ça » désignent CE média (\`${info.prefix}up\` génère un lien temporaire, commande légère exécutable directement).`
       : null;
+    // 9.13 : le message vient d'une transcription de note vocale — l'agent
+    // le sait (ton, et pas de questions sur des pièces jointes fantômes).
+    const voiceBlock = info.voiceNote
+      ? `## Note vocale\nLe message de l'utilisateur est la transcription d'une note vocale — traite-le comme une demande normale et réponds en texte.`
+      : null;
     // 9.11 (audit B4) : le TEXTE du message cité (lien, titre…) — sans ça,
     // « télécharge ça » en reply d'un lien restait aveugle pour l'agent.
     const quoteBlock = info.quotedTextExcerpt
@@ -207,7 +214,8 @@ export async function handleAgentMessage(
       (choiceBlock ? `\n\n${choiceBlock}` : "") +
       (obsBlock ? `\n\n${obsBlock}` : "") +
       (mediaBlock ? `\n\n${mediaBlock}` : "") +
-      (quoteBlock ? `\n\n${quoteBlock}` : "");
+      (quoteBlock ? `\n\n${quoteBlock}` : "") +
+      (voiceBlock ? `\n\n${voiceBlock}` : "");
     const agentSystem = `${persona}\n\n${buildAgentKnowledge(info.prefix)}`;
 
     let decision = null as ReturnType<typeof parseAgentDecision>;
