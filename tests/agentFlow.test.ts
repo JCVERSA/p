@@ -160,6 +160,28 @@ describe("9.11 — audit agent : texte cité, adressage groupes, typo", () => {
   });
 });
 
+describe("9.12 — B5 : routage du « 1 » nu sans tour IA (DM + groupes)", () => {
+  it("botEngine : le token nu d'un utilisateur avec choix en attente part direct en .ytv (2 portes : DM ET groupe)", async () => {
+    const fs = await import("fs");
+    const src = fs.readFileSync("src/bot/botEngine.ts", "utf-8");
+    expect(src).toContain("bareYtvChoiceAnswer(text)");
+    expect(src).toContain("hasPendingYtvChoice(senderJid, actualSenderJid)");
+    // Sans la porte groupe, la consigne « Réponds avec 1 ou 2 » serait
+    // mensongère en groupe (le « 1 » nu y est sinon ignoré depuis 9.11).
+    expect(src.split("bareYtvChoiceAnswer(text)").length - 1).toBe(2);
+    expect(src).toContain('dispatchBotCommand(sock, msg, dispatchInfo, "ytvideo", [bareYtv], "agent")');
+  });
+
+  it("l'auteur réel voyage jusqu'au contexte : DispatchInfo.actorJid → context.senderUser", async () => {
+    const fs = await import("fs");
+    const dispatch = fs.readFileSync("src/bot/commandDispatch.ts", "utf-8");
+    expect(dispatch).toContain("actorJid: string;");
+    expect(dispatch).toContain("senderUser: info.actorJid || senderJid");
+    const agentCmd = fs.readFileSync("src/bot/commands/agent.ts", "utf-8");
+    expect(agentCmd).toContain("actorJid: msg.key.participant || context.sender");
+  });
+});
+
 describe("9.6b — contexte média de l'agent", () => {
   it("média cité en reply → le prompt système porte l'indice (+ .up), sans le contenu", async () => {
     mAI.mockResolvedValueOnce(JSON.stringify({ action: "reply", text: "ok" }));

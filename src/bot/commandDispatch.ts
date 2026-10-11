@@ -32,6 +32,8 @@ import { addLog, bufferFromDataUri, getCachedGroupMetadata, maskLogNumber } from
 
 export interface DispatchInfo {
   senderJid: string;
+  /** 9.12 (B5) : JID de l'auteur réel (participant en groupe, = senderJid en DM). */
+  actorJid: string;
   senderName: string;
   senderNumber: string;
   isOwner: boolean;
@@ -202,6 +204,7 @@ export async function dispatchBotCommand(
 
   const context: BotCommandContext = {
     sender: senderJid,
+    senderUser: info.actorJid || senderJid,
     senderName,
     isOwner: info.isOwner,
     isAdmin: info.isAdmin,

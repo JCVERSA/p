@@ -40,6 +40,7 @@ import { describeMessageMedia, extractQuotedText } from "./utils/quotedMedia.js"
 import { getRecentMessage, recordRecentMessage } from "./services/recentMessages.js";
 import { peekPendingConfirmation } from "./services/agentBrain.js";
 import { hasPendingLanguageConfirm, bareLanguageAnswer } from "./commands/novabox.js";
+import { bareYtvChoiceAnswer, hasPendingYtvChoice } from "./commands/ytvideo.js";
 import { getAnimeChoiceContext, messageSuggestsAnimeHistory } from "./services/animeChoices.js";
 
 
@@ -800,6 +801,7 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         // 8.93 : infos de dispatch partagées entre le chemin préfixe et l'agent.
         const dispatchInfo: DispatchInfo = {
           senderJid,
+          actorJid: actualSenderJid,
           senderName,
           senderNumber,
           isOwner,
@@ -848,6 +850,18 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
             !peekPendingConfirmation(actualSenderJid)
           ) {
             await dispatchBotCommand(sock, msg, dispatchInfo, "a", [bareAnswer], "agent");
+            continue;
+          }
+          // 9.12 (B5, décision owner) : « 1 »/« 2 » nu alors qu'un choix .ytv
+          // de CET utilisateur est en attente → consommé SANS tour IA (éco
+          // tokens — même logique que la confirmation de langue ci-dessus).
+          const bareYtv = bareYtvChoiceAnswer(text);
+          if (
+            bareYtv &&
+            hasPendingYtvChoice(senderJid, actualSenderJid) &&
+            !peekPendingConfirmation(actualSenderJid)
+          ) {
+            await dispatchBotCommand(sock, msg, dispatchInfo, "ytvideo", [bareYtv], "agent");
             continue;
           }
           if (isAIConfigured()) {
@@ -946,6 +960,19 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         // mais uniquement si le message S'ADRESSE au bot (mention @ ou reply
         // à un message du bot) — jamais sur la conversation générale.
         if (isGroup && !isFromMe && !text.startsWith(prefix)) {
+          // 9.12 (B5, décision owner) : « 1 »/« 2 »/« video »/« playlist » nu
+          // d'un utilisateur ayant un choix .ytv en attente → consommé SANS
+          // tour IA (l'écran a été déclenché PAR cet utilisateur — sans ça,
+          // la consigne « Réponds avec 1 ou 2 » serait mensongère en groupe).
+          const bareYtv = bareYtvChoiceAnswer(text);
+          if (
+            bareYtv &&
+            hasPendingYtvChoice(senderJid, actualSenderJid) &&
+            !peekPendingConfirmation(actualSenderJid)
+          ) {
+            await dispatchBotCommand(sock, msg, dispatchInfo, "ytvideo", [bareYtv], "agent");
+            continue;
+          }
           if (isAIConfigured() && messageAddressesBot(msg, sock?.user?.id)) {
             const handledByAgent = await handleAgentMessage(
               sock,
