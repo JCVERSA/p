@@ -100,7 +100,10 @@ type PendingYtv =
   | { kind: "mode"; url: string; quality: string; audioToken?: string; ts: number }
   | { kind: "audio"; url: string; quality: string; tracks: string[]; ts: number };
 const pendingYtvChoices = new Map<string, PendingYtv>();
-const PENDING_TTL_MS = 3 * 60 * 1000;
+// 9.11 (audit B3) : aligné sur la mémoire d'observation de l'agent (10 min) —
+// entre 3 et 10 min l'agent croyait le choix encore en attente et exécutait
+// `.ytv 1` comme une recherche du mot « 1 ».
+const PENDING_TTL_MS = 10 * 60 * 1000;
 
 /** Tests uniquement. */
 export function __resetYtvPendingForTests(): void {

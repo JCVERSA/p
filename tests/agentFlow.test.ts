@@ -17,6 +17,7 @@ vi.mock("../src/bot/services/agentMetrics.js", () => ({
 }));
 vi.mock("../src/bot/commandRegistry.js", () => ({
   getCommand: vi.fn(),
+  suggestClosestCommand: vi.fn(() => null), // 9.11 B1
 }));
 vi.mock("../src/bot/persona.js", () => ({
   getPersonaPrompt: vi.fn(() => "PERSONA"),
@@ -44,7 +45,7 @@ vi.mock("../src/bot/commandKnowledge.js", () => ({
   buildAgentKnowledge: vi.fn(() => "KNOWLEDGE"),
 }));
 
-import { handleAgentMessage } from "../src/bot/services/agentRunner.js";
+import { handleAgentMessage, messageAddressesBot } from "../src/bot/services/agentRunner.js";
 import { generateTextWithFallback, isAIConfigured } from "../src/bot/geminiClient.js";
 import { getCommand } from "../src/bot/commandRegistry.js";
 import { checkAIQuota } from "../src/bot/aiQuota.js";
@@ -109,6 +110,54 @@ beforeEach(() => {
   mConfigured.mockReturnValue(true);
   mQuota.mockReturnValue({ allowed: true } as any);
   mGetCommand.mockImplementation(((n: string) => COMMANDS[n]) as any);
+});
+
+describe("9.11 — audit agent : texte cité, adressage groupes, typo", () => {
+  it("B4 : texte cité (reply à un LIEN) → le prompt porte l'extrait", async () => {
+    mAI.mockResolvedValueOnce(JSON.stringify({ action: "reply", text: "ok" }));
+    const ctx = mk("télécharge ça");
+    await handleAgentMessage(ctx.sock, ctx.msg, {
+      ...ctx.info,
+      quotedTextExcerpt: "https://youtu.be/dQw4w9WgXcQ regarde ça",
+    }, mkExec());
+    const sysPrompt = mAI.mock.calls[0][1] as string;
+    expect(sysPrompt).toContain("Message cité");
+    expect(sysPrompt).toContain("youtu.be/dQw4w9WgXcQ");
+  });
+
+  it("sans texte cité → aucun bloc « Message cité » (éco tokens)", async () => {
+    mAI.mockResolvedValueOnce(JSON.stringify({ action: "reply", text: "ok" }));
+    const ctx = mk("salut");
+    await handleAgentMessage(ctx.sock, ctx.msg, ctx.info, mkExec());
+    expect(mAI.mock.calls[0][1] as string).not.toContain("Message cité");
+  });
+
+  it("M1 : messageAddressesBot — mention @ ou reply au bot, jamais le reste", () => {
+    const BOT = "237700000001:12@s.whatsapp.net";
+    const mkMsg = (message: any) => ({ key: { remoteJid: "g@g.us" }, message });
+    // mention
+    expect(messageAddressesBot(mkMsg({ extendedTextMessage: { text: "@bot download ça", contextInfo: { mentionedJid: ["237700000001:3@s.whatsapp.net"] } } }), BOT)).toBe(true);
+    // reply à un message du bot (participant = bot)
+    expect(messageAddressesBot(mkMsg({ extendedTextMessage: { text: "et en 720p ?", contextInfo: { participant: "237700000001@s.whatsapp.net" } } }), BOT)).toBe(true);
+    // conversation générale : ni mention ni reply au bot
+    expect(messageAddressesBot(mkMsg({ conversation: "salut les gars" }), BOT)).toBe(false);
+    expect(messageAddressesBot(mkMsg({ extendedTextMessage: { text: "réponse à quelqu'un d'autre", contextInfo: { participant: "237999999999@s.whatsapp.net" } } }), BOT)).toBe(false);
+    expect(messageAddressesBot(mkMsg({ conversation: "peu importe" }), null)).toBe(false);
+  });
+
+  it("M1 : botEngine ne passe l'agent en groupe QUE sur adressage (wiring)", async () => {
+    const fs = await import("fs");
+    const src = fs.readFileSync("src/bot/botEngine.ts", "utf-8");
+    expect(src).toContain("messageAddressesBot(msg, sock?.user?.id)");
+    expect(src).toContain("isGroup && !isFromMe && !text.startsWith(prefix)");
+  });
+
+  it("B1 : le dispatch suggère la commande proche sur typo (wiring)", async () => {
+    const fs = await import("fs");
+    const src = fs.readFileSync("src/bot/commandDispatch.ts", "utf-8");
+    expect(src).toContain("suggestClosestCommand(commandName)");
+    expect(src).toContain("voulais-tu dire");
+  });
 });
 
 describe("9.6b — contexte média de l'agent", () => {

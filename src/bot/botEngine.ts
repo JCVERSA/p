@@ -35,8 +35,8 @@ import { checkAIQuota, consumeAIQuota, withAIConcurrency } from "./aiQuota.js";
 import { setWatchSender, startWatchScheduler } from "./services/episodeWatchService.js";
 import { setDigestSender, startDigestScheduler } from "./services/digestService.js";
 import { dispatchBotCommand, type DispatchInfo } from "./commandDispatch.js";
-import { handleAgentMessage } from "./services/agentRunner.js";
-import { describeMessageMedia } from "./utils/quotedMedia.js";
+import { handleAgentMessage, messageAddressesBot } from "./services/agentRunner.js";
+import { describeMessageMedia, extractQuotedText } from "./utils/quotedMedia.js";
 import { getRecentMessage, recordRecentMessage } from "./services/recentMessages.js";
 import { peekPendingConfirmation } from "./services/agentBrain.js";
 import { hasPendingLanguageConfirm, bareLanguageAnswer } from "./commands/novabox.js";
@@ -810,6 +810,30 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
           messageContent,
         };
 
+        // 9.6b/9.11 : contexte de reply pour l'agent — nature du média cité
+        // (+ repli registre stanzaId 9.8) et extrait du TEXTE cité (lien,
+        // titre — audit B4). Calculés une fois, utilisés en DM ET en groupe.
+        let mediaHint = describeMessageMedia(messageContent);
+        let quotedTextExcerpt: string | null = null;
+        {
+          const ctxInfo = messageContent?.extendedTextMessage?.contextInfo;
+          const quotedRaw = ctxInfo?.quotedMessage;
+          quotedTextExcerpt = extractQuotedText(quotedRaw);
+          if (!mediaHint || !quotedTextExcerpt) {
+            const stanzaId = ctxInfo?.stanzaId;
+            if (stanzaId) {
+              const stored = getRecentMessage(senderJid, String(stanzaId));
+              if (stored) {
+                if (!mediaHint) {
+                  const q = describeMessageMedia(stored);
+                  if (q) mediaHint = { what: q.what, how: "reply" };
+                }
+                if (!quotedTextExcerpt) quotedTextExcerpt = extractQuotedText(stored);
+              }
+            }
+          }
+        }
+
         // Direct AI response in private chat when not starting with prefix
         if (!isGroup && !isFromMe && !text.startsWith(prefix)) {
           // 8.95b : question novabox en attente (« continuer en VOSTFR ? ») —
@@ -831,18 +855,6 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
             // naturelle en commande existante et l'exécute aux droits de
             // l'utilisateur (RoleGuard inchangé). Renvoie false → l'IA
             // n'est pas configurée : laisser le chemin normal répondre.
-            // 9.6b : l'agent sait qu'un média est en jeu (nature seule,
-            // jamais le contenu) — « un lien pour ça » → .up direct.
-            // 9.8 : citation épurée → repli sur le registre (stanzaId).
-            let mediaHint = describeMessageMedia(messageContent);
-            if (!mediaHint) {
-              const stanzaId = messageContent?.extendedTextMessage?.contextInfo?.stanzaId;
-              if (stanzaId) {
-                const stored = getRecentMessage(senderJid, String(stanzaId));
-                const q = stored && describeMessageMedia(stored);
-                if (q) mediaHint = { what: q.what, how: "reply" };
-              }
-            }
             const handledByAgent = await handleAgentMessage(
               sock,
               msg,
@@ -856,6 +868,7 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
                 botName: config.botName,
                 prefix,
                 mediaHint,
+                quotedTextExcerpt,
               },
               (commandName, args) =>
                 dispatchBotCommand(sock, msg, dispatchInfo, commandName, args, "agent")
@@ -927,6 +940,34 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
             );
             continue;
           }
+        }
+
+        // 9.11 (audit M1, décision owner) : l'agent répond AUSSI en groupe,
+        // mais uniquement si le message S'ADRESSE au bot (mention @ ou reply
+        // à un message du bot) — jamais sur la conversation générale.
+        if (isGroup && !isFromMe && !text.startsWith(prefix)) {
+          if (isAIConfigured() && messageAddressesBot(msg, sock?.user?.id)) {
+            const handledByAgent = await handleAgentMessage(
+              sock,
+              msg,
+              {
+                senderJid,
+                actorJid: actualSenderJid,
+                actorNumber: actualSenderNumber,
+                senderName,
+                isOwner,
+                text,
+                botName: config.botName,
+                prefix,
+                mediaHint,
+                quotedTextExcerpt,
+              },
+              (commandName, args) =>
+                dispatchBotCommand(sock, msg, dispatchInfo, commandName, args, "agent")
+            );
+            if (handledByAgent) continue;
+          }
+          continue;
         }
 
         if (!text.startsWith(prefix)) continue;

@@ -502,11 +502,11 @@ describe("wiring 9.10 (ytvideo)", () => {
     expect(src).toContain("Cette vidéo seule");
   });
 
-  it("choix en attente : écrans 1/2 (mode) et n° de piste (audio), TTL 3 min", () => {
+  it("choix en attente : écrans 1/2 (mode) et n° de piste (audio), TTL 10 min (9.11 B3 — aligné observation)", () => {
     const src = readSrc("src/bot/commands/ytvideo.ts");
     expect(src).toContain('kind: "mode"');
     expect(src).toContain('kind: "audio"');
-    expect(src).toContain("PENDING_TTL_MS = 3 * 60 * 1000");
+    expect(src).toContain("PENDING_TTL_MS = 10 * 60 * 1000");
   });
 
   it("fiche agent : la ligne .ytv documente playlists + piste audio + sous-titres (8.42)", () => {
