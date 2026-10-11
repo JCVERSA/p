@@ -151,12 +151,14 @@ describe("9.15 — mediaReuseStore (intégration disque)", () => {
 
   it("noCopy : le token sert le fichier SANS copie (aucun fichier token_ créé)", () => {
     const src = makeSource("nocopy.mp4", 4096);
-    const before = fs.readdirSync(path.join(os.tmpdir(), "nebula_temp_downloads")).length;
     const rec = registerTempDownload(src, "nocopy.mp4", { noCopy: true, ttlMinutes: 30 });
-    const after = fs.readdirSync(path.join(os.tmpdir(), "nebula_temp_downloads")).length;
-    expect(after).toBe(before); // RIEN n'a été copié
-    expect(rec.filePath).toBe(path.resolve(src)); // servi tel quel
+    // Preuve structurelle (aucun readdir du dossier partagé — les autres
+    // fichiers de test y écrivent en parallèle) : le record pointe sur le
+    // fichier source LUI-MÊME, résolu — rien n'a été copié ni déplacé.
+    expect(rec.filePath).toBe(path.resolve(src));
+    expect(rec.sizeBytes).toBe(4096);
     purgeTempRecords([rec.token]);
+    expect(fs.existsSync(src)).toBe(false); // c'était bien le MÊME fichier (pas une copie)
   });
 
   it("NEBULA_REUSE_ENABLED=0 : store et lookup deviennent des no-ops", () => {
