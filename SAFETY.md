@@ -84,7 +84,10 @@ réponse du bot.
 ## 4bis. Guardrail d'arguments (8.99)
 
 Même après validation de la commande, les arguments produits par l'IA sont
-**nettoyés avant exécution** : URLs retirées, backticks/quotes écorchés,
+**nettoyés avant exécution** : URLs retirées (SAUF pour les commandes qui
+déclarent `acceptsUrlArgs` — ytv/ytm/sweb/fetch/tiktok/instagram, où l'URL
+est la cible légitime ; cap dédié 500 chars, hors budget texte — 9.3b),
+backticks/quotes écorchés,
 flags shell (`--x`) supprimés, tokens plafonnés (80 chars) et budget total
 (200 chars). Un nettoyage actif est audité (`agent.args.sanitized`) et
 l'exécution utilise les arguments nettoyés — la commande revalide ses
