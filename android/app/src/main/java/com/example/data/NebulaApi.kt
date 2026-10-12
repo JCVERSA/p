@@ -12,7 +12,7 @@ import retrofit2.http.Query
 
 /**
  * API du panneau Nebula — les shapes collent aux routes réelles du dépôt
- * (src/panel/*) : champs nullables + valeurs par défaut partout, Moshi
+ * (src/panel/…) : champs nullables + valeurs par défaut partout, Moshi
  * ignore les champs inconnus et tolère les absents.
  */
 

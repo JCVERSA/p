@@ -9,7 +9,7 @@ import android.content.SharedPreferences
  * chiffré Keystore est prévu en v2).
  *
  * Le token est envoyé au panneau en `Authorization: Bearer <token>` —
- * accepté sur toutes les routes /api/* (panelAuth.validBearer).
+ * accepté sur toutes les routes /api/… (panelAuth.validBearer).
  */
 object NovaSession {
 
