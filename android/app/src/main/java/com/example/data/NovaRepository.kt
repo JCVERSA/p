@@ -214,29 +214,30 @@ object NovaRepository {
         }
     }
 
-    companion object {
-        /** Mappe un statut WhatsApp du superviseur vers l'état UI (null = inconnu). */
-        fun statusFromWhatsapp(raw: String?): BotStatus? = when (raw?.lowercase()) {
-            "connected", "online", "ready" -> BotStatus.CONNECTED
-            "connecting" -> BotStatus.CONNECTING
-            "disconnecting", "stopping" -> BotStatus.DISCONNECTING
-            "disconnected", "offline", "stopped" -> BotStatus.DISCONNECTED
-            else -> null
-        }
+    // Pas de companion : companion object est illégal dans un object Kotlin.
+    // Fonctions membres — mêmes call sites (NovaRepository.displayStatusFor).
 
-        /**
-         * Statut AFFICHÉ (9.18i / audit B2) : celui du bot SÉLECTIONNÉ
-         * (via /api/bots), pas du bot par défaut — le squircle ne doit
-         * jamais montrer l'état du bot A en agissant sur le bot B.
-         * Repli sur le statut pollé (bot par défaut) si la liste est vide
-         * ou que le statut WhatsApp est inconnu.
-         */
-        fun displayStatusFor(bots: List<BotEntryDto>, selectedId: String?, polled: BotStatus): BotStatus {
-            val chosen = bots.firstOrNull { !selectedId.isNullOrBlank() && it.id == selectedId }
-                ?: bots.firstOrNull { it.isDefault }
-                ?: return polled
-            return statusFromWhatsapp(chosen.whatsapp?.status) ?: polled
-        }
+    /** Mappe un statut WhatsApp du superviseur vers l'état UI (null = inconnu). */
+    fun statusFromWhatsapp(raw: String?): BotStatus? = when (raw?.lowercase()) {
+        "connected", "online", "ready" -> BotStatus.CONNECTED
+        "connecting" -> BotStatus.CONNECTING
+        "disconnecting", "stopping" -> BotStatus.DISCONNECTING
+        "disconnected", "offline", "stopped" -> BotStatus.DISCONNECTED
+        else -> null
+    }
+
+    /**
+     * Statut AFFICHÉ (9.18i / audit B2) : celui du bot SÉLECTIONNÉ
+     * (via /api/bots), pas du bot par défaut — le squircle ne doit
+     * jamais montrer l'état du bot A en agissant sur le bot B.
+     * Repli sur le statut pollé (bot par défaut) si la liste est vide
+     * ou que le statut WhatsApp est inconnu.
+     */
+    fun displayStatusFor(bots: List<BotEntryDto>, selectedId: String?, polled: BotStatus): BotStatus {
+        val chosen = bots.firstOrNull { !selectedId.isNullOrBlank() && it.id == selectedId }
+            ?: bots.firstOrNull { it.isDefault }
+            ?: return polled
+        return statusFromWhatsapp(chosen.whatsapp?.status) ?: polled
     }
 
     private fun markUnreachable() {

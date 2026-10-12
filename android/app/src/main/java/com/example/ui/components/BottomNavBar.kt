@@ -70,7 +70,7 @@ fun BottomNavBar(
 ) {
     val tabIndex = when (selectedTab) {
         NavTab.HOME -> 0
-        NavTab.SERVERS -> 1
+        NavTab.BOTS -> 1
         NavTab.SETTINGS -> 2
     }
 
@@ -127,12 +127,12 @@ fun BottomNavBar(
                 )
 
                 DockNavItem(
-                    label = "Servers",
+                    label = "Bots",
                     iconFilled = Icons.Filled.SmartToy,
                     iconOutlined = Icons.Outlined.SmartToy,
-                    isSelected = selectedTab == NavTab.SERVERS,
-                    onClick = { onTabSelected(NavTab.SERVERS) },
-                    testTag = "nav_servers"
+                    isSelected = selectedTab == NavTab.BOTS,
+                    onClick = { onTabSelected(NavTab.BOTS) },
+                    testTag = "nav_bots"
                 )
 
                 DockNavItem(
