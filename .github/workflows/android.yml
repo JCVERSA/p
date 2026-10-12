@@ -10,7 +10,7 @@ on:
 jobs:
   build:
     name: Build Nova APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # épinglé : ubuntu-latest passe à Ubuntu 26 le 19/10/2026
     defaults:
       run:
         working-directory: android
@@ -60,20 +60,32 @@ jobs:
           set -e
           if [ "$status" -ne 0 ]; then
             # Annotations ::error — SEUL canal d'erreur lisible via l'API
-            # depuis cette session (les logs GitHub et le step summary ne
-            # passent pas). Les lignes Kotlin « e: » d'abord, puis la queue.
-            grep -E "^e: |error: |FAILURE|What went wrong|> |Caused by" build.log | head -n 14 | while IFS= read -r line; do
+            # depuis cette session. 9.18i (audit B4) : SANS le motif "> "
+            # qui matchait toutes les lignes « > Task » et saturait la
+            # limite de 10 annotations avec des tâches, jamais l'erreur.
+            grep -E "^e: |error: |FAILURE|What went wrong|Caused by|OutOfMemory|FAILED" build.log | head -n 6 | while IFS= read -r line; do
               echo "::error::${line:0:240}"
             done
-            tail -n 6 build.log | while IFS= read -r line; do
+            tail -n 40 build.log | grep -v "^> Task" | tail -n 4 | while IFS= read -r line; do
               echo "::error::${line:0:240}"
             done
             exit "$status"
           fi
 
       - name: Upload de l'APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: nova-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # 9.18i (audit B4) : le log de build en artifact, même en échec —
+      # plan B si les annotations sont insuffisantes.
+      - name: Upload du log de build (toujours)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-build-log
+          path: android/build.log
+          if-no-files-found: ignore

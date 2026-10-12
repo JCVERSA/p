@@ -78,7 +78,11 @@ fun MainScreen(
         // Démarre le polling (no-op s'il tourne déjà) dès le premier affichage.
         LaunchedEffect(Unit) { viewModel.start() }
 
-        if (sessionState == NovaRepository.SessionState.NOT_CONFIGURED) {
+        // 9.18i (audit B3) : clé révoquée côté panneau (401 au poll) → retour
+        // immédiat à l'écran de connexion, pas un shell au statut douteux.
+        if (sessionState == NovaRepository.SessionState.NOT_CONFIGURED ||
+            sessionState == NovaRepository.SessionState.UNAUTHENTICATED
+        ) {
             LoginScreen(onLoggedIn = { })
             return@SlateMotionProvider
         }
@@ -92,6 +96,14 @@ fun MainScreen(
         val toastMessage by viewModel.toast.collectAsStateWithLifecycle()
         val selectedBotId by viewModel.selectedBotId.collectAsStateWithLifecycle()
         val diagLatency by viewModel.diagLatency.collectAsStateWithLifecycle()
+
+        // 9.18i (audit B2) : statut du bot AFFICHÉ = celui du bot sélectionné
+        // (repli : bot par défaut / statut pollé). Le QR n'appartient qu'au
+        // moteur PAR DÉFAUT (/api/bot/status) — masqué pour un autre bot.
+        val displayStatus = NovaRepository.displayStatusFor(bots, selectedBotId, status)
+        val displayedBotIsDefault = (
+            bots.firstOrNull { it.id == selectedBotId } ?: bots.firstOrNull { it.isDefault }
+            )?.isDefault ?: true
 
         val snackbarHostState = remember { SnackbarHostState() }
         var showDiagnosticsDialog by remember { mutableStateOf(false) }
@@ -142,7 +154,7 @@ fun MainScreen(
                     when (currentTab) {
                         NavTab.HOME -> {
                             HomeScreen(
-                                status = status,
+                                status = displayStatus,
                                 selection = viewModel.selectedSelection(),
                                 telemetry = telemetry,
                                 commitLabel = systemInfo.commit?.take(7) ?: "…",
@@ -153,7 +165,7 @@ fun MainScreen(
                                     NovaRepository.SessionState.UNREACHABLE -> "injoignable"
                                     NovaRepository.SessionState.NOT_CONFIGURED -> ""
                                 },
-                                qrCode = qrCode,
+                                qrCode = if (displayedBotIsDefault) qrCode else null,
                                 onToggleConnect = { viewModel.toggleConnect() },
                                 onOpenBots = { viewModel.setActiveTab(NavTab.BOTS) },
                                 onDiagnose = { showDiagnosticsDialog = true },

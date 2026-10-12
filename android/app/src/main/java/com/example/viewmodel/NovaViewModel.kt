@@ -71,19 +71,28 @@ class NovaViewModel : ViewModel() {
         )
     }
 
+    /**
+     * Statut affiché : celui du bot sélectionné (9.18i / audit B2) —
+     * cohérence squircle/action garantie.
+     */
+    fun displayStatus(): BotStatus =
+        NovaRepository.displayStatusFor(bots.value, _selectedBotId.value, botStatus.value)
+
     /** Squircle : démarre/arrête le bot sélectionné (ou par défaut). */
     fun toggleConnect() {
         val id = selectedSelection().id
         if (id.isBlank()) return
         viewModelScope.launch {
-            val msg = NovaRepository.toggleBot(id, botStatus.value == BotStatus.CONNECTED)
+            val msg = NovaRepository.toggleBot(id, displayStatus() == BotStatus.CONNECTED)
             NovaRepository.showToast(msg)
+            NovaRepository.refreshNow()
         }
     }
 
     fun botAction(id: String, action: String) {
         viewModelScope.launch {
             NovaRepository.botAction(id, action)
+            NovaRepository.refreshNow()
         }
     }
 

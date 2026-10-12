@@ -88,10 +88,15 @@ object NovaRepository {
         if (message.isNotBlank()) _toast.value = message
     }
 
-    /** Vérifie une URL+token avant de les sauver (LoginScreen). */
+    /**
+     * Vérifie une URL+token avant de les sauver (LoginScreen).
+     * 9.18i (audit B1) : /api/health est une SONDE PUBLIQUE — elle validait
+     * n'importe quel token. On interroge /api/system/info, PROTÉGÉE :
+     * mauvais token → 401 net à l'écran de connexion.
+     */
     suspend fun verify(url: String, token: String): Result<Unit> {
         return try {
-            buildNebulaApi(url, token).health()
+            buildNebulaApi(url, token).systemInfo()
             Result.success(Unit)
         } catch (e: HttpException) {
             if (e.code() == 401) {
@@ -130,70 +135,107 @@ object NovaRepository {
 
     private fun api(): NebulaApi? = api
 
-    private suspend fun pollLoop() {
-        var slowTick = 0L
-        while (scope.isActive && pollJob?.isActive == true) {
-            val a = api ?: return
-            try {
-                // Latence mesurée (appel le plus léger du panneau)
-                val t0 = System.nanoTime()
-                a.health()
-                val latency = ((System.nanoTime() - t0) / 1_000_000).toInt().coerceAtLeast(1)
-                val jitter = if (lastLatencyMs > 0) kotlin.math.abs(latency - lastLatencyMs) else 0
-                lastLatencyMs = latency
+    private suspend fun pollOnce(includeInventory: Boolean): Boolean {
+        val a = api ?: return false
+        return try {
+            // Latence mesurée (appel le plus léger du panneau)
+            val t0 = System.nanoTime()
+            a.health()
+            val latency = ((System.nanoTime() - t0) / 1_000_000).toInt().coerceAtLeast(1)
+            val jitter = if (lastLatencyMs > 0) kotlin.math.abs(latency - lastLatencyMs) else 0
+            lastLatencyMs = latency
 
-                val status = a.botStatus()
-                val info = a.systemInfo()
+            val status = a.botStatus()
+            val info = a.systemInfo()
 
-                _botStatus.value = when (status.status?.lowercase()) {
-                    "connected", "online", "ready" -> BotStatus.CONNECTED
-                    "connecting" -> BotStatus.CONNECTING
-                    "disconnecting", "stopping" -> BotStatus.DISCONNECTING
-                    else -> BotStatus.DISCONNECTED
+            _botStatus.value = when (status.status?.lowercase()) {
+                "connected", "online", "ready" -> BotStatus.CONNECTED
+                "connecting" -> BotStatus.CONNECTING
+                "disconnecting", "stopping" -> BotStatus.DISCONNECTING
+                else -> BotStatus.DISCONNECTED
+            }
+            _qrCode.value = status.qrCode?.takeIf { it.isNotBlank() }
+            _systemInfo.value = info
+
+            if (lastErrorWasNetwork || _sessionState.value == SessionState.CONNECTING) {
+                _sessionState.value = SessionState.READY
+            }
+            lastErrorWasNetwork = false
+
+            _telemetry.value = _telemetry.value.copy(
+                uptimeSeconds = info.uptimeSeconds,
+                latencyMs = latency,
+                jitterMs = jitter
+            )
+
+            if (includeInventory) {
+                try {
+                    _bots.value = a.bots().bots
+                    _telemetry.value = _telemetry.value.copy(
+                        commandsTotal = a.commands().size,
+                        usersTotal = a.users().total
+                    )
+                } catch (e: Exception) {
+                    // L'inventaire peut échouer sans casser le statut principal
                 }
-                _qrCode.value = status.qrCode?.takeIf { it.isNotBlank() }
-                _systemInfo.value = info
-
-                if (lastErrorWasNetwork || _sessionState.value == SessionState.CONNECTING) {
-                    _sessionState.value = SessionState.READY
-                }
-                lastErrorWasNetwork = false
-
-                val prev = _telemetry.value
-                _telemetry.value = prev.copy(
-                    uptimeSeconds = info.uptimeSeconds,
-                    latencyMs = latency,
-                    jitterMs = jitter
-                )
-
-                // Cycle lent (toutes les ~30 s) : inventaires
-                if (slowTick % 6 == 0L) {
-                    try {
-                        val bots = a.bots().bots
-                        _bots.value = bots
-                        val commands = a.commands().size
-                        val users = a.users().total
-                        _telemetry.value = _telemetry.value.copy(
-                            commandsTotal = commands,
-                            usersTotal = users
-                        )
-                    } catch (e: Exception) {
-                        // L'inventaire peut échouer sans casser le statut principal
-                    }
-                }
-                slowTick++
-            } catch (e: HttpException) {
-                if (e.code() == 401) {
-                    _sessionState.value = SessionState.UNAUTHENTICATED
-                    pollJob?.cancel()
-                    return
-                } else {
-                    markUnreachable()
-                }
-            } catch (e: Exception) {
+            }
+            true
+        } catch (e: HttpException) {
+            if (e.code() == 401) {
+                _sessionState.value = SessionState.UNAUTHENTICATED
+                pollJob?.cancel()
+            } else {
                 markUnreachable()
             }
+            false
+        } catch (e: Exception) {
+            markUnreachable()
+            false
+        }
+    }
+
+    private suspend fun pollLoop() {
+        var tick = 0L
+        while (scope.isActive && pollJob?.isActive == true) {
+            pollOnce(includeInventory = tick % 6 == 0L)
+            tick++
             delay(5_000)
+        }
+    }
+
+    /**
+     * Rafraîchissement immédiat après une action (9.18i / audit B2) : le
+     * statut WhatsApp d'un bot ne revient sinon qu'au prochain cycle —
+     * 30 s pour l'inventaire. Ici : un poll complet incluant l'inventaire.
+     */
+    fun refreshNow() {
+        if (api != null && NovaSession.isConfigured()) {
+            scope.launch { pollOnce(includeInventory = true) }
+        }
+    }
+
+    companion object {
+        /** Mappe un statut WhatsApp du superviseur vers l'état UI (null = inconnu). */
+        fun statusFromWhatsapp(raw: String?): BotStatus? = when (raw?.lowercase()) {
+            "connected", "online", "ready" -> BotStatus.CONNECTED
+            "connecting" -> BotStatus.CONNECTING
+            "disconnecting", "stopping" -> BotStatus.DISCONNECTING
+            "disconnected", "offline", "stopped" -> BotStatus.DISCONNECTED
+            else -> null
+        }
+
+        /**
+         * Statut AFFICHÉ (9.18i / audit B2) : celui du bot SÉLECTIONNÉ
+         * (via /api/bots), pas du bot par défaut — le squircle ne doit
+         * jamais montrer l'état du bot A en agissant sur le bot B.
+         * Repli sur le statut pollé (bot par défaut) si la liste est vide
+         * ou que le statut WhatsApp est inconnu.
+         */
+        fun displayStatusFor(bots: List<BotEntryDto>, selectedId: String?, polled: BotStatus): BotStatus {
+            val chosen = bots.firstOrNull { !selectedId.isNullOrBlank() && it.id == selectedId }
+                ?: bots.firstOrNull { it.isDefault }
+                ?: return polled
+            return statusFromWhatsapp(chosen.whatsapp?.status) ?: polled
         }
     }
 
