@@ -50,20 +50,22 @@ jobs:
 
       - name: Build APK (debug)
         run: |
-          set -o pipefail
+          # Le shell par défaut des steps est `bash -e -o pipefail` : sans
+          # `set +e`, l'échec de gradle tuerait l'étape AVANT l'écriture du
+          # résumé de diagnostic (les logs GitHub sont inaccessibles depuis
+          # certains réseaux — c'est notre seul canal d'erreur).
+          set +e
           gradle :app:assembleDebug --no-daemon 2>&1 | tee build.log
-          status=$?
-          if [ $status -ne 0 ]; then
-            # Le téléchargement des logs GitHub est inaccessible depuis
-            # certains réseaux : on copie la queue du build dans le step
-            # summary (lisible via l'API check-runs).
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
             {
               echo "## Échec du build Gradle — 80 dernières lignes"
               echo '```'
               tail -n 80 build.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            exit $status
+            exit "$status"
           fi
 
       - name: Upload de l'APK
