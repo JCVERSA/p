@@ -24,30 +24,12 @@ jobs:
         run: |
           # 9.18k — en cas d'échec, les NOMS des tests sont émis en
           # annotations ::error:: (les logs GitHub sont inaccessibles
-          # depuis certains réseaux : c'est le seul canal de diagnostic).
+          # depuis certains réseaux : seul canal de diagnostic).
           set +e
           npx vitest run --reporter=dot --reporter=json --outputFile=/tmp/vitest.json
           status=$?
           set -e
           if [ "$status" -ne 0 ] && [ -f /tmp/vitest.json ]; then
-            python3 - <<'PY'
-import json
-try:
-    d = json.load(open("/tmp/vitest.json"))
-    n = 0
-    for tr in d.get("testResults", []):
-        for a in tr.get("assertionResults", []):
-            if a.get("status") == "failed":
-                print("::error::FAIL %s :: %s" % (
-                    (a.get("fullName") or "?")[:220],
-                    (tr.get("name") or "?")[-60:]))
-                n += 1
-                if n >= 10:
-                    break
-        if n >= 10:
-            break
-except Exception as e:
-    print("::error::(rapport vitest illisible: %s)" % e)
-PY
+            python3 scripts/ci-vitest-annotations.py /tmp/vitest.json
           fi
           exit "$status"
