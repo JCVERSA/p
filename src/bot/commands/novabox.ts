@@ -1601,7 +1601,11 @@ const animeCommand: BotCommand = {
           const seasonNum = session.selectedSeason?.name.match(/\d+/)?.[0] || "01";
           const formattedSeason = `S${seasonNum.padStart(2, "0")}`;
           const formattedEpisode = `E${String(epNum).padStart(2, "0")}`;
-          const filename = sanitizeFilename(`${animeClean}_${lang}_1080P_${formattedSeason}_${formattedEpisode}`) + ".mp4";
+          // 9.18m (audit Z2) : le nom de fichier portait un _1080P_ codé en dur
+          // même quand la détection avait trouvé une autre résolution — le
+          // label détecté pilote désormais le nom (nettoyé, repli 1080P).
+          const detectedResForName = ((session.singleStreamDetected?.label as string) || "1080P").replace(/[^0-9a-zA-Z]/g, "") || "1080P";
+          const filename = sanitizeFilename(`${animeClean}_${lang}_${detectedResForName}_${formattedSeason}_${formattedEpisode}`) + ".mp4";
 
           const vidmolyUrl = getVidMolyUrl(session.episodes, epIndex, session.episodeListLabels, session.selectedLanguage);
 
@@ -2419,7 +2423,14 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
     const generatedLinks: Array<{ epNum: number; downloadUrl: string; sizeMB: number; filename: string; expiresAt: number }> = [];
     let cacheHits = 0; // 9.15 : épisodes servis depuis le cache de réutilisation
     let failedEpisodeCount = 0;
-    const downloadedFilePaths: string[] = [];
+    // 9.18m (audit Z1) : fichiers éligibles au ZIP de saison, APPARIÉS à leur
+    // numéro d'épisode. L'ancien code faisait generatedLinks.map(...,
+    // downloadedFilePaths[idx]) : dès qu'un épisode venait du cache (présent
+    // dans generatedLinks mais absent de downloadedFilePaths), tous les
+    // fichiers suivants étaient décalés d'un cran — épisode 2 étiqueté 1,
+    // entrées undefined en fin de ZIP. Les épisodes CACHÉS alimentent
+    // maintenant le ZIP aussi (lien physique, zéro octet supplémentaire).
+    const zipEpisodeFiles: Array<{ epNum: number; filePath: string }> = [];
 
     // Clear session to prevent re-entrant execution
     clearUserSession(context.sender);
@@ -2453,6 +2464,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         try {
           const rec = registerTempDownload(cachedEp.filePath, filename, { noCopy: true, jobId: batchJob.id });
           generatedLinks.push({ epNum, downloadUrl: rec.downloadUrl, sizeMB: rec.sizeMB, filename, expiresAt: rec.expiresAt });
+          zipEpisodeFiles.push({ epNum, filePath: cachedEp.filePath }); // 9.18m : le cache participe au ZIP (Z1)
           cacheHits++;
           updateEpisodeProgress(batchJob.id, epNum, { status: "completed", progressPercent: 100, sizeMB: rec.sizeMB, downloadUrl: rec.downloadUrl });
           return;
@@ -2534,7 +2546,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
             jobId: batchJob.id // 8.88 : la purge owner épargne ce batch tant que son claim est vivant
           });
 
-          downloadedFilePaths.push(tempDownload.filePath);
+          zipEpisodeFiles.push({ epNum, filePath: tempDownload.filePath }); // 9.18m : apparié, plus de décalage d'index (Z1)
 
           generatedLinks.push({
             epNum,
@@ -2616,12 +2628,16 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
     // Set NEBULA_BATCH_ZIP=1 to restore the all-in-one archive behaviour.
     const batchZipEnabled = process.env.NEBULA_BATCH_ZIP === "1";
 
-    if (batchZipEnabled && downloadedFilePaths.length > 1) {
-      updateJobStatus(batchJob.id, "packaging", `📦 Packaging ${downloadedFilePaths.length} episodes into ZIP archive...`);
+    if (batchZipEnabled && zipEpisodeFiles.length > 1) {
+      updateJobStatus(batchJob.id, "packaging", `📦 Packaging ${zipEpisodeFiles.length} episodes into ZIP archive...`);
       try {
-        const episodeInputs = generatedLinks.map((item, idx) => ({
-          filePath: downloadedFilePaths[idx],
-          episodeNumber: item.epNum
+        // 9.18m (Z1) : entrées APPARIÉES (épisode ↔ fichier) — le cache et
+        // les téléchargements frais alimentent la même liste, dans l'ordre
+        // d'arrivée, sans supposer que generatedLinks et les fichiers se
+        // correspondent indice par indice.
+        const episodeInputs = zipEpisodeFiles.map((entry) => ({
+          filePath: entry.filePath,
+          episodeNumber: entry.epNum
         }));
 
         const zipResult = await BatchZipManager.packageEpisodes({
