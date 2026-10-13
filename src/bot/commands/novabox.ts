@@ -4,8 +4,6 @@ import axios from "axios";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { spawn } from "child_process";
-import { resolvedFfmpegPath } from "../ffmpeg.js";
 import { registerTempDownload, getLinkTtlMinutes } from "../tempDownloadManager.js";
 import { animeReuseKey, lookupMediaReuse, storeMediaReuse } from "../services/mediaReuseStore.js";
 import { buildDownloadPage } from "../services/downloadPage.js";
@@ -42,7 +40,7 @@ import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batch
 import { acquireDiskClaim, availableForNewClaims } from "../diskClaims.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
 import { downloadHlsAppLevel, resolveVidmolyUrlset, isDeadFileSlug, markDeadFileSlug } from "../services/hlsDownloader.js";
-import { probeVideoInfo, whatsappFitVideoOptions } from "../services/mediaToolkit.js";
+import { probeVideoInfo, whatsappFitVideoOptions, runFfmpegKit } from "../services/mediaToolkit.js";
 import { slimVideoIfNeeded, slimTriggerBytes } from "../services/videoSlim.js";
 import { organizeVfSelection } from "../services/voiranimeClient.js";
 import { enforceMemoryHeadroom } from "../services/memoryGuard.js";
@@ -2273,37 +2271,27 @@ async function executeFfmpegDownload(
         localPath
       ];
 
-      const child = spawn(resolvedFfmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
-      const timer: NodeJS.Timeout = setTimeout(() => {
-        try { child.kill("SIGKILL"); } catch {}
-        if (localPlaylistPath && fs.existsSync(localPlaylistPath)) {
-          try { fs.unlinkSync(localPlaylistPath); } catch {}
-        }
-        resolve(false);
-      }, timeoutMs);
+      // 9.18m (audit Z3) : unifié avec runFfmpegKit — l'ancien spawn pipeait
+      // stderr SANS jamais le lire : erreurs invisibles au log, et risque
+      // latent de blocage quand le tampon du pipe se remplit de lignes de
+      // progression. La fenêtre glissante du kit capture la FIN de la sortie,
+      // là où ffmpeg imprime l'erreur fatale ; timeout/SIGKILL aussi gérés.
+      const res = await runFfmpegKit(args, timeoutMs);
 
-      child.on("error", () => {
-        clearTimeout(timer);
-        if (localPlaylistPath && fs.existsSync(localPlaylistPath)) {
-          try { fs.unlinkSync(localPlaylistPath); } catch {}
-        }
-        resolve(false);
-      });
+      if (localPlaylistPath && fs.existsSync(localPlaylistPath)) {
+        try { fs.unlinkSync(localPlaylistPath); } catch {}
+      }
 
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (localPlaylistPath && fs.existsSync(localPlaylistPath)) {
-          try { fs.unlinkSync(localPlaylistPath); } catch {}
+      if (res.ok && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
+        resolve(true);
+      } else {
+        if (fs.existsSync(localPath)) {
+          try { fs.unlinkSync(localPath); } catch {}
         }
-        if (code === 0 && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
-          resolve(true);
-        } else {
-          if (fs.existsSync(localPath)) {
-            try { fs.unlinkSync(localPath); } catch {}
-          }
-          resolve(false);
-        }
-      });
+        // Z3 : la VRAIE cause (fin de stderr) va enfin au log administrateur.
+        console.warn(`[NOVABOX_FFMPEG] Legacy network FFmpeg failed: ${res.stderr.slice(-600)}`);
+        resolve(false);
+      }
     } catch {
       if (localPlaylistPath && fs.existsSync(localPlaylistPath)) {
         try { fs.unlinkSync(localPlaylistPath); } catch {}
@@ -3020,13 +3008,25 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
           // deterministic WhatsApp-fit args (computed bitrate + maxrate) in
           // place of the legacy fixed CRF 26 — the output size is then a
           // mathematical certainty instead of a coin flip.
+          // 9.18m (audit Z3) : unifié avec runFfmpegKit — l'ancien spawn en
+          // stdio:"ignore" jetait TOUTE la sortie ffmpeg (l'erreur fatale est
+          // en FIN de sortie) ; la fenêtre glissante la capture désormais.
+          // Flags TS durcis 9.18k : le fichier local peut être un TS consolidé
+          // Cat-Catch aux DTS non monotones (+genpts, aresample,
+          // avoid_negative_ts make_zero) — mêmes armes que videoSlim.
           const ffmpegArgs = [
             "-y",
+            "-fflags",
+            "+genpts",
             "-threads",
             "0",
             "-i",
             localPath,
             ...(fitOptions || ["-vf", "scale=-2:480", "-c:v", "libx264", "-crf", "26", "-preset", "veryfast"]),
+            "-af",
+            "aresample=async=1:first_pts=0",
+            "-avoid_negative_ts",
+            "make_zero",
             "-c:a",
             "aac",
             "-b:a",
@@ -3036,24 +3036,10 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
             compressedPath
           ];
 
-          await new Promise<void>((resolve, reject) => {
-            const proc = spawn(resolvedFfmpegPath, ffmpegArgs, { stdio: "ignore" });
-            const timer = setTimeout(() => {
-              try { proc.kill("SIGKILL"); } catch {}
-              reject(new Error("FFmpeg compression timed out"));
-            }, 120000);
-
-            proc.on("close", (code) => {
-              clearTimeout(timer);
-              if (code === 0) resolve();
-              else reject(new Error(`FFmpeg exited with code ${code}`));
-            });
-
-            proc.on("error", (err) => {
-              clearTimeout(timer);
-              reject(err);
-            });
-          });
+          const compressRes = await runFfmpegKit(ffmpegArgs, 120000);
+          if (!compressRes.ok) {
+            throw new Error(`FFmpeg compression failed — fin de sortie ffmpeg: ${compressRes.stderr.slice(-600)}`);
+          }
 
           if (fs.existsSync(compressedPath)) {
             const compStats = fs.statSync(compressedPath);

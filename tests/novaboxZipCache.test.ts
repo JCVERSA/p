@@ -82,3 +82,34 @@ describe("9.18m Z2 — liens directs : le nom de fichier suit la résolution dé
     expect(src).toMatch(/singleStreamDetected\?\.label[^;]*\|\| "1080P"/);
   });
 });
+
+describe("9.18m Z3 — ffmpeg novabox unifié dans runFfmpegKit (stderr visible)", () => {
+  it("plus AUCUN spawn ffmpeg brut dans novabox (les deux spawns sont partis)", () => {
+    expect(src).not.toContain("spawn(resolvedFfmpegPath");
+    expect(src).not.toContain('import { spawn } from "child_process";');
+    expect(src).not.toContain('import { resolvedFfmpegPath } from "../ffmpeg.js";');
+  });
+
+  it("runFfmpegKit est importé depuis mediaToolkit et pilote les deux chemins", () => {
+    expect(src).toMatch(/import \{[^}]*runFfmpegKit[^}]*\} from "\.\.\/services\/mediaToolkit\.js";/);
+    expect(src).toContain("await runFfmpegKit(args, timeoutMs)"); // remux HLS de secours
+    expect(src).toContain("await runFfmpegKit(ffmpegArgs, 120000)"); // compression WhatsApp-fit
+  });
+
+  it("la compression re-encodante porte les flags TS durcis 9.18k (comme videoSlim)", () => {
+    expect(src).toContain('"+genpts"');
+    expect(src).toContain('"aresample=async=1:first_pts=0"');
+    expect(src).toContain('"make_zero"');
+  });
+
+  it("le remux -c copy de secours reste SANS filtre audio (exactement une seule occurrence aresample)", () => {
+    expect(src.match(/aresample=async=1:first_pts=0/g)?.length).toBe(1);
+    expect(src).toContain('"-bsf:a"');
+    expect(src).toContain('"aac_adtstoasc"');
+  });
+
+  it("les échecs loggent la FIN de stderr (fenêtre glissante), plus jamais muets", () => {
+    expect(src).toContain("Legacy network FFmpeg failed: ${res.stderr.slice(-600)}");
+    expect(src).toContain("compressRes.stderr.slice(-600)");
+  });
+});
