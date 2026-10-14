@@ -6,12 +6,15 @@ import {
   isAgentDeniedCommand,
   isConfirmationAffirmative,
   isHeavyAgentCommand,
+  keepHeadAndTail,
   parseAgentDecision,
   parseAgentFix,
   replySuggestsOtherCatalog,
   toggleCatalogFlag,
   peekPendingConfirmation,
   recordAgentExecution,
+  restoreAgentState,
+  setAgentStateSink,
   __resetAgentStateForTests,
   setPendingConfirmation,
   takePendingConfirmation
@@ -183,5 +186,76 @@ describe("8.93 — parseAgentFix (rattrapage)", () => {
   it("rejette sans say, ou JSON cassé (l'erreur reste visible, pas de bruit)", () => {
     expect(parseAgentFix('{"offer":null}')).toBeNull();
     expect(parseAgentFix("désolé je ne sais pas")).toBeNull();
+  });
+});
+
+describe("9.18w — keepHeadAndTail (l'observation garde la consigne de fin)", () => {
+  it("texte sous budget → inchangé", () => {
+    expect(keepHeadAndTail("court", 100)).toBe("court");
+  });
+
+  it("texte long → tête + marqueur + queue dans le budget", () => {
+    const t = "B".repeat(2000) + "👉 Réponds avec .a 2 pour choisir";
+    const r = keepHeadAndTail(t, 600);
+    expect(r.length).toBeLessThanOrEqual(600);
+    expect(r).toContain("[…]");
+    expect(r.startsWith("BBB")).toBe(true);
+    expect(r.endsWith("👉 Réponds avec .a 2 pour choisir")).toBe(true);
+  });
+
+  it("la queue garde les dernières entrées de liste, pas le milieu", () => {
+    const lines = Array.from({ length: 60 }, (_, i) => `${i + 1}. anime ${i + 1}`).join("\n");
+    const t = `Résultats :\n${lines}\n👉 Réponds avec .a <numéro>`;
+    const r = keepHeadAndTail(t, 500);
+    expect(r).toContain("👉 Réponds avec .a <numéro>");
+    expect(r).toContain("60. anime 60"); // dernière entrée conservée
+    expect(r).not.toContain("30. anime 30"); // le milieu est coupé
+  });
+
+  it("budget dégénéré → coupe simple sans crash", () => {
+    expect(keepHeadAndTail("abcdef", 3)).toBe("abc");
+    expect(keepHeadAndTail("abcdef", 0)).toBe("");
+  });
+});
+
+describe("9.18w — persistance de l'état (restore + sink)", () => {
+  it("restoreAgentState jette expirées et hors-fenêtre, garde le reste", () => {
+    const now = Date.now();
+    restoreAgentState({
+      pending: [
+        ["u", { command: "anime", args: ["x", "s1"], expiresAt: now - 1000 }],
+        ["v", { command: "song", args: ["y"], expiresAt: now + 60000 }]
+      ],
+      execLog: [
+        ["u", [now - 2 * 60 * 60 * 1000, now - 5000]],
+        ["w", [now - 99 * 24 * 60 * 60 * 1000]]
+      ]
+    });
+    expect(peekPendingConfirmation("u")).toBeNull();
+    expect(peekPendingConfirmation("v")?.command).toBe("song");
+    expect(checkAgentBudget("u")).toBe(true); // 1 entrée récente sur 10
+    expect(checkAgentBudget("w")).toBe(true); // tout était obsolète → vide
+  });
+
+  it("formes invalides ignorées sans crash", () => {
+    restoreAgentState({ pending: [["z", { command: 5, args: [], expiresAt: "x" } as unknown as never]], execLog: [] });
+    expect(peekPendingConfirmation("z")).toBeNull();
+  });
+
+  it("le sink est appelé à chaque mutation, take() vide l'état", () => {
+    const saved: Array<{ pending: unknown[]; execLog: unknown[] }> = [];
+    setAgentStateSink((st) => saved.push({ pending: st.pending, execLog: st.execLog }));
+    setPendingConfirmation("u", { command: "anime", args: ["a"] });
+    expect(saved.length).toBe(1);
+    expect(saved[0].pending.length).toBe(1);
+    recordAgentExecution("u");
+    expect(saved.length).toBe(2);
+    expect(saved[1].execLog.length).toBe(1);
+    takePendingConfirmation("u");
+    expect(saved.length).toBe(3);
+    expect(saved[2].pending.length).toBe(0);
+    setAgentStateSink(null);
+    setPendingConfirmation("v", { command: "trad", args: [] }); // sans sink : no-op silencieux
+    expect(saved.length).toBe(3);
   });
 });
