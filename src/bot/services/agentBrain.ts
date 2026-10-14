@@ -340,6 +340,102 @@ export function toggleCatalogFlag(args: string[], defaultSource: AnimeSourceId):
   return target === defaultSource ? rest : [target, ...rest];
 }
 
+// ── 9.18x (P1) : « épisode suivant » déterministe — zéro token IA ──────────
+
+/**
+ * Contexte minimal exigé (structurellement compatible avec AnimeChoiceRecord
+ * du service animeChoices — l'appelant passe le dernier choix du chat tel
+ * quel, sans conversion : le cerveau ne dépend d'aucun module externe).
+ */
+export interface NextEpisodeContext {
+  title: string;
+  source: string;
+  seasonName: string;
+  quality: string;
+  lastEpisode: number | null;
+}
+
+/**
+ * Phrases qui désignent CLAIREMENT l'épisode suivant. « la suite » seule est
+ * VOLONTAIREMENT exclue : ambigu (saison suivante possible) → chemin IA.
+ */
+const NEXT_EP_PHRASE_RE =
+  /(?:^|\s)(?:épisode|episode|ép|ep)\s+(?:suivant|suivante|suivants|suivantes|d\s*(?:après|apres))(?:\s|$)|(?:^|\s)prochain(?:e|s)?\s+(?:épisode|episode|ép|ep)(?:\s|$)|(?:^|\s)next\s+episode(?:\s|$)/i;
+
+/** Vocabulaire de l'intention : ne porte aucune information autre que l'intention. */
+const NEXT_EP_VOCAB = new Set([
+  "épisode", "episode", "ép", "ep", "suivant", "suivante", "suivants", "suivantes",
+  "prochain", "prochaine", "prochains", "prochaines", "d", "après", "apres", "next"
+]);
+
+/** Mots creux (politesse, articles, verbes de demande) tolérés autour de l'intention. */
+const NEXT_EP_FILLER = new Set([
+  "le", "la", "les", "l", "un", "une", "du", "de", "des", "moi", "donne", "donnes", "donnez",
+  "peux", "peut", "pouvez", "tu", "te", "t", "stp", "svp", "please", "si", "plait", "plaît",
+  "il", "vous", "me", "m", "j", "je", "on", "nous", "en", "va", "vas", "y", "cherche", "cherchez",
+  "trouve", "trouves", "veux", "veut", "voudrais", "aimerais", "hey", "salut", "hola", "holà",
+  "bot", "file", "passe", "envoi", "envoie", "montre", "lance", "lances", "dis", "dit", "fais",
+  "fait", "c", "est", "quoi", "et", "puis", "allez", "allons", "go", "encore", "avec", "pour"
+]);
+
+/**
+ * 9.18x (P1, plan owner « crée ton propre plan ») — la demande la plus
+ * courante après un téléchargement est « l'épisode suivant », et l'historique
+ * anime du chat contient déjà TOUT (titre, catalogue, saison, dernier
+ * épisode, qualité). Décision calculée localement : ZÉRO appel IA, ZÉRO quota
+ * consommé — même esprit que la bascule catalogue déterministe (8.94/8.96).
+ *
+ * Fail-open : le moindre doute (titre mentionné dans le message, qualité
+ * différente demandée, historique incomplet, saison illisible, phrase qui
+ * dépasse la simple intention) → null, le chemin IA normal prend le relais.
+ * Zéro confiance sur l'historique : chaque champ est revalidé.
+ */
+export function deterministicNextEpisodeDecision(
+  text: string,
+  last: NextEpisodeContext | null
+): AgentDecision | null {
+  if (!last || typeof text !== "string") return null;
+  const title = String(last.title || "").trim();
+  if (!title) return null;
+  const lastEp =
+    typeof last.lastEpisode === "number" && Number.isFinite(last.lastEpisode)
+      ? Math.floor(last.lastEpisode)
+      : null;
+  if (lastEp === null || lastEp < 1) return null;
+  const seasonMatch = String(last.seasonName || "").match(/\d+/);
+  if (!seasonMatch) return null;
+  const source = String(last.source || "").toLowerCase();
+  if (source !== "va" && source !== "as") return null;
+  const nextEp = lastEp + 1;
+  if (nextEp > 500) return null; // historique aberrant → pas de décision locale
+
+  const norm = text.toLowerCase().replace(/[\u2019\u2018\u0060\u00B4]/g, "'").replace(/\s+/g, " ").trim();
+  if (!NEXT_EP_PHRASE_RE.test(norm.replace(/'/g, " "))) return null;
+
+  // Le message ne doit RIEN désigner d'autre : ni titre, ni numéro, ni
+  // qualité — chaque token restant doit être de l'intention ou un mot creux.
+  const tokens = norm.split(/[\s'\u2019,.!?;:()\-\u2013\u2014]+/).filter(Boolean);
+  if (tokens.length === 0 || tokens.length > 10) return null;
+  for (const tok of tokens) {
+    if (!NEXT_EP_VOCAB.has(tok) && !NEXT_EP_FILLER.has(tok)) return null;
+  }
+
+  const quality = String(last.quality || "").trim().toLowerCase();
+  const args = [
+    source,
+    ...title.split(/\s+/).filter(Boolean),
+    `s${seasonMatch[0]}`,
+    `e${nextEp}`,
+    ...(quality ? [quality] : [])
+  ];
+  return {
+    action: "execute",
+    command: "anime",
+    args: args.join(" "),
+    say: `⚡ La suite — épisode ${nextEp} !`
+  };
+}
+
 // ── Observation compacte : la queue des écrans interactifs ─────────────────
 
 /**

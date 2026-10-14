@@ -36,7 +36,7 @@ import {
 } from "./aiMemory.js";
 import { buildAgentKnowledge } from "../commandKnowledge.js";
 import { effectiveDefaultSource } from "./animeSources.js";
-import { getAnimeChoiceContext, messageSuggestsAnimeHistory } from "./animeChoices.js";
+import { getAnimeChoiceContext, messageSuggestsAnimeHistory, getAnimeChoice } from "./animeChoices.js";
 import { recordAgentTurn } from "./agentMetrics.js";
 import { setLastObservation, outputLooksInteractive, observationContext } from "./agentObservation.js";
 import { suggestClosestCommand } from "../commandRegistry.js";
@@ -56,7 +56,8 @@ import {
   isConfirmationAffirmative,
   toggleCatalogFlag,
   sanitizeAgentArgs,
-  keepHeadAndTail
+  keepHeadAndTail,
+  deterministicNextEpisodeDecision
 } from "./agentBrain.js";
 
 export interface AgentMessageInfo {
@@ -193,9 +194,19 @@ export async function handleAgentMessage(
     return true;
   }
 
+  // 9.18x (P1, plan owner) — « épisode suivant » DÉTERMINISTE : la demande
+  // la plus courante est calculée LOCALEMENT depuis l'historique anime du
+  // chat — zéro appel IA, zéro quota consommé. Fail-open : le moindre doute
+  // (titre mentionné, autre qualité, historique incomplet) → chemin IA
+  // normal ci-dessous. TOUS les garde-fous s'appliquent dans la boucle.
+  const det = deterministicNextEpisodeDecision(text, getAnimeChoice(info.senderJid));
+  if (det && det.action === "execute") {
+    recordAudit(`wa:${info.actorNumber}`, "agent.deterministic", det.command, "next-episode");
+  }
+
   await setPresence("composing");
   try {
-    consumeAIQuota(info.actorJid);
+    if (!det) consumeAIQuota(info.actorJid);
     const memoryBlock = getMemoryContext(info.senderJid);
     // 8.97/8.99 — mémoire des choix interactifs, INJECTÉE À LA DEMANDE
     // (leçon Mastra : ce bloc n'a d'utilité que si le message parle
@@ -234,25 +245,27 @@ export async function handleAgentMessage(
       (voiceBlock ? `\n\n${voiceBlock}` : "");
     const agentSystem = `${persona}\n\n${buildAgentKnowledge(info.prefix)}`;
 
-    let decision = null as ReturnType<typeof parseAgentDecision>;
+    let decision = det as ReturnType<typeof parseAgentDecision>;
     let rawLatencyMs = 0;
-    try {
-      const tStart = Date.now();
-      const raw = await withAIConcurrency(() =>
-        // 8.99 — mode JSON natif : l'API contraint la réponse (Gemini
-        // responseMimeType / NIM response_format). Le parsing tolérant
-        // reste la garde (fail-closed) — ce n'est pas de la confiance.
-        generateTextWithFallback(text, agentSystem, "gemini-3.7-flash", { jsonMode: true })
-      );
-      rawLatencyMs = Date.now() - tStart;
-      decision = parseAgentDecision(raw);
-    } catch {
-      recordAgentTurn({
-        ts: Date.now(), action: "error", engine: getPrimaryAIEngine(),
-        latencyMs: 0, parseOk: false, argsSanitized: false
-      });
-      await sendText(AI_DOWN_NOTICE);
-      return true;
+    if (!det) {
+      try {
+        const tStart = Date.now();
+        const raw = await withAIConcurrency(() =>
+          // 8.99 — mode JSON natif : l'API contraint la réponse (Gemini
+          // responseMimeType / NIM response_format). Le parsing tolérant
+          // reste la garde (fail-closed) — ce n'est pas de la confiance.
+          generateTextWithFallback(text, agentSystem, "gemini-3.7-flash", { jsonMode: true })
+        );
+        rawLatencyMs = Date.now() - tStart;
+        decision = parseAgentDecision(raw);
+      } catch {
+        recordAgentTurn({
+          ts: Date.now(), action: "error", engine: getPrimaryAIEngine(),
+          latencyMs: 0, parseOk: false, argsSanitized: false
+        });
+        await sendText(AI_DOWN_NOTICE);
+        return true;
+      }
     }
 
     if (!decision) {
@@ -271,8 +284,10 @@ export async function handleAgentMessage(
       return true;
     }
 
-    // 8.99 — tracing : une ligne par tour, SANS contenu (vie privée).
-    recordAgentTurn({
+    // 8.99 — tracing : une ligne par tour IA, SANS contenu (vie privée).
+    // 9.18x : un tour déterministe n'est pas un tour IA — l'audit
+    // « agent.deterministic » le trace déjà.
+    if (!det) recordAgentTurn({
       ts: Date.now(),
       action: decision.action === "execute" ? "execute" : decision.action === "ask" ? "ask" : "reply",
       engine: getPrimaryAIEngine(),

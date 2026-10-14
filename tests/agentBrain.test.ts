@@ -5,6 +5,7 @@ import {
   clearPendingConfirmation,
   isAgentDeniedCommand,
   isConfirmationAffirmative,
+  deterministicNextEpisodeDecision,
   isHeavyAgentCommand,
   keepHeadAndTail,
   parseAgentDecision,
@@ -257,5 +258,64 @@ describe("9.18w — persistance de l'état (restore + sink)", () => {
     setAgentStateSink(null);
     setPendingConfirmation("v", { command: "trad", args: [] }); // sans sink : no-op silencieux
     expect(saved.length).toBe(3);
+  });
+});
+
+describe("9.18x (P1) — « épisode suivant » déterministe (zéro token)", () => {
+  const LAST = { title: "mushoku tensei", source: "va", seasonName: "Saison 1", quality: "480P", lastEpisode: 5 };
+
+  /** Narrowing typé : args de la décision execute, null sinon. */
+  const argsOf = (t: string, last: typeof LAST): string | null => {
+    const d = deterministicNextEpisodeDecision(t, last);
+    return d && d.action === "execute" ? d.args : null;
+  };
+
+  it("phrase simple → exécution anime construite localement", () => {
+    const d = deterministicNextEpisodeDecision("l'épisode suivant", LAST);
+    expect(d).toEqual({ action: "execute", command: "anime", args: "va mushoku tensei s1 e6 480p", say: "⚡ La suite — épisode 6 !" });
+  });
+
+  it("variantes : prochain épisode / next episode / ép d'après / politesse", () => {
+    for (const t of [
+      "donne moi le prochain épisode stp",
+      "next episode please",
+      "l'ép d'après",
+      "vas-y, épisode suivant",
+      "ép suivant"
+    ]) {
+      expect(deterministicNextEpisodeDecision(t, LAST)?.action).toBe("execute");
+    }
+  });
+
+  it("source as → flag as ; qualité absente → pas de token qualité", () => {
+    expect(argsOf("épisode suivant", { ...LAST, source: "as" })).toBe("as mushoku tensei s1 e6 480p");
+    expect(argsOf("épisode suivant", { ...LAST, quality: "" })).toBe("va mushoku tensei s1 e6");
+  });
+
+  it("batch dernier épisode 7 → e8", () => {
+    expect(argsOf("épisode suivant", { ...LAST, lastEpisode: 7 })).toContain("e8");
+  });
+
+  it("titre mentionné dans le message → null (fail-open vers l'IA)", () => {
+    expect(deterministicNextEpisodeDecision("l'épisode suivant de one piece", LAST)).toBeNull();
+  });
+
+  it("autre qualité demandée → null (intention différente)", () => {
+    expect(deterministicNextEpisodeDecision("l'épisode suivant en 720p", LAST)).toBeNull();
+  });
+
+  it("« la suite » seule → null (ambigu : saison suivante possible)", () => {
+    expect(deterministicNextEpisodeDecision("la suite", LAST)).toBeNull();
+    expect(deterministicNextEpisodeDecision("suivant", LAST)).toBeNull();
+    expect(deterministicNextEpisodeDecision("le 2e", LAST)).toBeNull();
+  });
+
+  it("historique incomplet ou invalide → null", () => {
+    expect(deterministicNextEpisodeDecision("épisode suivant", null)).toBeNull();
+    expect(deterministicNextEpisodeDecision("épisode suivant", { ...LAST, lastEpisode: null })).toBeNull();
+    expect(deterministicNextEpisodeDecision("épisode suivant", { ...LAST, seasonName: "Film" })).toBeNull();
+    expect(deterministicNextEpisodeDecision("épisode suivant", { ...LAST, source: "xx" })).toBeNull();
+    expect(deterministicNextEpisodeDecision("épisode suivant", { ...LAST, title: "" })).toBeNull();
+    expect(deterministicNextEpisodeDecision("épisode suivant", { ...LAST, lastEpisode: 999 })).toBeNull();
   });
 });
