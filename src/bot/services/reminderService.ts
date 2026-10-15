@@ -244,6 +244,12 @@ export function markReminderAttempt(id: string): void {
   const rec = all.find((r) => r.id === id);
   if (!rec) return;
   rec.attempts += 1;
+  // Audit terrain 15/10 : la livraison était invisible dans les logs.
+  // Aucun jid ni contenu — id + compteurs uniquement (§ vie privée).
+  console.warn(`[REMIND] échec d'envoi rappel ${rec.id} (tentative ${rec.attempts}/${MAX_ATTEMPTS})`);
+  if (rec.attempts >= MAX_ATTEMPTS) {
+    console.warn(`[REMIND] rappel ${rec.id} abandonné après ${MAX_ATTEMPTS} tentatives`);
+  }
   saveAll(rec.attempts >= MAX_ATTEMPTS ? all.filter((r) => r.id !== id) : all);
 }
 
@@ -261,6 +267,7 @@ async function deliverDueReminders(getSock: () => any): Promise<void> {
       try {
         await sock.sendMessage(r.chatJid, { text: `⏰ *Rappel*\n\n${r.text}` });
         removeReminder(r.id);
+        console.log(`[REMIND] ⏰ rappel ${r.id} livré (${r.text.length} caractères)`);
       } catch {
         markReminderAttempt(r.id);
       }
