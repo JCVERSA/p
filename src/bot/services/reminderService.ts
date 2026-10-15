@@ -167,6 +167,9 @@ export function parseReminderSpec(input: string, now = Date.now()): ReminderSpec
     } else {
       humanWhen = `à ${fmtTime(h, min)}`;
     }
+    // Audit 9.18 (P7) : « 18h » tapé à 17:59:50 (ou juste après 18h) est une
+    // demande légitime — la borner à +30 s plutôt que la rejeter avec l'aide.
+    if (ts < now + MIN_FUTURE_MS) ts = now + MIN_FUTURE_MS;
     dueAt = ts;
     rest = t.slice(m[0].length).trim();
   } else if ((m = t.match(/^demain\s+(?:à\s+|a\s+)?(\d{1,2})h(\d{2})?\b/i))) {
