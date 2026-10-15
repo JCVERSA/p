@@ -57,7 +57,8 @@ import {
   toggleCatalogFlag,
   sanitizeAgentArgs,
   keepHeadAndTail,
-  deterministicNextEpisodeDecision
+  deterministicNextEpisodeDecision,
+  messageSuggestsMultiIntent
 } from "./agentBrain.js";
 import {
   parsePreferenceDeclaration,
@@ -351,6 +352,11 @@ export async function handleAgentMessage(
     let decisionsUsed = 1; // la décision initiale compte
     let current = decision;
     const executedSignatures = new Set<string>(); // anti-boucle dégénérée
+    // 9.18cc (P8) : demande double liée (« l'épisode 1 ET la chanson ») →
+    // UN tour de relance borné après la première livraison, si (et seulement
+    // si) le message contient une liaison + ≥2 familles d'intention.
+    const multiIntentPending = messageSuggestsMultiIntent(text);
+    let multiFollowUpUsed = false;
 
     while (true) {
       if (current.action === "reply" || current.action === "ask") {
@@ -459,6 +465,50 @@ export async function handleAgentMessage(
 
       // 9.1 — la sortie attend-elle un choix que l'agent peut piloter ?
       if (!outputLooksInteractive(out.texts)) {
+        // 9.18cc (P8) : première demande livrée et le message initial
+        // contenait PLUSIEURS demandes liées → UN tour de relance pour
+        // enchaîner la deuxième (éco tokens : détection déterministe, une
+        // seule fois, sous les mêmes plafonds/quota que le reste).
+        if (multiIntentPending && !multiFollowUpUsed && decisionsUsed < MAX_AI_DECISIONS) {
+          const quotaChain = checkAIQuota(info.actorJid);
+          if (quotaChain.allowed) {
+            consumeAIQuota(info.actorJid);
+            decisionsUsed++;
+            multiFollowUpUsed = true;
+            const chainSystem =
+              `${agentSystem}\n\n` +
+              `## Situation — demande double\n` +
+              `Tu viens d'exécuter \`${info.prefix}${canonical.name}${args.length ? ` ${args.join(" ")}` : ""}\` pour l'utilisateur. ` +
+              `Sa demande initiale contenait PLUSIEURS demandes liées (ex. un épisode ET une chanson). ` +
+              `Décide de la suite par un UNIQUE objet JSON {"action":…} :\n` +
+              `- Une AUTRE commande de sa demande initiale reste à exécuter (intention différente, arguments EXACTS) → "execute" avec un "say" court.\n` +
+              `- Tout est déjà livré → "reply" avec une phrase très courte.\n` +
+              `Interdits : relancer la même commande avec les mêmes arguments ; inventer une demande absente de son message ; exécuter une commande qu'il n'a pas demandée.`;
+            let chained = null as ReturnType<typeof parseAgentDecision>;
+            try {
+              const rawChain = await withAIConcurrency(() =>
+                generateTextWithFallback(text, chainSystem, "gemini-3.7-flash", { jsonMode: true })
+              );
+              chained = parseAgentDecision(rawChain);
+            } catch {
+              chained = null;
+            }
+            if (chained && chained.action === "execute") {
+              // La boucle revalide TOUT : denylist, sanitize, lourd, budget,
+              // signature anti-boucle — mêmes garde-fous que la décision 1.
+              current = chained;
+              continue;
+            }
+            if (chained && (chained.action === "reply" || chained.action === "ask")) {
+              await sendText(chained.text);
+              recordExchange(info.senderJid, text, chained.text);
+              compactIfNeeded(info.senderJid, defaultMemorySummarizer).catch(() => {});
+              return true;
+            }
+            // JSON illisible : la première demande est livrée, on s'arrête
+            // proprement (pas de bruit).
+          }
+        }
         // Terminé (lien envoyé, réponse simple…) : rien à piloter.
         recordExchange(info.senderJid, text, current.say || `[${canonical.name} exécutée]`);
         compactIfNeeded(info.senderJid, defaultMemorySummarizer).catch(() => {});

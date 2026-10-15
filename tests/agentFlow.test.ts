@@ -740,3 +740,47 @@ describe("9.18aa (P4) — rattrapage élargi aux recherches (musique, ytv…)", 
     expect(texts(ctx.sent).some((t: string) => t.includes("OK") && t.includes("song"))).toBe(true);
   });
 });
+
+describe("9.18cc (P8) — demandes doubles liées (enchaînement borné)", () => {
+  it("« l'épisode 1 ET la chanson » → deux exécutions enchaînées, un seul message", async () => {
+    mAI
+      .mockResolvedValueOnce(
+        JSON.stringify({ action: "execute", command: "anime", args: "va mushoku tensei s1 e1", say: "C'est parti !" })
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({ action: "execute", command: "song", args: "générique mushoku tensei", say: "Et la chanson !" })
+      );
+    const ctx = mk("télécharge l'épisode 1 de mushoku tensei et la chanson du générique");
+    const exec = mkExec({ texts: ["✅ Lien envoyé"] });
+    await run(ctx, exec);
+    expect(mAI).toHaveBeenCalledTimes(2); // décision initiale + relance P8
+    const chainSystem = mAI.mock.calls[1][1] as string;
+    expect(chainSystem).toContain("demande double");
+    expect(exec).toHaveBeenCalledWith("anime", ["va", "mushoku", "tensei", "s1", "e1"], "agent");
+    expect(exec).toHaveBeenCalledWith("song", ["générique", "mushoku", "tensei"], "agent");
+  });
+
+  it("relance P8 → reply « tout est fait » : une seule exécution, réponse courte", async () => {
+    mAI
+      .mockResolvedValueOnce(
+        JSON.stringify({ action: "execute", command: "anime", args: "va x s1 e1", say: "C'est parti !" })
+      )
+      .mockResolvedValueOnce(JSON.stringify({ action: "reply", text: "Tout est livré !" }));
+    const ctx = mk("télécharge l'épisode 1 de x et la chanson du générique");
+    const exec = mkExec({ texts: ["✅ Lien envoyé"] });
+    await run(ctx, exec);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(texts(ctx.sent).some((t: string) => t.includes("Tout est livré"))).toBe(true);
+  });
+
+  it("demande simple → AUCUN tour de relance (éco tokens)", async () => {
+    mAI.mockResolvedValueOnce(
+      JSON.stringify({ action: "execute", command: "anime", args: "va mushoku s1 e5", say: "C'est parti !" })
+    );
+    const ctx = mk("télécharge mushoku tensei s1 e5");
+    const exec = mkExec({ texts: ["✅ Lien envoyé"] });
+    await run(ctx, exec);
+    expect(mAI).toHaveBeenCalledTimes(1);
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+});
