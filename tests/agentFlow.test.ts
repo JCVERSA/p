@@ -903,3 +903,35 @@ describe("9.18ii (P6b) — mode vocal : réponses conversationnelles en voix", (
     expect(ctx.sent.some((p: any) => typeof p.text === "string" && p.text.includes("Limite"))).toBe(true);
   });
 });
+
+describe("9.18jj (B) — la voix appelle la voix (note vocale entrante)", () => {
+  it("note vocale + mode vocal OFF → réponse QUAND MÊME en voix", async () => {
+    mVoiceMode.mockReturnValue(false); // .off ou jamais activé
+    mAI.mockResolvedValueOnce(JSON.stringify({ action: "reply", text: "Salut ! Bien reçu, je te réponds en voix." }));
+    const ctx = mk("salut ça va ?");
+    (ctx.info as any).voiceNote = true; // message transcrit d'une note vocale
+    await run(ctx, mkExec());
+    expect(mSynth).toHaveBeenCalledTimes(1);
+    const audio = ctx.sent.find((p: any) => p.audio);
+    expect(audio).toBeTruthy();
+    expect(audio.ptt).toBe(true);
+  });
+
+  it("note vocale mais réponse avec URL → texte (un lien ne s'écoute pas)", async () => {
+    mVoiceMode.mockReturnValue(true);
+    mAI.mockResolvedValueOnce(JSON.stringify({ action: "reply", text: "Voici : https://exemple.com/a" }));
+    const ctx = mk("donne-moi le lien");
+    (ctx.info as any).voiceNote = true;
+    await run(ctx, mkExec());
+    expect(mSynth).not.toHaveBeenCalled();
+    expect(ctx.sent.some((p: any) => p.text === "Voici : https://exemple.com/a")).toBe(true);
+  });
+
+  it("message TAPÉ (pas vocal) + mode OFF → texte, aucune synthèse (comportement inchangé)", async () => {
+    mVoiceMode.mockReturnValue(false);
+    mAI.mockResolvedValueOnce(JSON.stringify({ action: "reply", text: "Salut !" }));
+    const ctx = mk("salut");
+    await run(ctx, mkExec());
+    expect(mSynth).not.toHaveBeenCalled();
+  });
+});

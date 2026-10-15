@@ -17,6 +17,10 @@ import { isVoiceModeEnabled } from "./voiceModeStore.js";
  *
  * Les messages système (quota, budget), livraisons (liens) et écrans de
  * sélection n'appellent jamais cette fonction avec voice:true.
+ *
+ * 9.18jj (B) : « la voix appelle la voix » — force:true bypass le réglage
+ * .on/.off : quand l'utilisateur a parlé en NOTE VOCALE, la réponse
+ * conversationnelle part en voix par défaut (l'IA n'a rien à décider).
  */
 
 /** Cap d'une réponse vocale (~40-50 s d'audio). Au-delà : texte. */
@@ -41,10 +45,10 @@ export async function sendAgentTextOrVoice(
   chatJid: string,
   quoted: any,
   text: string,
-  opts: { voice?: boolean } = {}
+  opts: { voice?: boolean; force?: boolean } = {}
 ): Promise<"voice" | "text"> {
   const t = String(text || "");
-  const wantsVoice = !!opts.voice && isVoiceModeEnabled(chatJid) && isVoiceEligibleText(t);
+  const wantsVoice = !!opts.voice && (opts.force === true || isVoiceModeEnabled(chatJid)) && isVoiceEligibleText(t);
   if (wantsVoice) {
     try {
       // Présence « recording » pendant la synthèse (best-effort).
