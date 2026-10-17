@@ -46,6 +46,10 @@ class NovaViewModel : ViewModel() {
 
     fun clearToast() = NovaRepository.clearToast()
 
+    /** 9.18xx — télécommande : exécute un texte comme owner. */
+    fun runRemoteCommand(text: String, onResult: (ok: Boolean, message: String) -> Unit) =
+        NovaRepository.runRemoteCommand(text, onResult)
+
     /** 9.18ww — journal : polling lié au cycle de vie de l'onglet. */
     fun startLogsPolling() = NovaRepository.startLogsPolling()
     fun stopLogsPolling() = NovaRepository.stopLogsPolling()

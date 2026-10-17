@@ -36,7 +36,7 @@ import { checkAIQuota, consumeAIQuota, withAIConcurrency } from "./aiQuota.js";
 import { setWatchSender, startWatchScheduler } from "./services/episodeWatchService.js";
 import { setDigestSender, startDigestScheduler } from "./services/digestService.js";
 import { dispatchBotCommand, type DispatchInfo } from "./commandDispatch.js";
-import { handleAgentMessage, messageAddressesBot } from "./services/agentRunner.js";
+import { handleAgentMessage, messageAddressesBot, type AgentMessageInfo, type AgentExecutor } from "./services/agentRunner.js";
 import { handleIncomingCalls } from "./services/callGate.js";
 import { describeMessageMedia, extractQuotedText } from "./utils/quotedMedia.js";
 import { getRecentMessage, recordRecentMessage } from "./services/recentMessages.js";
@@ -147,6 +147,117 @@ export function getBotState() {
     connectionMode: botState.connectionMode,
     logs: botState.logs,
   };
+}
+
+/**
+ * 9.18xx — télécommande Nova (agent dans la poche).
+ *
+ * Exécute un texte EXACTEMENT comme si l'owner l'avait tapé sur WhatsApp :
+ *  - préfixe (`.`) → dispatchBotCommand (chemin préfixe éprouvé) ;
+ *  - langage naturel → handleAgentMessage (l'agent IA, DM = adressé au bot).
+ * Les réponses partent dans le CHAT WHATSAPP de l'owner (OWNER_NUMBER) —
+ * le canal naturel : liens de téléchargement, notes vocales, écrans
+ * interactifs y arrivent déjà.
+ *
+ * Garde-fous (décision owner 17/10, patterns recherche API security) :
+ *  - texte ≤ 500 chars, non vide ;
+ *  - commandes SYSTÈME exclues (stop/update/restart/purge) : elles ont leur
+ *    interface dédiée dans Nova → Réglages, pas de doublon d'attaque ;
+ *  - moteur déconnecté / OWNER_NUMBER absent → refus honnête ;
+ *  - journal d'audit [NOVA] à chaque exécution.
+ * Jamais de shell, jamais d'eval : tout passe par le registre typé.
+ */
+export const REMOTE_EXCLUDED_COMMANDS = new Set(["stop", "update", "restart", "purge"]);
+
+/** Tests uniquement — simule un moteur connecté avec le sock donné. */
+export function __setRemoteStateForTests(socket: any, status: string): void {
+  botState.socket = socket;
+  botState.status = status as any;
+}
+
+export async function runAsOwnerCommand(text: string): Promise<{ ok: boolean; message: string }> {
+  const t = String(text || "").trim();
+  if (!t) return { ok: false, message: "Texte vide." };
+  if (t.length > 500) return { ok: false, message: "Texte trop long (max 500 caractères)." };
+
+  const config = getConfig();
+  const prefix = config.prefix || ".";
+  // Politique AVANT l'état de connexion : commandes système exclues et
+  // commande inconnue refusée honnêtement, quoi qu'il arrive au moteur.
+  let parsedCommand: { commandName: string; args: string[] } | null = null;
+  if (t.startsWith(prefix)) {
+    const body = t.slice(prefix.length).trim();
+    const args = body.split(/\s+/);
+    const commandName = (args.shift() || "").toLowerCase();
+    if (REMOTE_EXCLUDED_COMMANDS.has(commandName)) {
+      return { ok: false, message: `Commande \`${prefix}${commandName}\` bloquée à distance — utilise l'onglet Réglages de Nova (plus sûr).` };
+    }
+    if (!getCommand(commandName)) {
+      return { ok: false, message: `Commande inconnue \`${prefix}${commandName}\` — \`${prefix}menu\` pour la liste.` };
+    }
+    parsedCommand = { commandName, args };
+  }
+  const ownerDigits = String(process.env.OWNER_NUMBER || config.ownerNumber || "").replace(/\D/g, "");
+  if (ownerDigits.length < 8) {
+    return { ok: false, message: "OWNER_NUMBER non configuré — la télécommande ne sait pas où répondre." };
+  }
+  const ownerJid = `${ownerDigits}@s.whatsapp.net`;
+  const sock = botState.socket;
+  if (!sock || botState.status !== "connected") {
+    return { ok: false, message: "Le moteur WhatsApp n'est pas connecté — réessaie quand le bot est en ligne." };
+  }
+
+  // Message synthétique : les réponses (reply/quoted) partent vers ce chat.
+  const synthMsg = {
+    key: { remoteJid: ownerJid, fromMe: false, id: `3EB0NOVA${Date.now().toString(16).toUpperCase()}` },
+    message: { conversation: t },
+    pushName: "Nova Remote",
+  };
+  const info: DispatchInfo = {
+    senderJid: ownerJid,
+    actorJid: ownerJid,
+    senderName: "Nova (télécommande)",
+    senderNumber: ownerDigits,
+    isOwner: true,
+    isAdmin: false,
+    isGroup: false,
+    prefix,
+    text: t,
+    messageContent: synthMsg.message,
+  };
+
+  try {
+    if (parsedCommand) {
+      const outcome = await dispatchBotCommand(sock, synthMsg, info, parsedCommand.commandName, parsedCommand.args, "prefix");
+      addLog(`[NOVA] 📱 commande distante : ${t.slice(0, 80)}`);
+      return {
+        ok: outcome.ok && !outcome.hadError && !outcome.denied,
+        message: "✓ Exécuté — la réponse arrive sur WhatsApp.",
+      };
+    }
+    // Langage naturel → l'agent IA (répond dans le chat owner, voix comprise).
+    const exec: AgentExecutor = (commandName, args) =>
+      dispatchBotCommand(sock, synthMsg, info, commandName, args, "agent");
+    const agentInfo: AgentMessageInfo = {
+      senderJid: ownerJid,
+      actorJid: ownerJid,
+      actorNumber: ownerDigits,
+      senderName: "Nova (télécommande)",
+      isOwner: true,
+      text: t,
+      botName: config.botName,
+      prefix,
+      mediaHint: null,
+      quotedTextExcerpt: null,
+      voiceNote: false,
+    };
+    const handled = await handleAgentMessage(sock, synthMsg, agentInfo, exec);
+    if (!handled) return { ok: false, message: "Le message n'a pas abouti (agent indisponible ?)." };
+    addLog(`[NOVA] 📱 message agent distant : ${t.slice(0, 80)}`);
+    return { ok: true, message: "Agent sollicité — la réponse arrive sur WhatsApp." };
+  } catch (e: any) {
+    return { ok: false, message: `Échec : ${String(e?.message || e).slice(0, 120)}` };
+  }
 }
 
 export function clearLogs() {

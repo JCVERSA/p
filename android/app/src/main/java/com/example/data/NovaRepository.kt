@@ -214,6 +214,27 @@ object NovaRepository {
         }
     }
 
+    /**
+     * 9.18xx — télécommande : exécute le texte comme owner via le panneau.
+     * Réponse asynchrone par callback (le résultat part dans le chat
+     * WhatsApp de l'owner — Nova n'affiche que la confirmation).
+     */
+    fun runRemoteCommand(text: String, onResult: (ok: Boolean, message: String) -> Unit) {
+        val a = api
+        if (a == null || !NovaSession.isConfigured()) {
+            onResult(false, "Session non configurée — vérifie Réglages → Connexion")
+            return
+        }
+        scope.launch {
+            try {
+                val r = a.runCommand(RunCommandRequest(text))
+                onResult(r.ok, r.message.ifBlank { if (r.ok) "✓ Exécuté" else "Refusé" })
+            } catch (e: Exception) {
+                onResult(false, "Panneau injoignable — ${e.message ?: "erreur réseau"}")
+            }
+        }
+    }
+
     /** 9.18ww — journal : démarre le polling (no-op si déjà actif). */
     fun startLogsPolling() {
         if (logsJob?.isActive == true) return

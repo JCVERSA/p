@@ -21,6 +21,7 @@ enum class NavTab(val title: String) {
     HOME("Home"),
     BOTS("Bots"),
     LOGS("Journal"),
+    REMOTE("Télécommande"),
     SETTINGS("Settings")
 }
 

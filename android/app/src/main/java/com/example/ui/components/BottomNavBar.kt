@@ -25,10 +25,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
@@ -74,7 +76,8 @@ fun BottomNavBar(
         NavTab.HOME -> 0
         NavTab.BOTS -> 1
         NavTab.LOGS -> 2
-        NavTab.SETTINGS -> 3
+        NavTab.REMOTE -> 3
+        NavTab.SETTINGS -> 4
     }
 
     Box(
@@ -145,6 +148,15 @@ fun BottomNavBar(
                     isSelected = selectedTab == NavTab.LOGS,
                     onClick = { onTabSelected(NavTab.LOGS) },
                     testTag = "nav_logs"
+                )
+
+                DockNavItem(
+                    label = "Remote",
+                    iconFilled = Icons.Filled.Send,
+                    iconOutlined = Icons.Outlined.Send,
+                    isSelected = selectedTab == NavTab.REMOTE,
+                    onClick = { onTabSelected(NavTab.REMOTE) },
+                    testTag = "nav_remote"
                 )
 
                 DockNavItem(

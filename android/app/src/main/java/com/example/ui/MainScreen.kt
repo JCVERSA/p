@@ -54,6 +54,7 @@ import com.example.ui.components.SwiftSlateSpinner
 import com.example.ui.components.bounceClick
 import com.example.ui.screens.BotsScreen
 import com.example.ui.screens.LogsScreen
+import com.example.ui.screens.RemoteScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.SettingsScreen
@@ -188,6 +189,10 @@ fun MainScreen(
 
                         NavTab.LOGS -> {
                             LogsScreen(viewModel = viewModel)
+                        }
+
+                        NavTab.REMOTE -> {
+                            RemoteScreen(viewModel = viewModel)
                         }
 
                         NavTab.SETTINGS -> {
