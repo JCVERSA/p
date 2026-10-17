@@ -73,7 +73,8 @@ fun BottomNavBar(
     val tabIndex = when (selectedTab) {
         NavTab.HOME -> 0
         NavTab.BOTS -> 1
-        NavTab.SETTINGS -> 2
+        NavTab.LOGS -> 2
+        NavTab.SETTINGS -> 3
     }
 
     Box(

@@ -19,7 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.Play
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -130,7 +130,7 @@ fun LogsScreen(viewModel: NovaViewModel) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PillButton(
                     label = if (paused) "Reprendre" else "Pause",
-                    icon = if (paused) Icons.Filled.Play else Icons.Filled.Pause,
+                    icon = if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
                     testTag = "logs_pause",
                     onClick = { viewModel.setLogsPaused(!paused) }
                 )
