@@ -19,7 +19,7 @@ import "./suppressLibsignalNoise.js";
 import { Boom } from "@hapi/boom";
 import fs from "fs";
 import { getConfig } from "./config.js";
-import { resolveOwnerIdentity } from "./ownerIdentity.js";
+import { ownerDeliveryJid, resolveOwnerIdentity } from "./ownerIdentity.js";
 import { getCommand, initRegistry, isRegistryReady } from "./commandRegistry.js";
 import { BotCommandContext } from "./types.js";
 import { incrementCommandStats } from "./commandStats.js";
@@ -35,6 +35,7 @@ import { database } from "./database.js";
 import { checkAIQuota, consumeAIQuota, withAIConcurrency } from "./aiQuota.js";
 import { setWatchSender, startWatchScheduler } from "./services/episodeWatchService.js";
 import { setDigestSender, startDigestScheduler } from "./services/digestService.js";
+import { startBackupScheduler } from "./services/backupService.js";
 import { dispatchBotCommand, type DispatchInfo } from "./commandDispatch.js";
 import { handleAgentMessage, messageAddressesBot, type AgentMessageInfo, type AgentExecutor } from "./services/agentRunner.js";
 import { handleIncomingCalls } from "./services/callGate.js";
@@ -201,7 +202,9 @@ export async function runAsOwnerCommand(text: string): Promise<{ ok: boolean; me
   if (ownerDigits.length < 8) {
     return { ok: false, message: "OWNER_NUMBER non configuré — la télécommande ne sait pas où répondre." };
   }
-  const ownerJid = `${ownerDigits}@s.whatsapp.net`;
+  // 9.18yy (F6) : livrer au LID mémorisé quand on le connaît (routage
+  // direct), sinon au PN — même politique que le digest et le « bot en ligne ».
+  const ownerJid = ownerDeliveryJid(ownerDigits);
   const sock = botState.socket;
   if (!sock || botState.status !== "connected") {
     return { ok: false, message: "Le moteur WhatsApp n'est pas connecté — réessaie quand le bot est en ligne." };
@@ -670,7 +673,8 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         const configuredOwner = envOwnerNumber || config.ownerNumber;
         const ownerDigits = configuredOwner.replace(/[^0-9]/g, "");
         if (ownerDigits.length >= 8) {
-          const ownerJid = `${ownerDigits}@s.whatsapp.net`;
+          // 9.18yy (F6) : LID mémorisé en priorité (routage direct), sinon PN.
+          const ownerJid = ownerDeliveryJid(ownerDigits);
           sock.sendMessage(ownerJid, { text: `🌌 *${config.botName}* is online and connected!\nPrefix: \`${config.prefix}\`` }).catch(() => {});
         }
 
@@ -686,10 +690,17 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         // (re)connexion, planificateur démarré une seule fois.
         setDigestSender(async (text) => {
           if (ownerDigits.length >= 8) {
-            await sock.sendMessage(`${ownerDigits}@s.whatsapp.net`, { text });
+            // 9.18yy (F6) : livrer au LID connu — un matin de routing PN→LID
+            // manqué ne doit plus faire perdre le digest.
+            await sock.sendMessage(ownerDeliveryJid(ownerDigits), { text });
           }
         });
         startDigestScheduler();
+
+        // 9.18yy — sauvegarde quotidienne du dossier de données du bot
+        // (audit 16/10) : chaque moteur sauvegarde SON NEBULA_DATA_DIR,
+        // NEBULA_BACKUP=0 coupe, rétention 7, journalisée dans le Journal.
+        startBackupScheduler((message) => addLog(message));
 
         // 9.16 — annonces du dashboard : sender réinjecté à chaque
         // (re)connexion, même pattern que le digest et le watcher.
