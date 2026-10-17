@@ -46,4 +46,11 @@ class ExampleRobolectricTest {
         assertEquals(4, BotStatus.entries.size)
         assertEquals(NavTab.HOME, NavTab.entries.first())
     }
+
+    @Test
+    fun `onglet journal present - quatre onglets (9.18ww)`() {
+        assertEquals(4, NavTab.entries.size)
+        org.junit.Assert.assertTrue(NavTab.entries.contains(NavTab.LOGS))
+        assertEquals(NavTab.SETTINGS, NavTab.entries.last())
+    }
 }

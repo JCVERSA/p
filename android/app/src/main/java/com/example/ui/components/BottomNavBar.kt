@@ -27,9 +27,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -133,6 +135,15 @@ fun BottomNavBar(
                     isSelected = selectedTab == NavTab.BOTS,
                     onClick = { onTabSelected(NavTab.BOTS) },
                     testTag = "nav_bots"
+                )
+
+                DockNavItem(
+                    label = "Journal",
+                    iconFilled = Icons.Filled.Terminal,
+                    iconOutlined = Icons.Outlined.Terminal,
+                    isSelected = selectedTab == NavTab.LOGS,
+                    onClick = { onTabSelected(NavTab.LOGS) },
+                    testTag = "nav_logs"
                 )
 
                 DockNavItem(

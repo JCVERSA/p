@@ -53,6 +53,7 @@ import com.example.ui.components.SlateMotionProvider
 import com.example.ui.components.SwiftSlateSpinner
 import com.example.ui.components.bounceClick
 import com.example.ui.screens.BotsScreen
+import com.example.ui.screens.LogsScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.SettingsScreen
@@ -185,9 +186,13 @@ fun MainScreen(
                             )
                         }
 
+                        NavTab.LOGS -> {
+                            LogsScreen(viewModel = viewModel)
+                        }
+
                         NavTab.SETTINGS -> {
                             SettingsScreen(
-                                versionLabel = "v0.1.0",
+                                versionLabel = "v0.2.0",
                                 updating = systemInfo.updating,
                                 onSaveConnection = { url, token ->
                                     NovaSession.url = url

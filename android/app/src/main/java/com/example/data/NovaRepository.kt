@@ -30,6 +30,15 @@ object NovaRepository {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollJob: Job? = null
+
+    // 9.18ww — journal en direct : polling DÉDIÉ, démarré/arrêté par l'onglet
+    // Journal (jamais en permanence — batterie). Pause = gel du
+    // rafraîchissement, le contenu affiché reste.
+    private var logsJob: Job? = null
+    private val _logs = MutableStateFlow<String?>(null)
+    val logs: StateFlow<String?> = _logs.asStateFlow()
+    private val _logsPaused = MutableStateFlow(false)
+    val logsPaused: StateFlow<Boolean> = _logsPaused.asStateFlow()
     private var api: NebulaApi? = null
     private var currentUrl: String = ""
     private var currentToken: String = ""
@@ -125,6 +134,8 @@ object NovaRepository {
     fun logout() {
         pollJob?.cancel()
         pollJob = null
+        logsJob?.cancel()
+        logsJob = null
         NovaSession.clear()
         api = null
         _sessionState.value = SessionState.NOT_CONFIGURED
@@ -201,6 +212,39 @@ object NovaRepository {
             tick++
             delay(5_000)
         }
+    }
+
+    /** 9.18ww — journal : démarre le polling (no-op si déjà actif). */
+    fun startLogsPolling() {
+        if (logsJob?.isActive == true) return
+        if (api == null) return
+        logsJob = scope.launch {
+            while (scope.isActive && logsJob?.isActive == true) {
+                val a = api ?: break
+                if (!_logsPaused.value) {
+                    try {
+                        _logs.value = a.logs(200).lines
+                    } catch (e: Exception) {
+                        // Le poll principal gère l'état réseau/session ; ici on
+                        // garde les dernières lignes connues. Premier échec →
+                        // état honnête « aucune ligne » plutôt qu'un chargement éternel.
+                        if (_logs.value == null) _logs.value = ""
+                    }
+                }
+                delay(5_000)
+            }
+        }
+    }
+
+    /** 9.18ww — journal : arrête le polling (onglet quitté). */
+    fun stopLogsPolling() {
+        logsJob?.cancel()
+        logsJob = null
+    }
+
+    /** 9.18ww — journal : gèle/libère le rafraîchissement. */
+    fun setLogsPaused(paused: Boolean) {
+        _logsPaused.value = paused
     }
 
     /**

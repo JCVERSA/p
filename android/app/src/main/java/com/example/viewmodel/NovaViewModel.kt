@@ -25,6 +25,8 @@ class NovaViewModel : ViewModel() {
     val bots: StateFlow<List<BotEntryDto>> = NovaRepository.bots
     val telemetry: StateFlow<com.example.model.BotTelemetry> = NovaRepository.telemetry
     val toast: StateFlow<String?> = NovaRepository.toast
+    val logs: StateFlow<String?> = NovaRepository.logs
+    val logsPaused: StateFlow<Boolean> = NovaRepository.logsPaused
 
     private val _activeTab = MutableStateFlow(NavTab.HOME)
     val activeTab: StateFlow<NavTab> = _activeTab.asStateFlow()
@@ -43,6 +45,11 @@ class NovaViewModel : ViewModel() {
     }
 
     fun clearToast() = NovaRepository.clearToast()
+
+    /** 9.18ww — journal : polling lié au cycle de vie de l'onglet. */
+    fun startLogsPolling() = NovaRepository.startLogsPolling()
+    fun stopLogsPolling() = NovaRepository.stopLogsPolling()
+    fun setLogsPaused(paused: Boolean) = NovaRepository.setLogsPaused(paused)
 
     fun selectBot(id: String) {
         _selectedBotId.value = id
