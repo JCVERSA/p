@@ -4,14 +4,14 @@ This guide documents the deployment of Nebula Bot (`JCVERSA/nova`) behind a
 **Cloudflare Tunnel** with **PM2** as the process manager inside a container that
 has **no systemd**. It mirrors a verified, working production setup:
 
-- Public hostname: `https://nebula.jcversaco.qzz.io`
+- Public hostname: `https://nebula.exemple.com`
 - App in a Docker container at `/opt/nebula/nova`, run as `NODE_ENV=production`
 - `cloudflared` (connector tokens, remotely-managed) runs **inside the same
   container** and forwards `http://localhost:3001`
 - Runtime state lives **outside** the git checkout at `/var/lib/nebula/database`
   and `/var/lib/nebula/auth`
 - Verified `http://127.0.0.1:3001/api/health` returns `{"status":"ok","commands":152,...}`
-  and `https://nebula.jcversaco.qzz.io/api/health` returns HTTP/2 200 with the CSP
+  and `https://nebula.exemple.com/api/health` returns HTTP/2 200 with the CSP
   header (`script-src 'self'` → production mode active).
 
 > Cross-references used throughout: [`README.md`](../README.md),
@@ -39,7 +39,7 @@ has **no systemd**. It mirrors a verified, working production setup:
 
 ```
 Internet
-   │  https://nebula.jcversaco.qzz.io (Cloudflare edge, TLS terminated)
+   │  https://nebula.exemple.com (Cloudflare edge, TLS terminated)
    ▼
 Cloudflare Tunnel (cloudflared, connector token, INSIDE the container)
    │  http://localhost:3001  (no published ports needed)
@@ -203,7 +203,7 @@ The app loads `.env` via `dotenv/config` in [`server.ts`](../server.ts) (from
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `PANEL_TOKEN` | **Required** | auto-generated (random, printed once to console) | Panel login key. Set a long random value: `openssl rand -hex 32`. If unset, a random key is generated at startup and printed once to the server console (see [`app.ts`](../app.ts)). Also accepted as a bearer token for tooling. |
-| `APP_URL` | **Required** | — | The public hostname, **no trailing slash**: `https://nebula.jcversaco.qzz.io`. Must match the tunnel hostname exactly. When set, requests with a foreign `Host` header are rejected with HTTP 400 (M3 host-header guard). Also drives absolute temp-download URLs. |
+| `APP_URL` | **Required** | — | The public hostname, **no trailing slash**: `https://nebula.exemple.com`. Must match the tunnel hostname exactly. When set, requests with a foreign `Host` header are rejected with HTTP 400 (M3 host-header guard). Also drives absolute temp-download URLs. |
 | `PORT` | optional | `3000` | HTTP port. The verified setup uses `3001`. |
 | `GEMINI_API_KEY` | for AI features | — | Google Gemini key. Can also be set via the panel Secrets UI (written to `.env`). |
 | `NEBULA_DATA_DIR` | optional | `./database` | Runtime state dir (config, groups, warnings, stats, audit trail, access policies, panel commands, AI quota). Verified value: `/var/lib/nebula/database`. |
@@ -334,7 +334,7 @@ as the app.
   `c89ed500-9d4a-41d3-b3ca-8dc7bd960d1a`.
 - Because it runs **inside the same container**, the tunnel's service URL is
   `http://localhost:3001`. **No published ports are needed.**
-- The existing host `www.jcversaco.qzz.io` is served by the same tunnel and
+- The existing host `www.exemple.com` is served by the same tunnel and
   must be **left untouched**.
 
 ### 7.2 Add the public hostname (dashboard route)
@@ -345,11 +345,11 @@ Cloudflare Zero Trust dashboard → **Networks → Tunnels** → select tunnel
 | Field | Value |
 |---|---|
 | Subdomain | `nebula` |
-| Domain | `jcversaco.qzz.io` |
+| Domain | `exemple.com` |
 | Service Type | `HTTP` |
 | URL | `http://localhost:3001` |
 
-The DNS record (`nebula.jcversaco.qzz.io` → the tunnel) is **auto-created by
+The DNS record (`nebula.exemple.com` → the tunnel) is **auto-created by
 Cloudflare**. The existing `www` hostname is untouched.
 
 > This hostname is added via the **dashboard** (not `config.yml`) because the
@@ -366,9 +366,9 @@ tunnel: c89ed500-9d4a-41d3-b3ca-8dc7bd960d1a
 credentials-file: /etc/cloudflared/<tunnel-id>.json
 
 ingress:
-  - hostname: nebula.jcversaco.qzz.io
+  - hostname: nebula.exemple.com
     service: http://localhost:3001
-  - hostname: www.jcversaco.qzz.io
+  - hostname: www.exemple.com
     service: http://<web-browser-target>   # leave the existing entry untouched
   - service: http_status:404               # catch-all must remain LAST
 ```
@@ -388,7 +388,7 @@ systemctl restart cloudflared      # or restart the in-container cloudflared ser
 - The tunnel forwards the **real `Host`** header. The app's M3 host-header guard
   rejects any request whose `Host` doesn't match `APP_URL`'s hostname (see
   [`app.ts`](../app.ts)). So `APP_URL` **must** equal the public hostname
-  exactly: `https://nebula.jcversaco.qzz.io` (no trailing slash).
+  exactly: `https://nebula.exemple.com` (no trailing slash).
 - `cloudflared` sets `X-Forwarded-Proto: https`, which the app uses to generate
   **absolute HTTPS** links (see §8 and the `updateServerBaseUrl` call in
   [`app.ts`](../app.ts)). It also lets the security-header middleware emit
@@ -404,7 +404,7 @@ systemctl restart cloudflared      # or restart the in-container cloudflared ser
 | **WebSockets** | **ON** | Baileys uses WebSocket for the WhatsApp connection. |
 | **Rocket Loader** | **OFF** | Can reorder/inject scripts and break the strict CSP `script-src 'self'`. |
 | **Auto-Minify** | **OFF** | Same — minifying JS/CSS inline can break the panel under strict CSP. |
-| **Cache Rule** | `Hostname equals nebula.jcversaco.qzz.io` **AND** `URI path starts with /api/` → **Bypass cache** | Prevents stale API data and expired 410 download links from being cached. |
+| **Cache Rule** | `Hostname equals nebula.exemple.com` **AND** `URI path starts with /api/` → **Bypass cache** | Prevents stale API data and expired 410 download links from being cached. |
 | WAF managed rules | **ON** | Extra protection on the public endpoint. |
 
 > The app's CSP in production (`script-src 'self'`) is the reason Rocket Loader
@@ -422,10 +422,10 @@ batch ZIP exports.
 ### URL format
 
 ```
-https://nebula.jcversaco.qzz.io/api/media/download/<48-hex-token>
+https://nebula.exemple.com/api/media/download/<48-hex-token>
 ```
 
-- **Short alias:** `https://nebula.jcversaco.qzz.io/d/<48-hex-token>` (same handler).
+- **Short alias:** `https://nebula.exemple.com/d/<48-hex-token>` (same handler).
 - Served at `GET`/`HEAD`/`OPTIONS` for both paths (see
   [`app.ts`](../app.ts) and [`src/bot/tempDownloadManager.ts`](../src/bot/tempDownloadManager.ts)).
 - The token is `crypto.randomBytes(24).toString("hex")` — **48 hex chars**,
@@ -454,7 +454,7 @@ in this **exact order**:
 
 **Checklist to get absolute HTTPS links:**
 
-- Set `APP_URL=https://nebula.jcversaco.qzz.io` (no trailing slash).
+- Set `APP_URL=https://nebula.exemple.com` (no trailing slash).
 - Ensure the tunnel/proxy sets `X-Forwarded-Proto: https` (cloudflared does).
 - Do **not** set only `PUBLIC_URL` if you can set `APP_URL` — `APP_URL` wins and
   also enables the host-header guard.
@@ -496,7 +496,7 @@ user's bot replies with that message when a new link can't be created.
 
 ### Config checklist for links to work through Cloudflare
 
-1. `APP_URL=https://nebula.jcversaco.qzz.io` (no trailing slash).
+1. `APP_URL=https://nebula.exemple.com` (no trailing slash).
 2. `/api/*` **bypass cache** (Cache Rule, see §7.5) so live API data and expired
    410 links are never served stale.
 3. Do **not** enable Cloudflare caching for `/api/`. The app already sets
@@ -523,7 +523,7 @@ curl -s http://127.0.0.1:3001/api/health
 ### Public health (through the tunnel)
 
 ```bash
-curl -I https://nebula.jcversaco.qzz.io/api/health
+curl -I https://nebula.exemple.com/api/health
 ```
 
 Expect **HTTP/2 200** with headers including:
@@ -533,7 +533,7 @@ Expect **HTTP/2 200** with headers including:
 
 ### Panel login
 
-Open `https://nebula.jcversaco.qzz.io` in a browser, log in with the
+Open `https://nebula.exemple.com` in a browser, log in with the
 `PANEL_TOKEN`. If you see **"login cookie not set / no session"**, you are on
 plain HTTP or the hostname doesn't match `APP_URL`.
 
@@ -547,7 +547,7 @@ plain HTTP or the hostname doesn't match `APP_URL`.
 ### Temp-link end-to-end test
 
 1. From WhatsApp, send a `.download <url>` for a file **over 100 MB**.
-2. The bot replies with a `https://nebula.jcversaco.qzz.io/api/media/download/<token>`
+2. The bot replies with a `https://nebula.exemple.com/api/media/download/<token>`
    link.
 3. Open it in a browser — it should download the file.
 4. Confirm the link is absolute **https**, not `/api/media/...` or `http://`.
@@ -560,9 +560,9 @@ plain HTTP or the hostname doesn't match `APP_URL`.
 |---|---|---|
 | `Could not resolve host` | Hostname not yet added / DNS still propagating | Add the public hostname in the Zero Trust dashboard and wait for DNS propagation (a few minutes). |
 | **523 / 502 / 503** from Cloudflare | App not running, or tunnel service URL wrong | Check `pm2 status`; confirm the tunnel points at `http://localhost:3001` (not a published port). |
-| **HTTP 400** from the app (in browser or curl) | `Host` header vs `APP_URL` mismatch | Ensure `APP_URL=https://nebula.jcversaco.qzz.io` (exact hostname, no trailing slash) and that the tunnel forwards the real Host. |
+| **HTTP 400** from the app (in browser or curl) | `Host` header vs `APP_URL` mismatch | Ensure `APP_URL=https://nebula.exemple.com` (exact hostname, no trailing slash) and that the tunnel forwards the real Host. |
 | Login cookie not set / can't stay logged in | Plain HTTP (cookie is `Secure`) | Confirm you're on **https** and "Always Use HTTPS" is ON (see §7.5). |
-| Temp link is **relative** or `http://` | `APP_URL` unset or `X-Forwarded-Proto: https` missing | Set `APP_URL=https://nebula.jcversaco.qzz.io`; ensure cloudflared forwards `X-Forwarded-Proto`. |
+| Temp link is **relative** or `http://` | `APP_URL` unset or `X-Forwarded-Proto: https` missing | Set `APP_URL=https://nebula.exemple.com`; ensure cloudflared forwards `X-Forwarded-Proto`. |
 | Blank panel (JS broken) | Rocket Loader / Auto-Minify intercepting scripts under strict CSP | Turn **Rocket Loader** and **Auto-Minify** OFF (§7.5). |
 | `ffmpeg not found` / video or novabox errors | System ffmpeg missing | `apt-get install -y ffmpeg`. |
 | `npm ci` EUSAGE / lockfile error | Lockfile missing — repo not cloned properly | Re-clone from `github.com/JCVERSA/nova.git` (with `package-lock.json`), then `npm ci`. |

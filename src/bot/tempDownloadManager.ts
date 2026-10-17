@@ -2,6 +2,8 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
+import { listDiskClaims } from "./diskClaims.js";
+import { planTmpRootDebris, scanTmpRoot } from "./services/tmpDebris.js";
 
 export interface TempDownloadRecord {
   token: string;
@@ -14,14 +16,36 @@ export interface TempDownloadRecord {
   expiresAt: number;
   downloadCount: number;
   meta?: Record<string, any>;
+  /** 8.88 : job détenteur (batch novabox) — la purge owner épargne les jobs au claim disque vivant. */
+  jobId?: string;
 }
 
 const TEMP_DOWNLOAD_DIR = path.join(os.tmpdir(), "nebula_temp_downloads");
-const ZIP_MAX_AGE_MS = 60 * 60 * 1000; // 60 minutes maximum retention for generated ZIP files
 
 // Storage safety ceilings — an untrusted WhatsApp user must not be able to
 // fill the host disk via temp downloads.
-const TEMP_MAX_TOTAL_BYTES = Number(process.env.NEBULA_TEMP_MAX_BYTES || 4 * 1024 * 1024 * 1024); // 4 GB
+// 8.83 : défaut abaissé à 2 Go — calibré pour les petits conteneurs (7-8 Go)
+// où l'ancien 4 Go ne pouvait jamais être atteint sans remplir le disque.
+function getTempMaxTotalBytes(): number {
+  const raw = Number(process.env.NEBULA_TEMP_MAX_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2 * 1024 * 1024 * 1024;
+}
+
+/**
+ * 8.83 — TTL GLISSANT des liens de téléchargement (NEBULA_LINK_TTL_MIN).
+ * Défaut 30 min, borné [5, 120]. Chaque téléchargement (GET/HEAD, ranges
+ * inclus) relance le délai via touchTempDownload ; la vie TOTALE d'un lien
+ * reste plafonnée à 2 h (MAX_LIFETIME_MS) pour préserver l'invariant
+ * multi-bots du scan orphelin (seuil 3 h > 2 h de vie possible).
+ */
+export function getLinkTtlMinutes(): number {
+  const raw = Number(process.env.NEBULA_LINK_TTL_MIN);
+  const v = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 30;
+  return Math.min(120, Math.max(5, v));
+}
+
+/** Durée de vie TOTALE maximale d'un lien (de la création à la mort). */
+const MAX_LIFETIME_MS = 2 * 60 * 60 * 1000;
 const TEMP_MAX_RECORDS = 200;
 const ORPHAN_MAX_AGE_MS = 3 * 60 * 60 * 1000; // hard sweep for any orphan > 3h
 
@@ -38,11 +62,25 @@ const activeDownloads = new Map<string, TempDownloadRecord>();
 let detectedServerBaseUrl = process.env.APP_URL || process.env.PUBLIC_URL || "";
 
 /**
+ * 9.15b (retour owner) : un APP_URL/PUBLIC_URL sans schéma produisait des
+ * liens « dash2.exemple.com/api/... ». Ouverts depuis la page HTML livrée
+ * (que WhatsApp Desktop enregistre dans son dossier transfers), un lien
+ * sans schéma se résout en CHEMIN LOCAL — file:///C:/.../transfers/
+ * dash2.exemple.com/... — et ne télécharge rien. Normalisation : https://
+ * ajouté si absent, slashes finaux retirés, whitspace trimé. Pur — testé.
+ */
+export function normalizePublicBaseUrl(url: string): string {
+  const clean = String(url || "").trim().replace(/\/+$/, "");
+  if (!clean) return "";
+  return /^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\//.test(clean) ? clean : `https://${clean}`;
+}
+
+/**
  * Update the runtime server base URL if detected from an incoming request.
  */
 export function updateServerBaseUrl(url: string) {
   if (!url) return;
-  const cleanUrl = url.replace(/\/+$/, "");
+  const cleanUrl = normalizePublicBaseUrl(url);
   const isLocal = cleanUrl.includes("localhost") || cleanUrl.includes("127.0.0.1") || cleanUrl.includes("0.0.0.0");
 
   // If we haven't set any URL, or if we currently have localhost but received a real external public host, update it
@@ -55,16 +93,54 @@ export function updateServerBaseUrl(url: string) {
  * Get current public base URL for generating absolute links.
  */
 export function getServerBaseUrl(): string {
+  // 9.15b : schéma TOUJOURS présent, quelle que soit la source (auto-guérison
+  // d'un APP_URL édité sans https:// — les liens restent cliquables).
   if (process.env.APP_URL) {
-    return process.env.APP_URL.replace(/\/+$/, "");
+    return normalizePublicBaseUrl(process.env.APP_URL);
   }
   if (process.env.PUBLIC_URL) {
-    return process.env.PUBLIC_URL.replace(/\/+$/, "");
+    return normalizePublicBaseUrl(process.env.PUBLIC_URL);
   }
   if (detectedServerBaseUrl) {
-    return detectedServerBaseUrl;
+    return normalizePublicBaseUrl(detectedServerBaseUrl);
   }
   return "";
+}
+
+// ── 8.88 : purge owner (.purge / .p) — cf. services/diskPurge.ts ────────────
+
+/** Dossier du store des fichiers livrés (chemin réel). */
+export function getTempDownloadDir(): string {
+  return TEMP_DOWNLOAD_DIR;
+}
+
+/** Records vivants de CE moteur (la purge décide ; les autres moteurs ne sont pas visibles). */
+export function listTempRecords(): TempDownloadRecord[] {
+  return Array.from(activeDownloads.values());
+}
+
+/** Suppression immédiate de records (fichier + index). Ne jette jamais. */
+export function purgeTempRecords(tokens: string[]): { deletedCount: number; deletedBytes: number; failedCount: number } {
+  let deletedCount = 0;
+  let deletedBytes = 0;
+  let failedCount = 0;
+  for (const token of tokens) {
+    const record = activeDownloads.get(token);
+    if (!record) continue;
+    try {
+      let size = 0;
+      try {
+        size = fs.statSync(record.filePath).size;
+        fs.rmSync(record.filePath, { force: true });
+      } catch {} // fichier déjà absent : le record doit quand même disparaître
+      activeDownloads.delete(token);
+      deletedCount++;
+      deletedBytes += size;
+    } catch {
+      failedCount++;
+    }
+  }
+  return { deletedCount, deletedBytes, failedCount };
 }
 
 /**
@@ -81,7 +157,10 @@ export function registerTempDownload(
     mimeType?: string;
     ttlMinutes?: number;
     moveFile?: boolean;
+    /** 9.15 : sert le fichier TEL QUEL (cache de réutilisation) — aucune copie. */
+    noCopy?: boolean;
     meta?: Record<string, any>;
+    jobId?: string;
   }
 ): {
   token: string;
@@ -100,11 +179,17 @@ export function registerTempDownload(
   const isZip = filename.toLowerCase().endsWith(".zip") || options?.mimeType === "application/zip";
   const stat = fs.statSync(sourcePath);
   const sizeBytes = stat.size;
-  const sizeMB = Number((sizeBytes / (1024 * 1024)).toFixed(2));
+  const sizeMB = Number((sizeBytes / 1e6).toFixed(2)); // 9.18mm — Mo décimaux (affichage) : coller aux navigateurs/WhatsApp ; sizeBytes reste la vérité pour la logique
   
-  // Generated ZIP archives have a strict 60 minutes TTL to optimize server storage
-  const defaultTtl = isZip ? 60 : 120;
-  const ttlMinutes = options?.ttlMinutes !== undefined ? (isZip ? Math.min(options.ttlMinutes, 60) : options.ttlMinutes) : defaultTtl;
+  // 8.83 : TTL glissant — défaut NEBULA_LINK_TTL_MIN (30 min) ; une valeur
+  // explicite reste honorée, bornée [5, 120]. L'ancien cap dur de 60 min
+  // des ZIP est remplacé par le plafond de vie totale (2 h) appliqué dans
+  // touchTempDownload.
+  const requestedTtl = options?.ttlMinutes;
+  const ttlMinutes =
+    requestedTtl !== undefined
+      ? Math.min(120, Math.max(5, Math.floor(requestedTtl)))
+      : getLinkTtlMinutes();
   const mimeType = options?.mimeType || (isZip ? "application/zip" : filename.endsWith(".mp4") ? "video/mp4" : "application/octet-stream");
 
   // Secure unguessable 48-char random token
@@ -113,16 +198,24 @@ export function registerTempDownload(
   if (activeDownloads.size >= TEMP_MAX_RECORDS) {
     throw new Error("Temporary download storage is full (record limit). Please try again later.");
   }
-  if (currentTotal + sizeBytes > TEMP_MAX_TOTAL_BYTES) {
+  // 9.15 : noCopy = le fichier vit dans le cache de réutilisation (cap dédié
+  // NEBULA_REUSE_MAX_MB) — il n'entre pas dans le quota du coffre temporaire.
+  if (!options?.noCopy && currentTotal + sizeBytes > getTempMaxTotalBytes()) {
     throw new Error("Temporary download storage quota reached. Please try again later.");
   }
 
   const token = crypto.randomBytes(24).toString("hex");
   const sanitizedName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const destinationPath = path.join(TEMP_DOWNLOAD_DIR, `${token}_${sanitizedName}`);
+  // noCopy : le token sert le fichier TEL QUEL (chemin du cache 9.15) — zéro
+  // copie disque, livraison instantanée.
+  const destinationPath = options?.noCopy
+    ? path.resolve(sourcePath)
+    : path.join(TEMP_DOWNLOAD_DIR, `${token}_${sanitizedName}`);
 
   // Move or copy file into dedicated temp store
-  if (options?.moveFile) {
+  if (options?.noCopy) {
+    // rien à déplacer — voir ci-dessus
+  } else if (options?.moveFile) {
     try {
       fs.renameSync(sourcePath, destinationPath);
     } catch {
@@ -148,7 +241,8 @@ export function registerTempDownload(
     createdAt: now,
     expiresAt,
     downloadCount: 0,
-    meta: options?.meta
+    meta: options?.meta,
+    jobId: options?.jobId
   };
 
   activeDownloads.set(token, record);
@@ -173,6 +267,25 @@ export function registerTempDownload(
 /**
  * Retrieve active download record by token, verifying TTL and file presence.
  */
+/**
+ * 8.83 — TTL glissant : chaque téléchargement relance le délai d'expiration
+ * de CE fichier. Ne ressuscite jamais un lien expiré, ne lève jamais, et ne
+ * dépasse jamais createdAt + 2 h (vie totale plafonnée).
+ */
+export function touchTempDownload(token: string): boolean {
+  const record = activeDownloads.get(token);
+  if (!record) return false;
+  const now = Date.now();
+  if (now > record.expiresAt) return false; // expiré : on ne ressuscite pas
+  try {
+    if (!fs.existsSync(record.filePath)) return false;
+  } catch {
+    return false;
+  }
+  record.expiresAt = Math.min(now + getLinkTtlMinutes() * 60 * 1000, record.createdAt + MAX_LIFETIME_MS);
+  return true;
+}
+
 export function getTempDownload(token: string): TempDownloadRecord | null {
   const record = activeDownloads.get(token);
   if (!record) return null;
@@ -209,8 +322,9 @@ export function cleanupExpiredZipFiles(): { cleanedFiles: number; freedBytes: nu
 
   // 1. Sweep expired in-memory active download records
   for (const [token, record] of activeDownloads) {
-    const isZip = record.filename.toLowerCase().endsWith(".zip") || record.mimeType === "application/zip";
-    const isExpired = now > record.expiresAt || (isZip && (now - record.createdAt) >= ZIP_MAX_AGE_MS);
+    // 8.83 : seul expiresAt décide (TTL glissant, plafonné à 2 h de vie
+    // totale) — l'ancienne clause « zip tué à 60 min d'âge » est retirée.
+    const isExpired = now > record.expiresAt;
 
     if (isExpired) {
       try {
@@ -227,19 +341,25 @@ export function cleanupExpiredZipFiles(): { cleanedFiles: number; freedBytes: nu
     }
   }
 
-  // 2. Scan TEMP_DOWNLOAD_DIR for orphaned files: ZIPs older than 60 min,
-  // any other file older than 3h (safety net for records that were never
-  // accessed after their TTL expired).
+  // 2. Scan TEMP_DOWNLOAD_DIR for orphaned files: anything older than 3h
+  // (safety net for records that were never accessed after their TTL
+  // expired). 8.83 : les fichiers ayant un record VIVANT dans CE moteur ne
+  // sont jamais purgés ici, même vieux — le TTL glissant peut les servir
+  // jusqu'à 2 h. Le seuil orphelin est unifié à 3 h (> vie totale max 2 h)
+  // pour ne jamais supprimer un fichier encore servi par un AUTRE moteur
+  // (dossier partagé, records non visibles entre moteurs).
+  const livePaths = new Set<string>();
+  for (const record of activeDownloads.values()) livePaths.add(record.filePath);
   try {
     if (fs.existsSync(TEMP_DOWNLOAD_DIR)) {
       const files = fs.readdirSync(TEMP_DOWNLOAD_DIR);
       for (const file of files) {
         const fullPath = path.join(TEMP_DOWNLOAD_DIR, file);
+        if (livePaths.has(fullPath)) continue;
         try {
           const stats = fs.statSync(fullPath);
           const ageMs = now - stats.mtimeMs;
-          const isZip = file.toLowerCase().endsWith(".zip");
-          const maxAge = isZip ? ZIP_MAX_AGE_MS : ORPHAN_MAX_AGE_MS;
+          const maxAge = ORPHAN_MAX_AGE_MS;
           if (ageMs >= maxAge) {
             freedBytes += stats.size;
             fs.unlinkSync(fullPath);
@@ -253,29 +373,31 @@ export function cleanupExpiredZipFiles(): { cleanedFiles: number; freedBytes: nu
     console.warn("[TempDownload] Error scanning TEMP_DOWNLOAD_DIR:", err.message);
   }
 
-  // 3. Scan os.tmpdir() for any temporary batch_*.zip or Novabox zip leftovers older than 60 minutes
+  // 3. 8.90 : débris animés À LA RACINE du tmpdir (préfixes batch_/comp_/
+  // nebula_ytdlp_/… + fichiers média — cf. services/tmpDebris.ts). L'ancien
+  // scan ne voyait que certains .zip : les épisodes .mp4 interrompus
+  // (update en plein batch, crash) restaient à jamais. Politique d'âge
+  // conservatrice (3 h, alignée sur le seuil orphelin) + fenêtre des claims
+  // vivants : un batch en cours n'est jamais saboté.
   try {
-    const tmpFiles = fs.readdirSync(os.tmpdir());
-    for (const file of tmpFiles) {
-      if (file.toLowerCase().endsWith(".zip") && (file.includes("batch") || file.includes("Complete") || file.includes("nebula") || file.includes("Novabox"))) {
-        const fullPath = path.join(os.tmpdir(), file);
-        try {
-          const stats = fs.statSync(fullPath);
-          const ageMs = now - stats.mtimeMs;
-          if (ageMs >= ZIP_MAX_AGE_MS) {
-            freedBytes += stats.size;
-            fs.unlinkSync(fullPath);
-            cleanedFiles++;
-            console.log(`[TempDownload] 🧹 Purged batch ZIP from system tmpdir: ${file} (Age: ${Math.round(ageMs / 60000)}m)`);
-          }
-        } catch {}
-      }
+    const debrisPlan = planTmpRootDebris(scanTmpRoot(os.tmpdir()), {
+      liveClaims: listDiskClaims().map(c => ({ jobId: c.jobId, createdAt: c.createdAt })),
+      now,
+      minAgeMs: ORPHAN_MAX_AGE_MS
+    });
+    for (const e of debrisPlan.toDelete) {
+      try {
+        fs.rmSync(e.fullPath, { recursive: true, force: true });
+        freedBytes += e.sizeBytes;
+        cleanedFiles++;
+        console.log(`[TempDownload] 🧹 Purged tmp root debris: ${e.name} (Age: ${Math.round((now - e.mtimeMs) / 60000)}m)`);
+      } catch {}
     }
   } catch {}
 
   const freedMB = Number((freedBytes / (1024 * 1024)).toFixed(2));
   if (cleanedFiles > 0) {
-    console.log(`[TempDownload] 🧹 Automated Cleanup Completed: ${cleanedFiles} ZIP file(s) deleted, ${freedMB} MB freed from server storage.`);
+    console.log(`[TempDownload] 🧹 Automated Cleanup Completed: ${cleanedFiles} expired file(s) deleted, ${freedMB} MB freed from server storage.`);
   }
 
   return { cleanedFiles, freedBytes, freedMB };
@@ -330,9 +452,88 @@ export function getTempStorageStats() {
   };
 }
 
+/**
+ * Startup purge (audit 8.16). The token registry lives in memory, so after a
+ * restart EVERY file in TEMP_DOWNLOAD_DIR is unreachable — including debris
+ * from OOM-killed runs (kernel kills bypass `finally` cleanup) that otherwise
+ * lingers up to 3h and saturates the 4 GB quota: a fresh batch then fails
+ * with "Temporary download storage quota reached" even though nothing valid
+ * is stored. Also removes cat_catch_* HLS staging dirs and batch_zip_* dirs
+ * from os.tmpdir(), which no other sweep covers. Safe with a single bot
+ * instance (the documented deployment); tokens of the previous process died
+ * with it, so the files are already unreachable.
+ */
+export function purgeStartupOrphans(): { cleanedItems: number; freedBytes: number } {
+  let cleanedItems = 0;
+  let freedBytes = 0;
+
+  // 9.18m (audit Novabox, flake CI récurrent) : le store réel est PARTAGÉ
+  // entre moteurs (et entre workers de test sur un même hôte) — la purge
+  // boot ne doit supprimer que ce qu'aucun claim vivant ne peut revendiquer.
+  // Un fichier créé APRÈS le début du batch le plus ancien appartient
+  // peut-être à un autre moteur en pleine exécution → épargné (il sera
+  // balayé au prochain boot sans claim, ou par le TTL du nettoyage
+  // périodique). Avant ce correctif, le redémarrage d'un bot supprimait les
+  // téléchargements en vol de l'autre (multi-bots), et en CI un worker
+  // pouvait voler les débris d'un autre → comptages flaky.
+  const liveClaims = listDiskClaims().map((c) => ({ jobId: c.jobId, createdAt: c.createdAt }));
+  const oldestClaimStart = liveClaims.length ? Math.min(...liveClaims.map((c) => c.createdAt)) : null;
+
+  try {
+    if (fs.existsSync(TEMP_DOWNLOAD_DIR)) {
+      for (const file of fs.readdirSync(TEMP_DOWNLOAD_DIR)) {
+        const fullPath = path.join(TEMP_DOWNLOAD_DIR, file);
+        try {
+          const st = fs.statSync(fullPath);
+          if (oldestClaimStart !== null && st.mtimeMs >= oldestClaimStart) {
+            continue; // fichier frais d'un batch vivant → épargné (conservateur)
+          }
+          freedBytes += st.size;
+          fs.rmSync(fullPath, { recursive: true, force: true });
+          cleanedItems++;
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // 8.90 : mêmes patterns que .purge et le nettoyage périodique (source de
+  // vérité partagée : services/tmpDebris.ts) — âge 0 au boot (les débris du
+  // process mort sont inatteignables), mais fenêtre des claims vivants
+  // respectée : un AUTRE moteur peut être en plein batch (multi-bots).
+  try {
+    const debrisPlan = planTmpRootDebris(scanTmpRoot(os.tmpdir()), {
+      liveClaims,
+      now: Date.now(),
+      minAgeMs: 0
+    });
+    for (const e of debrisPlan.toDelete) {
+      try {
+        freedBytes += e.sizeBytes;
+        fs.rmSync(e.fullPath, { recursive: true, force: true });
+        cleanedItems++;
+      } catch {}
+    }
+  } catch {}
+
+  if (cleanedItems > 0) {
+    console.log(
+      `[TempDownload] 🧹 Startup purge: ${cleanedItems} orphaned item(s) removed, ` +
+        `${(freedBytes / 1048576).toFixed(2)} MB freed.`
+    );
+  }
+  return { cleanedItems, freedBytes };
+}
+
 // Background cleanup task running every 5 minutes to guarantee ZIP files are cleaned up within 60 minutes
 const cleanupTimer = setInterval(sweepExpiredDownloads, 5 * 60 * 1000);
 cleanupTimer.unref();
 
-// Run immediate cleanup sweep on startup
-sweepExpiredDownloads();
+// Startup: purge unreachable debris first (audit 8.16), then the regular sweep
+// 8.90 : sous vitest, les workers parallèles créent des fichiers racine
+// frais (ex. novaboxBatchFlow) qu'une purge à âge 0 détruirait en plein
+// test — le comportement reste couvert par l'appel explicite de
+// tests/tempDownloadPurge.test.ts.
+if (!process.env.VITEST) {
+  purgeStartupOrphans();
+  sweepExpiredDownloads();
+}

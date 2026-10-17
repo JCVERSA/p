@@ -5,12 +5,9 @@ const DB_DIR = process.env.NEBULA_DATA_DIR || path.join(process.cwd(), "database
 
 // Core group settings schema
 export interface GroupSettings {
-  antilink: boolean;
-  antilinkAction: "delete" | "kick";
-  antitag: boolean;
-  antitagAction: "delete" | "kick";
-  antibot: boolean;
-  antibotAction: "delete" | "kick" | "warn";
+  // Moderation fields (antilink/antitag/antibot) were removed with their
+  // commands and engine hooks (8.59/8.61). Legacy keys found in an existing
+  // groups.json are tolerated at load time (spread merge) and ignored.
   welcome: boolean;
   welcomeMessage: string;
   goodbye: boolean;
@@ -23,12 +20,6 @@ export interface UserWarning {
 }
 
 const defaultGroupSettings: GroupSettings = {
-  antilink: false,
-  antilinkAction: "delete",
-  antitag: false,
-  antitagAction: "delete",
-  antibot: false,
-  antibotAction: "delete",
   welcome: false,
   welcomeMessage: "👋 Welcome @user to our group *@group*! Enjoy your stay!",
   goodbye: false,
@@ -179,6 +170,20 @@ export const database = {
   },
 
   /** Backup/restore support (validated upstream): replace all group settings. */
+  /** Backup support: dump every cached group's settings. */
+  getAllGroups(): Record<string, GroupSettings> {
+    const out: Record<string, GroupSettings> = {};
+    for (const [key, val] of groupsCache.entries()) out[key] = { ...val };
+    return out;
+  },
+
+  /** Backup support: dump every cached warning entry. */
+  getAllWarnings(): Record<string, UserWarning> {
+    const out: Record<string, UserWarning> = {};
+    for (const [key, val] of warningsCache.entries()) out[key] = { count: val.count, reasons: [...val.reasons] };
+    return out;
+  },
+
   replaceAllGroups(entries: Record<string, Partial<GroupSettings>>): number {
     groupsCache.clear();
     for (const [key, val] of Object.entries(entries || {})) {
@@ -191,7 +196,9 @@ export const database = {
   /** Backup/restore support: replace all warnings (bounded). */
   replaceAllWarnings(entries: Record<string, UserWarning>): number {
     warningsCache.clear();
-    for (const [key, val] of Object.entries(entries || {})) {
+    // Defense in depth (audit 8.32): bound internally even if a caller forgets
+    // the route-level guard — mirrors the WARNINGS_CACHE_MAX used by addWarning.
+    for (const [key, val] of Object.entries(entries || {}).slice(0, WARNINGS_CACHE_MAX)) {
       warningsCache.set(key, {
         count: Math.min(Math.max(0, Number(val?.count) || 0), 10_000),
         reasons: Array.isArray(val?.reasons) ? val.reasons.map(String).slice(-WARNING_REASONS_MAX) : [],

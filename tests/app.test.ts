@@ -125,13 +125,13 @@ describe("Simulation playground", () => {
     expect(res.body.text).toContain("Nebula Bot - Status");
   });
 
-  it("runs .roast me without crashing (mock sock)", async () => {
+  it("runs .help without crashing (mock sock)", async () => {
     const res = await request(app)
       .post("/api/bot/simulate")
       .set(auth)
-      .send({ senderName: "Tester", text: ".roast me" });
+      .send({ senderName: "Tester", text: ".help" });
     expect(res.status).toBe(200);
-    expect(res.body.text).toContain("Nebula Roast");
+    expect(res.body.text).toContain("Nebula Engine");
   });
 
   it("runs .menu with the command directory", async () => {
@@ -140,8 +140,10 @@ describe("Simulation playground", () => {
       .set(auth)
       .send({ senderName: "Tester", text: ".menu" });
     expect(res.status).toBe(200);
-    expect(res.body.text).toContain("SERVICES");
-    expect(res.body.text).toContain("Powered by Nebula Engine");
+    // Menu style Na (8.60) : sections encadrées + footer owner.
+    expect(res.body.text).toContain("TOOLS & UTILITY");
+    expect(res.body.text).toContain("Dark Neon");
+    expect(res.body.text).toContain("wa.me/237640143760");
   });
 
   it("reports unknown commands gracefully", async () => {
@@ -334,6 +336,51 @@ describe("Project archive download", () => {
       expect(res.status).toBe(404);
     }
   });
+
+  it("2026-10-11 (audit J-5) : le zip exige l'auth panneau — SANS session → 401, jamais public", async () => {
+    const res = await request(app).get("/nebula-bot-latest.zip");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("9.18 — User manager routes", () => {
+  it("GET /api/bot/users : forme paginée avec compteurs (tri par défaut côté serveur)", async () => {
+    const res = await request(app).get("/api/bot/users").set(auth);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.users)).toBe(true);
+    expect(res.body.counts).toBeTruthy();
+    expect(typeof res.body.total).toBe("number");
+    expect(typeof res.body.limit).toBe("number");
+  });
+
+  it("GET /api/bot/users/export : CSV authentifié, 401 sans session", async () => {
+    const res = await request(app).get("/api/bot/users/export").set(auth);
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/csv");
+    const res2 = await request(app).get("/api/bot/users/export");
+    expect(res2.status).toBe(401);
+  });
+
+  it("détail d'un jid inconnu : 404 honnête", async () => {
+    const res = await request(app).get("/api/bot/users/inconnu@s.whatsapp.net/detail").set(auth);
+    expect(res.status).toBe(404);
+  });
+
+  it("bulk ban : l'owner est ignoré, jamais banni (garde multi-jids)", async () => {
+    process.env.OWNER_NUMBER = "237640143760";
+    try {
+      const res = await request(app)
+        .post("/api/bot/users/action-bulk")
+        .set(auth)
+        .send({ jids: ["237640143760@s.whatsapp.net", "237600000099@s.whatsapp.net"], action: "ban" });
+      expect(res.status).toBe(200);
+      expect(res.body.skippedOwner).toBe(1);
+      expect(res.body.applied).toBe(0); // l'autre jid est inconnu du répertoire → notFound
+      expect(res.body.notFound).toBe(1);
+    } finally {
+      delete process.env.OWNER_NUMBER;
+    }
+  });
 });
 
 describe("Rate limiting", () => {
@@ -456,10 +503,13 @@ describe("System and commands checkup diagnostics", () => {
     const names = res.body.tests.map((t: any) => t.name);
     expect(names).not.toContain("Weather API Integration");
 
-    // M12: vendor breakage must be visible, not silent.
-    const bridge = res.body.tests.find((t: any) => t.name === "Vendored Command Bridge");
-    expect(bridge).toBeDefined();
-    expect(typeof bridge.details.skipped).toBe("number");
+    // 8.56: the vendored CJS bridge was REMOVED (owner decision) — the
+    // checkup must not resurrect it, and the registry validation it hosted
+    // stays the authoritative registry diagnostic.
+    expect(names).not.toContain("Vendored Command Bridge");
+    const registry = res.body.tests.find((t: any) => t.name === "Command Registry Validation");
+    expect(registry).toBeDefined();
+    expect(registry.status).toBe("pass");
   });
 });
 
