@@ -36,6 +36,13 @@ import { checkAIQuota, consumeAIQuota, withAIConcurrency } from "./aiQuota.js";
 import { setWatchSender, startWatchScheduler } from "./services/episodeWatchService.js";
 import { setDigestSender, startDigestScheduler } from "./services/digestService.js";
 import { startBackupScheduler } from "./services/backupService.js";
+import {
+  assessDowntime,
+  formatDowntimeDuration,
+  formatReturnMessage,
+  readLivenessMarker,
+  startLivenessHeartbeat
+} from "./services/downtimeService.js";
 import { dispatchBotCommand, type DispatchInfo } from "./commandDispatch.js";
 import { handleAgentMessage, messageAddressesBot, type AgentMessageInfo, type AgentExecutor } from "./services/agentRunner.js";
 import { handleIncomingCalls } from "./services/callGate.js";
@@ -506,6 +513,12 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
     return;
   }
 
+  // 9.18zz — marqueur de vie : on capture l'état AVANT que les heartbeats
+  // de ce process ne le rafraîchissent. Périmé = le moteur était absent
+  // (chute / reboot / arrêt) → la reconnexion notifiera la durée à l'owner.
+  const bootAliveAt = readLivenessMarker()?.at ?? null;
+  startLivenessHeartbeat();
+
   if (pairingPhone) {
     botState.connectionMode = "pair_code";
     botState.pairingNumber = pairingPhone.replace(/[^0-9]/g, "");
@@ -675,7 +688,16 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         if (ownerDigits.length >= 8) {
           // 9.18yy (F6) : LID mémorisé en priorité (routage direct), sinon PN.
           const ownerJid = ownerDeliveryJid(ownerDigits);
-          sock.sendMessage(ownerJid, { text: `🌌 *${config.botName}* is online and connected!\nPrefix: \`${config.prefix}\`` }).catch(() => {});
+          // 9.18zz : si le marqueur capturé au démarrage était périmé, le
+          // moteur était réellement tombé — on chiffre la coupure au lieu
+          // du simple « online » (notification de chute sans FCM).
+          const downtime = assessDowntime(bootAliveAt, Date.now());
+          if (downtime.notify) {
+            addLog(`🔄 [CHUTE] retour après ${formatDowntimeDuration(downtime.downtimeMs)} d'indisponibilité`);
+            sock.sendMessage(ownerJid, { text: formatReturnMessage(config.botName, downtime) }).catch(() => {});
+          } else {
+            sock.sendMessage(ownerJid, { text: `🌌 *${config.botName}* is online and connected!\nPrefix: \`${config.prefix}\`` }).catch(() => {});
+          }
         }
 
         // Episode watcher (`.a watch`, audit S4): refresh the sender with the
