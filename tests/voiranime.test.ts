@@ -153,7 +153,7 @@ describe("wiring 9.9 (novabox + guidage agent)", () => {
     expect(src).not.toContain('quickParams.language === "VOSTFR" ? "as"');
     // L'écran VOSTFR filtré et son message honnête sont branchés (2 flux).
     expect(src).toContain('organizeVfScreen(searchResults, { explicitVostfr: true })');
-    expect(src).toContain("vostfrMissingMessage(");
+    expect(src).toContain("resolveVostfrRequest("); // 9.18sss : bascule auto
   });
 
   it("les DEUX écrans de sélection organisent le VF par défaut", () => {
