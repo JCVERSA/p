@@ -241,3 +241,62 @@ describe("9.18ppp — complétion de franchise : les saisons ratées par la rech
     expect(results[0].language).toBe("VF"); // VF-first inchangé
   });
 });
+
+describe("9.18rrr — la VOSTFR vient du catalogue par défaut (voir-anime)", () => {
+  it("le détour 9.9 (VOSTFR → autre catalogue) est retiré : la VOSTFR suit le défaut", () => {
+    const src = fs.readFileSync(path.resolve(process.cwd(), "src/bot/commands/novabox.ts"), "utf-8");
+    expect(src).not.toContain('quickParams.language === "VOSTFR" ? "as"');
+    expect(src).toContain("quickParams.source || effectiveDefaultSource()");
+  });
+
+  it("organizeVfScreen(explicitVostfr) : entrées VOSTFR organisées, SANS la note « Aucune entrée VF »", async () => {
+    const { organizeVfScreen } = await import("../src/bot/commands/novabox.js");
+    const vostfrOnly = [
+      { title: "X Saison 2", url: "u2", slug: "x-2", isVf: false, language: "VOSTFR" },
+      { title: "X Saison 1", url: "u1", slug: "x", isVf: false, language: "VOSTFR" },
+    ] as never[];
+    const screen = organizeVfScreen(vostfrOnly, { explicitVostfr: true });
+    expect(screen.results).toHaveLength(2);
+    expect(screen.results[0]).toMatchObject({ slug: "x" }); // saisons triées
+    expect(screen.note).toBeNull(); // la VOSTFR était DEMANDÉE : pas de note VF
+    expect(screen.labels!.get(screen.results[1] as never)).toContain("Saison 2");
+    // Sans l'option (écran par défaut), la note honnête reste là.
+    expect(organizeVfScreen(vostfrOnly).note).toContain("Aucune entrée VF");
+  });
+
+  it("vostfrMissingMessage : wording de la politique de langue — l'agent le reconnaît (contrat 8.94)", async () => {
+    const { vostfrMissingMessage } = await import("../src/bot/commands/novabox.js");
+    const { replySuggestsOtherCatalog } = await import("../src/bot/services/agentBrain.js");
+    const msg = vostfrMissingMessage("tokyo ghoul", true);
+    expect(msg).toContain("Aucun VOSTFR pour ce titre sur ce catalogue");
+    expect(msg).toContain("`.a as tokyo ghoul vostfr`");
+    expect(msg).toContain("existe en VF"); // la note VF quand c'est vrai
+    expect(replySuggestsOtherCatalog(msg)).toBe(true); // l'agent proposera le retry
+    expect(replySuggestsOtherCatalog(vostfrMissingMessage("zzz", false))).toBe(true);
+    expect(vostfrMissingMessage("zzz", false)).not.toContain("existe en VF");
+  });
+
+  it("écran VOSTFR filtré : le wiring garde la liste complète (bascule .a vf retrouve la VF)", async () => {
+    const { wireSessionSeasons } = await import("../src/bot/commands/novabox.js");
+    const vf = { title: "X Saison 1", url: "https://voir-anime.to/anime/x-vf/", slug: "x-vf", isVf: true, language: "VF" };
+    const vostfr = { title: "X Saison 1", url: "https://voir-anime.to/anime/x/", slug: "x", isVf: false, language: "VOSTFR" };
+    const session: any = {
+      source: "va",
+      searchResults: [vostfr], // l'écran n'a montré que la VOSTFR
+      fullVaResults: [vf, vostfr], // la liste complète part en session (9.18rrr)
+      animeTitle: "X",
+      animeUrl: vostfr.url,
+      languages: [],
+      seasons: []
+    };
+    const r1: any = await wireSessionSeasons(session, vostfr, "VOSTFR");
+    expect(r1.status).toBe("ok");
+    expect(r1.language).toBe("VOSTFR");
+    expect(session.seasons).toHaveLength(1);
+    // Bascule `.a vf` : la saison VF est retrouvée grâce à la liste complète.
+    const r2: any = await wireSessionSeasons(session, vf, "VF");
+    expect(r2.status).toBe("ok");
+    expect(r2.language).toBe("VF");
+    expect(session.seasons[0].url).toContain("-vf/");
+  });
+});

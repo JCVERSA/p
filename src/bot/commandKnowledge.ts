@@ -27,14 +27,14 @@ const ANIME_GUIDE = (p: string) => `## ${p}a — télécharger un anime (alias $
 Flux interactif, étape par étape :
 1. \`${p}a <titre>\` (ex. \`${p}a solo leveling\`) → liste de résultats
 2. \`${p}a <numéro>\` → choisit l'anime (ex. \`${p}a 1\`)
-3. Langue : VF par défaut ; \`${p}a <titre> vostfr\` force la VOSTFR (VF absente → les saisons VOSTFR sont listées, bien étiquetées)
+3. Langue : VF par défaut ; \`${p}a <titre> vostfr\` force la VOSTFR (écran VOSTFR seul ; VF absente → saisons VOSTFR listées) ; \`${p}a vostfr\`/\`${p}a vf\` basculent l'écran
 4. \`${p}a s<numéro>\` → choisit la saison (ex. \`${p}a s1\`) ; \`${p}a s1 d-\` pour toute la saison
 5. Épisodes : \`${p}a e2\` un épisode · \`${p}a e2,e5,e9\` une liste · \`${p}a 1-5\` une plage
 6. \`${p}a r <numéro>\` → choisit la qualité proposée (360P à 1080P selon la source)
 
 PILOTAGE AUTONOME (9.1) : téléchargement demandé → one-liner COMPLET (titre + \`sN\` + \`eN\` + qualité) et exécute-le (\`saison 3\`, \`épisode 12\` passent aussi). Liste numérotée en réponse : la demande désigne clairement une entrée → exécute \`${p}a <numéro>\` (défaut : entrée VF) ; vraiment ambigu → UNE question courte. Jamais de recherche identique après une liste ; les préférences (VF/VOSTFR, qualité non demandée) vont TOUJOURS à l'utilisateur.
 Qualité en une ligne — écris-la DIRECTEMENT (recommandé) : \`480p\` · \`720p\` · \`1080p\` · \`360p\` (ou flags \`r1\`=480p · \`r2\`=360p · \`r3\`=720p · \`r4\`=1080p — attention, pas l'ordre croissant !). Exemples : \`${p}a jjk s3 ep6 480p\` · \`${p}a jjk s3 all 720p\` · \`${p}a jjk s3 1-5 1080p\`. Si la qualité demandée n'existe pas, la commande prend la plus proche et le dit.
-Catalogues : \`${p}a <titre>\` = VF, liste organisée par saisons · VOSTFR → \`${p}a <titre> vostfr\` · \`${p}a as <titre>\` = catalogue complet
+Catalogues : \`${p}a <titre>\` = catalogue par défaut, VF d'abord puis entrées VOSTFR étiquetées à la suite (un numéro VOSTFR charge cette version) · VOSTFR → \`${p}a <titre> vostfr\` (même catalogue) · \`${p}a as <titre>\` = l'autre catalogue, en dépannage
 Titres : catalogues = titres INTERNATIONAUX (anglais/romaji) — traduis (« attack des titans » → \`attack on titan\`). Échec FR → réessaie en international.
 
 À savoir : maximum 12 épisodes par demande ; 1 épisode = lien direct, plusieurs = page HTML « Tout télécharger » ; les liens expirent après ~30 min d'inactivité — chaque téléchargement relance le délai (2 h max, ZIP inclus) ; session expirée (longue inactivité) → relancer \`${p}a <titre>\` ; \`${p}w <titre>\` pose une veille et notifie automatiquement dès qu'un nouvel épisode sort.`;
