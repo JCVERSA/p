@@ -2977,12 +2977,19 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       while (nextEpisodeIdx < indices.length) {
         if (quotaExceeded || memoryStop) break;
         const currentIdx = nextEpisodeIdx++;
+        const episodeWorkT0 = Date.now(); // 9.18dddd P1 : chrono par épisode
         await processEpisodeTask(currentIdx);
+        const episodeWorkMs = Date.now() - episodeWorkT0;
         gcBetweenEpisodes();
         // 8.50 OOM hardening: heavy batches (~120 MB/episode) pushed RSS into
         // the ~954 MB cgroup ceiling and the kernel killed the bot mid-batch.
         // Observe the footprint and back off when pressure rises.
+        const guardT0 = Date.now();
         const level = await enforceMemoryHeadroom(`batch episode ${currentIdx + 1}/${indices.length} done`);
+        const guardMs = Date.now() - guardT0;
+        console.log(
+          `[NOVABOX] ⏱️ ép. ${indices[currentIdx]} : travail ${(episodeWorkMs / 1000).toFixed(1)} s | garde ${(guardMs / 1000).toFixed(1)} s | cycle ${((episodeWorkMs + guardMs) / 1000).toFixed(1)} s`
+        );
         if (level === "critical") {
           console.warn(`[NOVABOX] Memory guard: RSS critical after headroom wait — deferring remaining episodes.`);
           memoryStop = true;
