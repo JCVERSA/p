@@ -6,6 +6,13 @@ export interface GroupMember {
 
 export interface BotCommandContext {
   sender: string;
+  /**
+   * 9.12 (audit B5) : JID de l'auteur RÉEL du message (participant en
+   * groupe, = sender en DM). Les écrans de choix interactifs (.ytv 1/2,
+   * piste audio) sont scopés par (chat, auteur) : en groupe, chacun a son
+   * choix en attente — plus d'écrasement ni de consommation croisée.
+   */
+  senderUser?: string;
   senderName: string;
   isOwner: boolean;
   /** True when the sender is a group admin (always false outside groups). */
@@ -32,6 +39,13 @@ export interface BotCommand {
   description: string;
   usage?: string;
   aliases?: string[];
+  /**
+   * 9.3b — la commande attend des URLs dans ses arguments (ytv, sweb,
+   * fetch, tiktok, instagram…). Le guardrail d'args de l'agent (8.99)
+   * supprime les URLs par défaut ; si cette propriété est vraie, les
+   * tokens URL sont préservés (cap dédié 500 chars).
+   */
+  acceptsUrlArgs?: boolean;
   execute: (sock: any, msg: any, context: BotCommandContext) => Promise<void> | void;
 }
 

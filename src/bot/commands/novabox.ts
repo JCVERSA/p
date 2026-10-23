@@ -1,25 +1,66 @@
 import { BotCommand, BotCommandContext } from "../types.js";
+import { addSubscription, removeSubscriptions, listSubscriptions, WATCH_MAX_PER_CHAT } from "../services/episodeWatchService.js";
 import axios from "axios";
-import * as cheerio from "cheerio";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { spawn } from "child_process";
-import ffmpegPath from "ffmpeg-static";
-import { execSync } from "child_process";
-
-let resolvedFfmpegPath = "ffmpeg";
-try {
-  execSync("ffmpeg -version", { stdio: "ignore" });
-  resolvedFfmpegPath = "ffmpeg";
-} catch {
-  resolvedFfmpegPath = ffmpegPath || "ffmpeg";
-}
-import { registerTempDownload } from "../tempDownloadManager.js";
+import {
+  registerTempDownload,
+  getLinkTtlMinutes,
+  wouldExceedTempQuota,
+  getTempStorageStats,
+  getTempMaxTotalBytes
+} from "../tempDownloadManager.js";
+import { animeReuseKey, lookupMediaReuse, storeMediaReuse } from "../services/mediaReuseStore.js";
+import { buildDownloadPage, registerDownloadPage } from "../services/downloadPage.js";
+import { formatFailedEpisodes, fastLaneMismatch } from "../services/batchRecap.js";
+import { animeProxyOptions } from "../services/scrapingProxy.js";
+import { isNakanimeUrl, nakanimeSeasons, nakanimeEpisodePlayers, nakanimeEpisodePlayersDetailed } from "../services/nakanimeClient.js"; // 8.69: dormant mirror — parse helpers only, never searched
+import { recordAnimeChoice } from "../services/animeChoices.js";
+import {
+  searchAnimeBySource,
+  applyLanguagePolicy,
+  type SourceSearchResult,
+  samaSubPathLanguage,
+  languagesOf,
+  effectiveDefaultSource,
+  otherFlagOf,
+  exactEntryForLanguage,
+  searchEmptyMessage,
+  vaDisabledMessage,
+  VA_DISABLED_CODE,
+  jtDisabledMessage,
+  JT_DISABLED_CODE,
+  sourceLogLabel,
+  type AnimeSourceId,
+  type SeasonLanguage,
+  type LanguagePolicyResult
+} from "../services/animeSources.js";
+import {
+  voiranimeEpisodes,
+  voiranimeEpisodePlayer,
+  resolveVoiranimeSeason,
+  type VoiranimeEpisode
+} from "../services/voiranimeClient.js";
+import {
+  jetanimesSeasons,
+  jetanimesSeasonEpisodes,
+  jetanimesEpisodePlayers,
+  type JetanimesEpisode
+} from "../services/jetanimesClient.js";
+import { bestAnimeMatch, formatAnimeCard } from "../services/jikanClient.js";
 import { isSafeDownloadUrl } from "../urlSafety.js";
 import { createBatchJob, updateEpisodeProgress, updateJobStatus } from "../batchDownloadManager.js";
+import { acquireDiskClaim, availableForNewClaims } from "../diskClaims.js";
 import { BatchZipManager } from "../services/batchZipManager.js";
-import { downloadHlsAppLevel } from "../services/hlsDownloader.js";
+import { downloadHlsAppLevel, resolveVidmolyUrlset, isDeadFileSlug, markDeadFileSlug } from "../services/hlsDownloader.js";
+import { createProgressReporter, type ProgressSendFn } from "../services/progressMessenger.js";
+import { resolveLiveSocket } from "../liveSocket.js";
+import { probeVideoInfo, whatsappFitVideoOptions, runFfmpegKit } from "../services/mediaToolkit.js";
+import { slimEffectiveTargetMB, slimEtaMinutes, slimTargetMB, slimTriggerBytes } from "../services/videoSlim.js";
+import { registerSlimOffer, slimOfferLine } from "../services/slimOffer.js";
+import { organizeVfSelection } from "../services/voiranimeClient.js";
+import { enforceMemoryHeadroom } from "../services/memoryGuard.js";
 import {
   resolveBestMirrorStream,
   executeDirectOrFfmpegDownload,
@@ -27,13 +68,18 @@ import {
   resolveAbsoluteUrl,
   robustFetchText,
   downloadWithAllMirrorsFallback,
+  fetchHlsTracksAndSizes,
+  resolveCanonicalQualityTrack,
+  HLS_FFMPEG_PROTOCOL_WHITELIST,
   StreamQualityTrack
 } from "../services/animeStreamExtractor.js";
 import {
   parseQuickDownloadParams,
   isExactAnimeMatch,
+  pickVaQuickAutoChoice,
   resolveRequestedSeason,
   resolveRequestedEpisodes,
+  canonicalResolutionForChoice,
   QuickDownloadParams
 } from "../utils/quickAnimeParser.js";
 
@@ -47,22 +93,42 @@ interface HlsVariant {
   headers?: Record<string, string>;
 }
 
-interface AnimeSession {
+export interface AnimeSession {
   step: "select_anime" | "language" | "season" | "episode" | "resolution" | "single_stream_choice";
-  searchResults?: Array<{ title: string; subtitle: string; url: string }>;
+  /** Chosen catalog (refonte 8.69): "as" (default) or "va" — mono-source flow. */
+  source: AnimeSourceId;
+  searchResults?: Array<{ title: string; subtitle: string; url: string; language?: SeasonLanguage; slug?: string }>;
   animeTitle: string;
   animeUrl: string;
   languages: string[];
   selectedLanguage?: string;
-  seasons: Array<{ name: string; subPath: string; url: string }>;
-  selectedSeason?: { name: string; subPath: string; url: string };
+  /** ALL seasons of the chosen catalog with their STRUCTURAL language —
+   * `.a vf` / `.a vostfr` re-filter this list without any network call. */
+  sourceSeasons?: Array<{ name: string; subPath: string; url: string; isVoiranime?: boolean; isJetanimes?: boolean; jtSeason?: number; jtLanguage?: "VF" | "VOSTFR" | null; language?: SeasonLanguage }>;
+  seasons: Array<{ name: string; subPath: string; url: string; isVoiranime?: boolean; isJetanimes?: boolean; jtSeason?: number; jtLanguage?: "VF" | "VOSTFR" | null }>;
+  selectedSeason?: { name: string; subPath: string; url: string; isVoiranime?: boolean; isJetanimes?: boolean; jtSeason?: number; jtLanguage?: "VF" | "VOSTFR" | null };
   episodes?: Record<number, string[]>;
+  episodeListLabels?: Record<number, { host: string; language: string }>; // nakanime: host+lang per list
+  voiranimeAnimeUrl?: string; // voir-anime.to VF path (audit 8.9)
+  voiranimeEpisodes?: VoiranimeEpisode[]; // positional episode list of the VF entry
+  /** 9.18gggg : liste positionnelle des épisodes d'une saison jetanimes
+   *  (players résolus paresseusement, comme voiranime). */
+  jetanimesEpisodes?: JetanimesEpisode[];
   selectedEpisodeIndex?: number;
   selectedEpisodeIndices?: number[]; // Multi-episode batch support
   isSeasonZipDownload?: boolean; // Full season download mode
   availableVariants?: HlsVariant[];
   selectedVariantUrl?: string;
   selectedVariantHeaders?: Record<string, string>;
+  /** 8.81 (retour terrain) : taille estimée (Mo) de la variante choisie —
+   *  alimente la réservation disque RÉELLE du batch (plus le plafond entier). */
+  selectedVariantEstimatedMB?: number;
+  languageForcedByUser?: boolean; // true after an explicit .a vf / .a vostfr
+  /** 9.18rrr : liste COMPLÈTE va derrière un écran VOSTFR filtré — la
+   *  bascule `.a vf`/`.a vostfr` doit retrouver les saisons des deux langues. */
+  fullVaResults?: SourceSearchResult[];
+  userSearchQuery?: string; // 8.55: raw user query — voir-anime indexes romaji,
+  // nakanime returns French titles; the VF probe needs BOTH as candidates.
   singleStreamDetected?: {
     label: string;
     resolution: string;
@@ -72,19 +138,79 @@ interface AnimeSession {
     originUrl: string;
   };
   forceCompress?: boolean;
+  pipelineStartedAt?: number; // quick-flow total latency diagnostics
   pendingQuickParams?: QuickDownloadParams;
+  /** 8.95 : question « continuer en <langue> ? » en attente (langue demandée
+   *  absente des deux catalogues, pipeline rapide — cf. .a oui / .a non). */
+  pendingLanguageConfirm?: {
+    chosen: { title: string; url: string };
+    language: "VF" | "VOSTFR"; // la langue effectivement listée (l'autre)
+  };
   timer: any;
 }
 
 // Global active sessions map for the multi-step flow
 const sessions = new Map<string, AnimeSession>();
+
+/** 8.95b : une question « continuer en <langue> ? » est-elle en attente
+ * pour cet utilisateur ? (routage DM du « oui »/« non » nu, botEngine) */
+export function hasPendingLanguageConfirm(senderJid: string): boolean {
+  const session = sessions.get(senderJid);
+  return !!session?.pendingLanguageConfirm;
+}
+
+/** 8.95b : vocabulaire NU accepté pour répondre à la question langue —
+ * « oui »/« ok »/« yes »/« go » vs « non »/« annuler »/« cancel ».
+ * Source unique partagée entre `.a oui` et le routage DM sans préfixe. */
+export function bareLanguageAnswer(text: string): "oui" | "non" | null {
+  const t = (text || "").trim().toLowerCase();
+  if (t === "oui" || t === "ok" || t === "yes" || t === "go") return "oui";
+  if (t === "non" || t === "annuler" || t === "cancel") return "non";
+  return null;
+}
 const MAX_ACTIVE_SESSIONS = 500;
 
-const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+const SESSION_TIMEOUT = 10 * 60 * 1000; // 10 minutes (8.70: 5 cut users mid-flow)
+
+/**
+ * 9.18sss : dernière recherche organisée (va) par utilisateur — un
+ * `.a vostfr` / `.a vf` SEUL rebascule l'écran sans retaper le titre.
+ * TTL = session ; en mémoire (un redémarrage invalide les écrans de toute façon).
+ */
+const lastVaSearches = new Map<string, { query: string; results: SourceSearchResult[]; ts: number }>();
+
+export function rememberVaSearch(sender: string, query: string, results: SourceSearchResult[]): void {
+  if (!sender || !query || !results.length) return;
+  lastVaSearches.set(sender, { query, results, ts: Date.now() });
+  if (lastVaSearches.size > 100) {
+    const cutoff = Date.now() - SESSION_TIMEOUT;
+    for (const [k, v] of lastVaSearches) if (v.ts < cutoff) lastVaSearches.delete(k);
+  }
+}
+
+export function getLastVaSearch(sender: string): { query: string; results: SourceSearchResult[] } | null {
+  const last = lastVaSearches.get(sender);
+  if (!last || Date.now() - last.ts > SESSION_TIMEOUT) return null;
+  return last;
+}
 
 // Resource ceilings for batch work triggered by untrusted WhatsApp users.
 const MAX_BATCH_EPISODES = Math.max(1, Number(process.env.NEBULA_NOVABOX_MAX_EPISODES || 12));
 const MAX_BATCH_TOTAL_MB = Math.max(1, Number(process.env.NEBULA_NOVABOX_MAX_BATCH_MB || 2048));
+
+/**
+ * 8.81 (retour terrain Cyberpunk) : besoin disque ESTIMÉ d'un batch —
+ * taille estimée d'un épisode × nombre d'épisodes × 1,5 (marge pour le TS
+ * transitoire, le mp4 compressé et le staging zip), plafonné au ceiling
+ * historique, plancher 50 Mo. La réservation disque inter-bots porte ce
+ * besoin RÉEL, plus le plafond entier de 2048 Mo : un batch de 3 épisodes
+ * ne bloque plus un disque petit alors qu'il ne nécessite que ~500 Mo.
+ */
+export function estimateBatchNeedMB(perEpisodeMB: number, episodes: number): number {
+  const per = Math.max(1, Number(perEpisodeMB) || 75);
+  const count = Math.max(1, Number(episodes) || 1);
+  return Math.min(MAX_BATCH_TOTAL_MB, Math.max(50, Math.ceil(per * count * 1.5)));
+}
 
 function clearUserSession(sender: string) {
   const session = sessions.get(sender);
@@ -102,11 +228,36 @@ function setUserSession(sender: string, session: AnimeSession) {
   sessions.set(sender, session);
 }
 
+/** Display label for a player mirror URL (e.g. "ansembed.net"). */
+function playerSourceLabel(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "Lecteur";
+  }
+}
+
 function sanitizeFilename(name: string): string {
   return name
     .replace(/[^a-zA-Z0-9_\-\[\]]/g, "_")
     .replace(/__+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+/**
+ * 9.18cccc : nom d'épisode CONSTRUIT segment par segment. L'ancien
+ * `filenameBase.replace("_480P_", "_1080P_")` remplaçait la PREMIÈRE
+ * occurrence — un titre contenant « _480P_ » (ex. « Solo 480P Edition »)
+ * faisait muter le TITRE et laissait la résolution mensongère. Pur — testé.
+ */
+export function buildEpisodeFilename(
+  animeClean: string,
+  lang: string,
+  res: string,
+  formattedSeason: string,
+  formattedEpisode: string
+): string {
+  return sanitizeFilename(`${animeClean}_${lang}_${res}_${formattedSeason}_${formattedEpisode}`) + ".mp4";
 }
 
 /** Rejects non-public fetch destinations before any server-side request. */
@@ -118,43 +269,41 @@ async function isPublicFetchTarget(rawUrl: string, label: string): Promise<boole
   return false;
 }
 
-// Search Anime Catalog
-async function searchAnime(query: string) {
-  const url = "https://anime-sama.to/template-php/defaut/fetch.php";
-  const params = new URLSearchParams();
-  params.append("query", query);
-  
-  const res = await axios.post(url, params, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    timeout: 8000
-  });
-
-  const $ = cheerio.load(res.data);
-  const results: Array<{ title: string; subtitle: string; url: string }> = [];
-
-  $(".asn-search-result").each((_, el) => {
-    const href = $(el).attr("href") || "";
-    const title = $(el).find(".asn-search-result-title").text().trim();
-    const subtitle = $(el).find(".asn-search-result-subtitle").text().trim();
-    if (href) {
-      results.push({ title, subtitle, url: href });
-    }
-  });
-
+// Search Anime Catalog (audit 8.53: nakanime FIRST — it works from the VPS
+// (no Cloudflare wall); anime-sama is demoted to LAST resort because it is
+// chronically 403 from the host IP range, see ANIME_DOWNLOAD_AUDIT.md R3).
+// voiranime is not a search source — results feed parseSeasons (catalog
+// pages); voiranime is probed FIRST at selection time as the VF-by-default
+// source (audit 8.53), with nakanime's VF lists as its fallback.
+// Exported for scripts/anime-repro.ts (one-shot pipeline replay used to debug
+// `.a` failures on the live host — see scripts/anime-repro.ts header).
+/**
+ * 8.69 (refonte sources choisies): mono-source search router. The catalog is
+ * chosen by the user (`va` flag / `as` flag) — there is NO fallback: an empty
+ * result IS the answer, the caller shows the other-flag hint.
+ * 9.18rrr (audit) : le défaut du paramètre EST le défaut effectif — l'ancien
+ * « as » codé dur contredisait effectiveDefaultSource() (va depuis 8.96) et
+ * piégeait tout nouvel appelant (scripts/anime-repro compris).
+ */
+export async function searchAnime(query: string, source: AnimeSourceId = effectiveDefaultSource()) {
+  const results = await searchAnimeBySource(query, source);
+  console.log(`[NOVABOX] ${sourceLogLabel(source)} search: ${results.length} result(s) for "${query}"`);
   return results;
 }
 
-// Parse main anime page for seasons (panneauAnime calls)
-async function parseSeasons(animeUrl: string) {
+// Parse main anime page for seasons (panneauAnime calls; nakanime mirror
+// uses its own season index). Exported for scripts/anime-repro.ts.
+export async function parseSeasons(animeUrl: string) {
+  if (isNakanimeUrl(animeUrl)) {
+    return nakanimeSeasons(animeUrl);
+  }
   if (!(await isPublicFetchTarget(animeUrl, "season page"))) return [];
   const res = await axios.get(animeUrl, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
-    timeout: 8000
+    timeout: 8000,
+    ...animeProxyOptions()
   });
 
   const html = res.data;
@@ -180,27 +329,23 @@ async function parseSeasons(animeUrl: string) {
   return seasons;
 }
 
-// Fast check to see if VF version exists
-async function checkVfExists(url: string): Promise<boolean> {
-  try {
-    const res = await axios.head(url, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      timeout: 2000
-    });
-    return res.status === 200;
-  } catch {
-    return false;
-  }
-}
+// 8.69: checkVfExists (HEAD /vostfr/→/vf/ URL guessing) is GONE — language
+// truth is now structural: panneauAnime sub-paths ("saison1/vf") and va
+// slugs ("-vf") carry it, classified by samaSubPathLanguage/voiranimeSlugLanguage.
 
-// Parse episodes.js file
-async function parseEpisodes(jsUrl: string) {
+// Parse episodes.js file (nakanime mirror resolves players via its API).
+// Exported for scripts/anime-repro.ts.
+export async function parseEpisodes(jsUrl: string) {
+  if (isNakanimeUrl(jsUrl)) {
+    return nakanimeEpisodePlayers(jsUrl.replace(/episodes\.js$/, "").replace(/\/$/, ""));
+  }
   if (!(await isPublicFetchTarget(jsUrl, "episode list"))) return {};
   const res = await axios.get(jsUrl, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
-    timeout: 8000
+    timeout: 8000,
+    ...animeProxyOptions()
   });
 
   const jsContent = res.data;
@@ -226,16 +371,430 @@ async function parseEpisodes(jsUrl: string) {
   return episodeLists;
 }
 
+/**
+ * Episode lists + per-list language labels (nakanime only; anime-sama lists
+ * carry no language — the season URL already encodes it).
+ */
+export async function parseEpisodesDetailed(
+  jsUrl: string
+): Promise<{ lists: Record<number, string[]>; labels: Record<number, { host: string; language: string }> }> {
+  if (isNakanimeUrl(jsUrl)) {
+    return nakanimeEpisodePlayersDetailed(
+      jsUrl
+        .replace(/episodes\.js$/, "")
+        .replace(/\/$/, "")
+    );
+  }
+  const lists = await parseEpisodes(jsUrl);
+  return { lists, labels: {} };
+}
+
+/** True when a nakanime player-list language label means French dub. */
+export function isNakanimeVfLabel(language: string): boolean {
+  const l = (language || "").toUpperCase().replace(/\s+/g, "");
+  return l.includes("VF") && !l.includes("VOSTFR") && !l.includes("VOST");
+}
+
+/**
+ * Splits an episode's mirror URLs into language tiers: `primary` matches the
+ * requested language (VF-by-default policy), `secondary` holds the rest as
+ * download fallback. Lists without labels (anime-sama) all go to primary.
+ */
+export function splitMirrorsByLanguage(
+  episodes: Record<number, string[]> | undefined,
+  labels: Record<number, { host: string; language: string }> | undefined,
+  epIndex: number,
+  language: string
+): { primary: string[]; secondary: string[] } {
+  const primary: string[] = [];
+  const secondary: string[] = [];
+  const wantVf = (language || "").toUpperCase() === "VF";
+  const hasLabels = !!labels && Object.keys(labels).length > 0;
+
+  for (const listId of Object.keys(episodes || {}).map(Number).sort((a, b) => a - b)) {
+    const url = episodes?.[listId]?.[epIndex];
+    if (!url) continue;
+    const listIsVf = hasLabels ? isNakanimeVfLabel(labels![listId]?.language || "") : false;
+    const bucket = listIsVf === wantVf || !hasLabels ? primary : secondary;
+    if (!bucket.includes(url)) bucket.push(url);
+  }
+
+  if (primary.length === 0) return { primary: secondary, secondary: [] };
+  return { primary, secondary };
+}
+
+/**
+ * voiranime path: fetches each requested episode page and merges its player
+ * embed URL (voembed.net & friends) into session.episodes as list 1, labelled
+ * with the wired season's ACTUAL language (8.78: was hardcoded VF).
+ */
+/**
+ * Episode watcher actions (audit S4): `.a watch` subscribes the current chat
+ * to the selected voiranime VF season, `.a unwatch [titre]` stops a watch,
+ * `.a watchlist` lists active watches for this chat.
+ */
+async function handleWatchAction(context: BotCommandContext, session: AnimeSession, msg: any): Promise<any> {
+  const args = context.args || [];
+  const action = (args[0] || "").toLowerCase();
+  const chatJid = msg.key.remoteJid!;
+
+  if (action === "watch") {
+    if (!session.voiranimeAnimeUrl) {
+      return context.reply(
+        "❌ La veille n'est disponible que sur les saisons *VF* pour l'instant.\n" +
+        "_(Les saisons VOSTFR ne sont pas encore surveillables.)_"
+      );
+    }
+    const totalEps = Math.max(0, ...Object.values(session.episodes || {}).map(arr => arr.length));
+    const result = addSubscription({
+      chatJid,
+      title: session.animeTitle,
+      seasonUrl: session.voiranimeAnimeUrl,
+      lang: session.selectedLanguage || "VF",
+      lastSeenEp: totalEps
+    });
+    if (!result.ok) return context.reply(`❌ ${result.error}`);
+    const cadence = process.env.NEBULA_WATCH_CRON ? "selon la configuration du serveur" : "toutes les ~6 heures";
+    return context.reply(
+      (result.updated ? "🔄 *Veille mise à jour !*\n" : "🔔 *Veille activée !*\n") +
+      `🎬 *${session.animeTitle}* (${session.selectedLanguage || "VF"})\n` +
+      `📦 Dernier épisode connu : ${totalEps}\n` +
+      `⏰ Vérification ${cadence} (nuit silencieuse 23h–7h)\n\n` +
+      "_Tu seras prévenu ici dès qu'un nouvel épisode sort, avec la commande de téléchargement prête._\n" +
+      `_Arrêter : \`.a unwatch ${session.animeTitle}\` · Liste : \`.a watchlist\`_`
+    );
+  }
+
+  if (action === "unwatch") {
+    const query = args.slice(1).join(" ").trim();
+    const subs = listSubscriptions(chatJid);
+    if (subs.length === 0) return context.reply("ℹ️ Aucune veille active dans cette discussion.");
+    if (!query) {
+      return context.reply(
+        "❌ Précise quelle veille arrêter :\n" +
+        subs.map(s => `• \`.a unwatch ${s.title}\` _(dernier ép. connu : ${s.lastSeenEp})_`).join("\n")
+      );
+    }
+    const removed = removeSubscriptions(chatJid, query);
+    return removed > 0
+      ? context.reply(`🗑️ ${removed} veille(s) supprimée(s) pour *"${query}"*.`)
+      : context.reply(`ℹ️ Aucune veille ne correspond à *"${query}"*.\n${subs.map(s => `• ${s.title}`).join("\n")}`);
+  }
+
+  const subs = listSubscriptions(chatJid);
+  if (subs.length === 0) {
+    return context.reply(
+      "ℹ️ Aucune veille active.\n_Pour en créer une : `.a <titre>` → saison → `.a watch`._"
+    );
+  }
+  return context.reply(
+    "🔔 *Veilles actives dans cette discussion :*\n\n" +
+    subs.map(s => `• 🎬 *${s.title}* (${s.lang}) — dernier ép. connu : ${s.lastSeenEp}${s.consecutiveErrors > 3 ? ` ⚠️ ${s.consecutiveErrors} erreurs` : ""}`).join("\n") +
+    `\n\n_Max ${WATCH_MAX_PER_CHAT} par discussion · Arrêt : \`.a unwatch <titre>\`_`
+  );
+}
+
+/**
+ * 9.18j (retour terrain 13/10 — The Garden of Words) : un film/OAV voiranime
+ * n'a AUCUN épisode numéroté — ses entrées portent n=0 avec le label
+ * « Film »/« OAV » (cf. parseVoiranimeEpisodes). Le filtre e.n > 0 vidait
+ * alors la liste et tuait la session (« aucun épisode numéroté trouvé ») :
+ * l'utilisateur tournait en rond entre sélection et saison. Une saison sans
+ * numéros = une entrée film : on la garde comme unique « épisode ». Une
+ * saison mixte (numéros + film) reste inchangée — les films y sont ignorés
+ * comme avant (pas de décalage d'indices).
+ */
+function voiranimeSelectableEpisodes(all: VoiranimeEpisode[]): VoiranimeEpisode[] {
+  const numbered = all.filter((e) => e.n > 0);
+  return numbered.length > 0 ? numbered : all;
+}
+
+export async function fillVoiranimePlayers(session: AnimeSession, indices: number[]): Promise<void> {
+  if (!session.voiranimeEpisodes || !session.voiranimeAnimeUrl) return;
+  const lists: Record<number, string[]> = session.episodes || { 1: new Array(session.voiranimeEpisodes.length).fill("") };
+  const labels = session.episodeListLabels || {};
+  let host = "voembed";
+  try {
+    for (const idx of indices) {
+      const ep = session.voiranimeEpisodes[idx];
+      if (!ep) continue;
+      const player = await voiranimeEpisodePlayer(ep.url);
+      if (player) {
+        lists[1][idx] = player;
+        try {
+          host = new URL(player).hostname;
+        } catch {}
+      }
+    }
+  } catch {}
+  if ((lists[1] || []).some(Boolean)) {
+    // 8.78 (bug isVf) : le label VF "par construction" (audit 8.9, epoque ou
+    // seul le VF va existait dans le pipeline) mentait pour une saison
+    // VOSTFR — splitMirrorsByLanguage jettait alors le seul vrai miroir va
+    // en secondaire. La saison cablee porte sa langue REELLE (policy 8.69).
+    labels[1] = { host, language: session.selectedLanguage || "VF" };
+  }
+  session.episodes = lists;
+  session.episodeListLabels = labels;
+}
+
+/**
+ * 9.18gggg — jetanimes : résolution PARESSEUSE des lecteurs (un fetch de
+ * page épisode par épisode, options DooPlay -> admin-ajax, replis iframe).
+ * Chaque slot de lecteur (1..3) devient une LISTE de miroirs — les épisodes
+ * sans ce slot restent vides (falsy → ignorés par l'itération de miroirs).
+ * Toutes les listes portent la langue REELLE câblée de la saison (8.78).
+ */
+export async function fillJetanimesPlayers(session: AnimeSession, indices: number[]): Promise<void> {
+  if (!session.jetanimesEpisodes) return;
+  const total = session.jetanimesEpisodes.length;
+  const lists: Record<number, string[]> =
+    session.episodes && Object.keys(session.episodes).length > 0 ? session.episodes : { 1: new Array(total).fill("") };
+  const labels = session.episodeListLabels || {};
+  let firstHost = "jetanimes";
+  try {
+    for (const idx of indices) {
+      const ep = session.jetanimesEpisodes[idx];
+      if (!ep) continue;
+      const players = await jetanimesEpisodePlayers(ep.url);
+      players.forEach((player, slot) => {
+        const listId = slot + 1;
+        if (!lists[listId]) lists[listId] = new Array(total).fill("");
+        lists[listId][idx] = player;
+        if (slot === 0) {
+          try {
+            firstHost = new URL(player).hostname;
+          } catch {}
+        }
+      });
+    }
+  } catch {}
+  for (const key of Object.keys(lists).map(Number)) {
+    if ((lists[key] || []).some(Boolean)) {
+      labels[key] = { host: key === 1 ? firstHost : `lecteur ${key}`, language: session.selectedLanguage || "VOSTFR" };
+    }
+  }
+  session.episodes = lists;
+  session.episodeListLabels = labels;
+}
+
+/**
+ * Audit 8.17 — language hint shown on the interactive season screen. Must
+ * always offer the OPPOSITE of the active default (the old screen displayed
+ * "switch to VOSTFR" while VOSTFR was already the default) or honestly state
+ * that VF does not exist for the title.
+ */
+export function seasonScreenLanguageHint(defaultLang: string, vfAvailable: boolean): string {
+  if (defaultLang.toUpperCase() === "VF") {
+    return `\n_💡 (Pour passer en VOSTFR, tape \`.a vostfr\`)_`;
+  }
+  return vfAvailable
+    ? `\n_💡 (Pour passer en VF, tape \`.a vf\`)_`
+    : `\n_ℹ️ (VF non disponible pour cet anime — VOSTFR par défaut)_`;
+}
+
+/**
+ * Audit 8.17 — VF BY DEFAULT in the INTERACTIVE flow too. The season screen
+ * used to decide the language from nakanime alone (and checkVfExists is
+ * structurally false for nakanime URLs), so every nakanime-sourced title
+ * showed "VOSTFR (Default)" even when voir-anime.to carries a real VF entry.
+ * This helper probes voiranime and wires the session to its VF seasons,
+ * mirroring the quick pipeline (audit 8.10). Keeps session.animeUrl pointing
+ * at the nakanime page so `.a vostfr` can rebuild the VOSTFR season list.
+ *
+ * Audit 8.54 — two production fixes: (1) voir-anime.to lists its entries in
+ * SEARCH-RELEVANCE order, which once showed "Hana-Kimi 2" as s1 of
+ * "Hana-Kimi" — seasons are now sorted by their real trailing number
+ * (unnumbered title = season 1 first, then 2, 3, …). (2) The probe retries
+ * once: a transient Cloudflare challenge on the first hit must not silently
+ * demote the whole session to VOSTFR when the VF entry exists.
+ */
+export function sortVfEntriesBySeason<T extends { title: string; slug?: string }>(entries: T[]): T[] {
+  const seasonOf = (e: T): number => {
+    const hay = `${e.title} ${e.slug || ""}`.toLowerCase();
+    const m = hay.match(/(?:s|saison|season)[ .-]?(\d{1,2})(?!\d)/) || hay.match(/(?:^|[^0-9])(\d{1,2})(?![0-9])/);
+    return m ? Number(m[1]) : 1; // unnumbered entry = the show's season 1
+  };
+  return [...entries].sort((a, b) => seasonOf(a) - seasonOf(b));
+}
+
+// 8.69: foldTitleDiacritics moved to services/animeSources.ts — re-exported
+// here for backward compatibility (tests + scripts import it from novabox).
+export { foldTitleDiacritics } from "../services/animeSources.js";
+
+type PolicySeason = NonNullable<AnimeSession["sourceSeasons"]>[number];
+
+/** Applies the language policy to the session's stored sourceSeasons and
+ * updates seasons/languages/selectedLanguage — no network call (used by
+ * `.a vf` / `.a vostfr` and after fresh wiring). */
+function applyPolicyToSession(
+  session: AnimeSession,
+  wantLang: "VF" | "VOSTFR"
+): LanguagePolicyResult<PolicySeason> {
+  const result = applyLanguagePolicy(session.sourceSeasons || [], wantLang, session.source);
+  if (result.status === "ok") {
+    session.seasons = result.seasons;
+    session.languages = languagesOf(session.sourceSeasons || []);
+    session.selectedLanguage = result.language;
+  }
+  return result;
+}
+
+/**
+ * 8.69 (refonte sources choisies): wires the session's seasons from the
+ * CHOSEN catalog, with STRUCTURAL languages (no oracle, no URL guessing).
+ * - "as": parseSeasons(catalog page) → seasons classified by sub-path
+ *   language ("saison1/vf" vs "saison1/vostfr"). parseSeasons is NEVER
+ *   called on a va URL (invariant 8.55, preserved by construction).
+ * - "va": the search results ARE the catalog entries — seasons are wired
+ *   from them directly (isVoiranime: true, one entry per season).
+ * ALL seasons (both languages) land in session.sourceSeasons so the
+ * `.a vf` / `.a vostfr` switch re-filters locally, without refetching.
+ */
+export async function wireSessionSeasons(
+  session: AnimeSession,
+  chosen: { title: string; url: string },
+  wantLang: "VF" | "VOSTFR"
+): Promise<LanguagePolicyResult<PolicySeason>> {
+  if (session.source === "va") {
+    // 9.18rrr : après un écran VOSTFR filtré, la liste COMPLÈTE (VF inclus)
+    // reste câblée — la bascule `.a vf` retrouve les saisons des deux langues.
+    const entries = session.fullVaResults || session.searchResults || [];
+    session.sourceSeasons = entries.map((e, i) => ({
+      name: e.title,
+      subPath: e.slug || `${i}`,
+      url: e.url,
+      isVoiranime: true,
+      language: e.language ?? null
+    }));
+    session.animeUrl = chosen.url;
+  } else if (session.source === "jt") {
+    // 9.18gggg : jetanimes — les saisons viennent de la page série (liens
+    // /episodes/<serie>-saison-N-episode-M/), la langue de badges page +
+    // sonde REST. Une saison MIXTE VF+VOSTFR est dédoublée en deux entrées
+    // étiquetées (même mécanique que as saison1/vf vs saison1/vostfr).
+    const seasons = await jetanimesSeasons(chosen.url);
+    session.sourceSeasons = [];
+    for (const s of seasons) {
+      const push = (name: string, subPath: string, language: "VF" | "VOSTFR" | null) => {
+        session.sourceSeasons!.push({
+          name,
+          subPath,
+          url: chosen.url,
+          isJetanimes: true,
+          jtSeason: s.seasonNumber,
+          jtLanguage: language,
+          language
+        });
+      };
+      if (s.mixed) {
+        push(`Saison ${s.seasonNumber} (VF)`, `saison${s.seasonNumber}/vf`, "VF");
+        push(`Saison ${s.seasonNumber} (VOSTFR)`, `saison${s.seasonNumber}/vostfr`, "VOSTFR");
+      } else {
+        push(`Saison ${s.seasonNumber}`, `saison${s.seasonNumber}`, s.language);
+      }
+    }
+    session.animeUrl = chosen.url;
+  } else {
+    const parsed = await parseSeasons(chosen.url);
+    session.sourceSeasons = parsed.map((s) => ({ ...s, language: samaSubPathLanguage(s.subPath) }));
+  }
+  const result = applyPolicyToSession(session, wantLang);
+  if (result.status === "ok") {
+    console.log(
+      `[NOVABOX] ${sourceLogLabel(session.source)} wiring: ${result.seasons.length} season(s) in ${result.language}` +
+        `${result.header ? " (langue demandée absente — autre langue listée)" : ""}`
+    );
+  }
+  return result;
+}
+
+/**
+ * 8.95 (owner) — fallback croisé : la langue demandée manque sur le catalogue
+ * courant → chercher le MÊME animé (match EXACT uniquement, jamais de titre
+ * approximatif) sur l'autre catalogue et y vérifier la langue
+ * STRUCTURELLEMENT. Retourne de quoi relancer le wiring là-bas, ou null.
+ */
+async function crossCatalogLanguageLookup(
+  query: string,
+  currentSource: AnimeSourceId,
+  wantLang: "VF" | "VOSTFR"
+): Promise<{ source: AnimeSourceId; results: SourceSearchResult[]; chosen: { title: string; url: string } } | null> {
+  const other = otherFlagOf(currentSource);
+  try {
+    const results = await searchAnimeBySource(query, other);
+    const candidate = exactEntryForLanguage(query, results, wantLang, other);
+    if (!candidate) return null;
+    if (other === "as") {
+      // La langue d'une entrée as se vérifie sur sa page de saisons.
+      const parsed = await parseSeasons(candidate.url);
+      if (!parsed.some((x) => samaSubPathLanguage(x.subPath) === wantLang)) return null;
+    }
+    return { source: other, results, chosen: { title: candidate.title, url: candidate.url } };
+  } catch {
+    return null; // l'autre catalogue ne répond pas → comportement habituel
+  }
+}
+
+/** 8.95 : écran de choix de saison — partagé entre le chemin normal et le
+ * fallback croisé de catalogue (extrait à l'identique du select handler). */
+async function sendSeasonSelectScreen(
+  sock: any,
+  msg: any,
+  context: BotCommandContext,
+  session: AnimeSession,
+  chosenTitle: string,
+  wired: Extract<LanguagePolicyResult<PolicySeason>, { status: "ok" }>
+) {
+  session.step = "season";
+  const seasonsList = session.seasons.map((s, i) => `*s${i + 1}.* ${s.name}`).join("\n");
+
+  // Jikan poster enrichment (audit 8.19) — best-effort MyAnimeList
+  // card (poster + score + episodes); never blocks or breaks the flow.
+  if (process.env.NEBULA_JIKAN_DISABLED !== "1") {
+    void (async () => {
+      try {
+        const info = await bestAnimeMatch(chosenTitle);
+        if (info?.posterUrl) {
+          await sock.sendMessage(
+            msg.key.remoteJid,
+            { image: { url: info.posterUrl }, caption: formatAnimeCard(info, true) },
+            { quoted: msg }
+          );
+        }
+      } catch {}
+    })();
+  }
+
+  await context.react("📂");
+  return context.reply(
+    `🎬 *Novabox - Choisissez la Saison* 🎬\n` +
+    `• *Anime:* ${chosenTitle}\n` +
+    `• *Langue:* 🇫🇷 *${wired.language}*\n` +
+    // ONE clear notice, never two: when the requested language is
+    // missing, the policy header replaces the switch hint (8.70).
+    (wired.header
+      ? wired.header + `\n\n`
+      : seasonScreenLanguageHint(wired.language, session.languages.includes("VF")) + `\n\n`) +
+    `*Saisons disponibles :*\n` +
+    `${seasonsList}\n\n` +
+    (wired.guideHint ? wired.guideHint + `\n\n` : ``) +
+    `👉 Réponds avec : \`.a s[numéro]\` (ex : \`.a s1\`)`
+  );
+}
+
 async function executeQuickDownloadPipeline(
   sock: any,
   msg: any,
   context: BotCommandContext,
   session: AnimeSession,
   chosenAnime: { title: string; subtitle?: string; url: string },
-  quickParams: QuickDownloadParams
+  quickParams: QuickDownloadParams,
+  skipCross = false
 ) {
   session.animeTitle = chosenAnime.title;
   session.animeUrl = chosenAnime.url;
+  session.pendingLanguageConfirm = undefined; // 8.95 : toute relance annule la question
   
   await context.react("⏳");
   const seasonStr = quickParams.seasonNumber ? `Saison ${quickParams.seasonNumber}` : "Saison 1";
@@ -243,73 +802,116 @@ async function executeQuickDownloadPipeline(
   await context.reply(`✨ *Sélectionné:* *${chosenAnime.title}*\n⚡ *Traitement rapide:* ${seasonStr} | ${epDesc}...`);
 
   try {
-    // 1. Parse available seasons
-    const seasons = await parseSeasons(chosenAnime.url);
-    if (seasons.length === 0) {
-      clearUserSession(context.sender);
-      return context.reply("❌ *Erreur:* Aucune saison/épisode trouvé pour cet anime.");
+    // 1+2+3. Wire the CHOSEN catalog (8.69 refonte): one catalog per query,
+    // structural languages, policy applied, then target season resolution —
+    // all on that catalog. No cross-source fallback (owner decision).
+    const wantLang: "VF" | "VOSTFR" =
+      quickParams.language || (process.env.NEBULA_VF_DEFAULT !== "0" ? "VF" : "VOSTFR");
+    let effectiveWant = wantLang;
+    if (session.source === "va" && !quickParams.language) {
+      // The user picked a labeled entry from the results list (e.g. a VOSTFR
+      // one) — honor that explicit choice over the VF default.
+      const chosenEntry = (session.searchResults || []).find((r) => r.url === chosenAnime.url);
+      if (chosenEntry?.language === "VF" || chosenEntry?.language === "VOSTFR") {
+        effectiveWant = chosenEntry.language;
+      }
     }
-
-    // 2. Derive available languages
-    const languages = ["VOSTFR"];
-    const s1 = seasons[0];
-    const vfCheckUrl = s1.url.replace("/vostfr/", "/vf/");
-    const hasVf = await checkVfExists(vfCheckUrl);
-    if (hasVf) {
-      languages.push("VF");
-    }
-    session.languages = languages;
-
-    // Check language preference
-    let targetLang = quickParams.language;
-    if (!targetLang || !languages.includes(targetLang)) {
-      targetLang = hasVf ? "VF" : "VOSTFR";
-    }
-    session.selectedLanguage = targetLang;
-
-    let filteredSeasons = seasons;
-    if (targetLang === "VF") {
-      const vfSeasons = [];
-      for (const s of seasons) {
-        const pathParts = s.subPath.split("/");
-        const seasonFolder = pathParts[0];
-        const vfUrl = s.url.replace("/vostfr/", "/vf/");
-        const exists = await checkVfExists(vfUrl);
-        if (exists) {
-          vfSeasons.push({
-            ...s,
-            url: vfUrl,
-            subPath: `${seasonFolder}/vf`
-          });
+    const wired = await wireSessionSeasons(session, chosenAnime, effectiveWant);
+    if (wired.status === "missing" || wired.header) {
+      // 8.95 (owner) : la langue demandée manque sur CE catalogue — chercher
+      // le même animé sur l'autre catalogue AVANT toute autre chose.
+      if (!skipCross) {
+        const cross = await crossCatalogLanguageLookup(quickParams.animeQuery, session.source, effectiveWant);
+        if (cross) {
+          await context.reply(`🔄 *${effectiveWant} absente sur ce catalogue — mais je l'ai trouvée ailleurs !* _Je continue là-bas._`);
+          session.source = cross.source;
+          session.searchResults = cross.results;
+          session.sourceSeasons = [];
+          return await executeQuickDownloadPipeline(
+            sock, msg, context, session, cross.chosen,
+            { ...quickParams, language: effectiveWant }, true
+          );
         }
       }
-      if (vfSeasons.length > 0) {
-        filteredSeasons = vfSeasons;
+      if (wired.status === "missing") {
+        clearUserSession(context.sender);
+        return context.reply(wired.message + `\n\n_J'ai aussi vérifié l'autre catalogue sans succès._`);
       }
+      // 8.95 (owner) : langue absente des DEUX catalogues → demander avant
+      // de continuer dans la langue listée (fini l'enchaînement automatique
+      // 8.69). wired.header est forcément défini ici, donc wired.language
+      // existe (la langue réellement disponible).
+      // Wording sans « aucune VF pour ce titre » ni « l'autre catalogue » :
+      // ces chaînes pilotent l'offre de bascule côté agent (agentBrain).
+      session.pendingLanguageConfirm = { chosen: chosenAnime, language: wired.language };
+      return context.reply(
+        `ℹ️ *Pas de ${effectiveWant} pour ce titre* — j'ai vérifié les deux catalogues.\n\n` +
+        `On continue en *${wired.language}* ?\n\n✅ Réponds *oui* — continuer en ${wired.language}\n❌ Réponds *non* — annuler\n\n_(en groupe : \`.a oui\` / \`.a non\`)_`
+      );
     }
-    session.seasons = filteredSeasons;
 
-    // 3. Resolve target season
     const targetSeasonNum = quickParams.seasonNumber !== undefined ? quickParams.seasonNumber : 1;
-    const { season: targetSeason } = resolveRequestedSeason(filteredSeasons, targetSeasonNum);
+    let targetSeason: AnimeSession["seasons"][number] | undefined;
+    if (session.source === "va") {
+      const asEntries = wired.seasons.map((s) => ({ title: s.name, slug: s.subPath, url: s.url, isVf: s.language === "VF" }));
+      const picked = resolveVoiranimeSeason(asEntries, targetSeasonNum);
+      targetSeason = picked ? wired.seasons.find((s) => s.url === picked.url) : undefined;
+    } else {
+      targetSeason = resolveRequestedSeason(wired.seasons, targetSeasonNum).season ?? undefined;
+    }
 
     if (!targetSeason) {
       clearUserSession(context.sender);
-      return context.reply(`❌ *Saison S${targetSeasonNum} introuvable:* Seulement ${filteredSeasons.length} saison(s) disponible(s) pour *${chosenAnime.title}*.`);
+      return context.reply(
+        `❌ *Saison S${targetSeasonNum} introuvable:* Seulement ${wired.seasons.length} saison(s) disponible(s) pour *${chosenAnime.title}*.`
+      );
     }
 
     session.selectedSeason = targetSeason;
 
-    // 4. Fetch episodes for target season
+    // 4. Fetch episodes for the target season (8.69: va = positional episode
+    // list of the chosen entry; as = episodes.js of the season page).
+    const tPlayers = Date.now();
+    session.pipelineStartedAt = session.pipelineStartedAt || tPlayers;
+    let totalEpisodes = 0;
+    if (targetSeason.isVoiranime) {
+      const vaEps = voiranimeSelectableEpisodes(await voiranimeEpisodes(targetSeason.url));
+      if (vaEps.length === 0) {
+        clearUserSession(context.sender);
+        return context.reply("❌ *Erreur:* Aucun épisode numéroté trouvé pour cette saison.");
+      }
+      session.voiranimeAnimeUrl = targetSeason.url;
+      session.voiranimeEpisodes = vaEps;
+      session.episodes = { 1: new Array(vaEps.length).fill("") };
+      session.episodeListLabels = {};
+      totalEpisodes = vaEps.length;
+      console.log(`[NOVABOX] voir-anime season: ${totalEpisodes} episode(s) (players resolved per request)`);
+    } else {
+
     const jsUrl = targetSeason.url + "episodes.js";
-    const eps = await parseEpisodes(jsUrl);
+    const { lists: eps, labels: epLabels } = await parseEpisodesDetailed(jsUrl);
     if (!eps || Object.keys(eps).length === 0) {
       clearUserSession(context.sender);
       return context.reply("❌ *Erreur:* Aucun épisode disponible pour cette saison.");
     }
 
     session.episodes = eps;
-    const totalEpisodes = Math.max(...Object.values(eps).map(arr => arr.length));
+    session.episodeListLabels = epLabels;
+
+    // nakanime: register VF as an AVAILABLE language when player lists carry a
+    // VF label, but do NOT auto-select it — nakanime's language metadata is
+    // unreliable (a vidmoly list labelled VF actually served VOSTFR, audit
+    // 8.6). VF stays one keystroke away: `.a <q> sN epN vf rN`.
+    if (isNakanimeUrl(chosenAnime.url)) {
+      const hasVfLabels = Object.values(epLabels).some((l) => isNakanimeVfLabel(l.language));
+      if (hasVfLabels && !session.languages.includes("VF")) {
+        session.languages.push("VF");
+      }
+    }
+
+    totalEpisodes = Math.max(...Object.values(eps).map(arr => arr.length));
+    console.log(`[NOVABOX] Players fetched: ${Object.keys(eps).length} list(s), ${totalEpisodes} eps in ${((Date.now() - tPlayers) / 1000).toFixed(1)}s`);
+    }
 
     if (totalEpisodes <= 0) {
       clearUserSession(context.sender);
@@ -334,91 +936,87 @@ async function executeQuickDownloadPipeline(
       ? `${resolvedIndices.length} épisodes (Ép ${resolvedIndices[0] + 1} à Ép ${resolvedIndices[resolvedIndices.length - 1] + 1})`
       : `Épisode ${resolvedIndices[0] + 1}`;
 
-    // 6. Check if resolution choice was provided
+    // 5a. voiranime: resolve the player embed (voembed.net) LAZILY for the
+    // requested episodes only (one episode-page fetch per episode).
+    if (session.voiranimeAnimeUrl && session.voiranimeEpisodes) {
+      const tVa = Date.now();
+      const idxs = resolvedIndices.slice(0, MAX_BATCH_EPISODES);
+      if (resolvedIndices.length > idxs.length) {
+        console.warn(`[NOVABOX] voiranime: capping player lookups to ${idxs.length}/${resolvedIndices.length} episodes`);
+      }
+      await fillVoiranimePlayers(session, idxs);
+      console.log(`[NOVABOX] voiranime players resolved for ${idxs.length} ep(s) in ${((Date.now() - tVa) / 1000).toFixed(1)}s`);
+      const anyMirror = Object.values(session.episodes || {}).some((arr) => arr.some(Boolean));
+      if (!anyMirror) {
+        clearUserSession(context.sender);
+        return context.reply(
+          `❌ *Lecteur introuvable:* impossible de résoudre le lecteur de cette saison depuis le serveur.
+
+` +
+            `💡 *Essaie l'autre catalogue :* \`.a ${otherFlagOf(session.source)} <titre> s${targetSeasonNum} ep${resolvedIndices[0] + 1} r2\``
+        );
+      }
+    }
+
+    // 5a-bis. 9.18gggg — jetanimes : résolution PARESSEUSE des lecteurs pour
+    // les seuls épisodes demandés (page épisode -> options DooPlay ->
+    // admin-ajax, replis iframe).
+    if (session.source === "jt" && session.jetanimesEpisodes) {
+      const tJt = Date.now();
+      const idxs = resolvedIndices.slice(0, MAX_BATCH_EPISODES);
+      if (resolvedIndices.length > idxs.length) {
+        console.warn(`[NOVABOX] jetanimes: capping player lookups to ${idxs.length}/${resolvedIndices.length} episodes`);
+      }
+      await fillJetanimesPlayers(session, idxs);
+      console.log(`[NOVABOX] jetanimes players resolved for ${idxs.length} ep(s) in ${((Date.now() - tJt) / 1000).toFixed(1)}s`);
+      const anyJtMirror = Object.values(session.episodes || {}).some((arr) => arr.some(Boolean));
+      if (!anyJtMirror) {
+        clearUserSession(context.sender);
+        return context.reply(
+          `❌ *Lecteur introuvable:* impossible de résoudre le lecteur de cette saison depuis le serveur.
+
+` +
+            `💡 *Essaie un autre catalogue :* \`.a ${otherFlagOf(session.source)} <titre> s${targetSeasonNum} ep${resolvedIndices[0] + 1} r2\``
+        );
+      }
+    }
+
+    // 6. Resolution choice provided -> canonical quality + vidmoly-first
+    // early-exit resolution (the FIRST mirror with usable tracks decides:
+    // exact canonical quality, else the nearest one — audit 8.5).
     if (quickParams.resolutionChoice) {
-      let detectedTracks: StreamQualityTrack[] = [];
-      let bestMirrorStream: any = null;
+      const canonical = canonicalResolutionForChoice(quickParams.resolutionChoice);
+      const { primary, secondary } = splitMirrorsByLanguage(
+        session.episodes || {},
+        session.episodeListLabels,
+        resolvedIndices[0],
+        session.selectedLanguage || "VOSTFR"
+      );
+      const orderedMirrors = [...primary, ...secondary.filter((u) => !primary.includes(u))];
 
-      try {
-        const mirrorUrls: string[] = [];
-        for (const listId of Object.keys(session.episodes || {}).map(Number)) {
-          const url = session.episodes?.[listId]?.[resolvedIndices[0]];
-          if (url && !mirrorUrls.includes(url)) {
-            mirrorUrls.push(url);
-          }
-        }
-        if (mirrorUrls.length > 0) {
-          bestMirrorStream = await resolveBestMirrorStream(mirrorUrls);
-          if (bestMirrorStream.availableTracks && bestMirrorStream.availableTracks.length > 0) {
-            detectedTracks = bestMirrorStream.availableTracks;
-          }
-        }
-      } catch {}
+      const tScan = Date.now();
+      const match = await resolveCanonicalQualityTrack(orderedMirrors, canonical);
 
-      if (detectedTracks.length === 0) {
-        const resolved = await resolveEpisodeStream(session.episodes || {}, resolvedIndices[0]);
-        if (resolved.hlsUrl) {
-          const legacyVariants = await inspectHlsStreams(resolved.hlsUrl, resolved.refererUrl, resolved.originUrl);
-          detectedTracks = legacyVariants.map(v => ({
-            resolution: v.label,
-            url: v.url,
-            bandwidth: v.bandwidth,
-            fileSizeBytes: v.estimatedSizeMB * 1024 * 1024,
-            type: 'hls' as const
-          }));
-        }
-      }
-
-      if (detectedTracks.length > 0) {
-        detectedTracks.sort((a, b) => {
-          const order: Record<string, number> = { '480P': 1, '360P': 2, '720P': 3, '1080P': 4 };
-          const rankA = order[a.resolution.toUpperCase()] || 5;
-          const rankB = order[b.resolution.toUpperCase()] || 5;
-          return rankA - rankB;
-        });
-
-        session.availableVariants = detectedTracks.map(t => ({
-          label: t.resolution,
-          resolution: t.resolution,
-          bandwidth: t.bandwidth || 800000,
-          estimatedSizeMB: t.fileSizeBytes ? Math.round(t.fileSizeBytes / (1024 * 1024)) : 75,
-          url: t.url,
-          headers: t.headers || (bestMirrorStream ? bestMirrorStream.headers : undefined),
-          isDirectWhatsAppFit: t.fileSizeBytes ? (t.fileSizeBytes / (1024 * 1024) <= 100) : true
-        }));
-      }
-
-      let finalRes = "720P";
-      const resChoiceLower = quickParams.resolutionChoice.toLowerCase();
-      const rIdxMatch = resChoiceLower.match(/^r(\d+)$/);
-
-      if (rIdxMatch) {
-        const rIdx = parseInt(rIdxMatch[1], 10);
-        if (session.availableVariants && session.availableVariants.length > 0) {
-          const clampedIdx = Math.min(Math.max(1, rIdx), session.availableVariants.length) - 1;
-          const v = session.availableVariants[clampedIdx];
-          session.selectedVariantUrl = v.url;
-          session.selectedVariantHeaders = v.headers;
-          finalRes = v.label;
-          if (v.estimatedSizeMB > 100 && (finalRes === "480P" || finalRes === "360P")) {
-            session.forceCompress = true;
-          }
-        } else {
-          if (rIdx === 1) { finalRes = "480P"; session.forceCompress = true; }
-          else if (rIdx === 2) { finalRes = "360P"; session.forceCompress = true; }
-          else if (rIdx === 3) { finalRes = "720P"; }
-          else if (rIdx === 4) { finalRes = "1080P"; }
+      let finalRes = canonical;
+      if (match) {
+        session.selectedVariantUrl = match.url;
+        session.selectedVariantHeaders = match.headers;
+        finalRes = match.label;
+        console.log(
+          `[NOVABOX] Quick quality "${canonical}" -> ${match.exact ? "exact" : "nearest"} ${match.label} via ${match.mirror} (scan ${((Date.now() - tScan) / 1000).toFixed(1)}s)`
+        );
+        if (!match.exact) {
+          // 8.95b (§38 honnêteté) : la qualité demandée n'existe pas sur
+          // cette source — le dire au lieu de livrer un autre label en silence.
+          await context.reply(`ℹ️ *${canonical} indisponible sur cette source* → je prends la plus proche : *${match.label}*.`);
         }
       } else {
-        finalRes = quickParams.resolutionChoice.toUpperCase();
-        if (session.availableVariants) {
-          const matchedV = session.availableVariants.find(v => v.label.toUpperCase() === finalRes || v.resolution.toUpperCase() === finalRes);
-          if (matchedV) {
-            session.selectedVariantUrl = matchedV.url;
-            session.selectedVariantHeaders = matchedV.headers;
-          }
-        }
+        console.log(`[NOVABOX] Quick quality "${canonical}": no mirror yielded tracks (scan ${((Date.now() - tScan) / 1000).toFixed(1)}s) — adaptive download`);
       }
+      if (finalRes === "480P" || finalRes === "360P") {
+        session.forceCompress = true; // keep the file WhatsApp-fit on fast lanes
+      }
+      session.pipelineStartedAt = session.pipelineStartedAt || Date.now();
 
       await context.react("🚀");
       return await sendFinalEpisode(sock, msg, context, session, finalRes);
@@ -506,6 +1104,7 @@ async function executeQuickDownloadPipeline(
           `• *Langue:* ${session.selectedLanguage}\n` +
           `• *Saison:* ${session.selectedSeason?.name}\n` +
           `• *Épisodes sélectionnés:* ${episodeSummary}\n\n` +
+          `⚠️ _Qualités réelles indisponibles (playlist protégée) — tailles estimées._\n` +
           `*Choisissez la qualité souhaitée:*\n` +
           `*r1.* 480P Qualité Moyenne (~75 MB - Rapide)\n` +
           `*r2.* 360P Qualité Légère (~45 MB - Instantané)\n` +
@@ -522,6 +1121,136 @@ async function executeQuickDownloadPipeline(
   }
 }
 
+/**
+ * User-facing message for a failed anime search (8.58): simple, actionable,
+ * zero jargon — the user is on WhatsApp, not in a terminal. The technical
+ * cause (status code, proxy hint) goes to the LOG for the administrator
+ * (`nebula logs`), never in the reply.
+ */
+function searchFailureMessage(err: any): string {
+  const status = err?.response?.status;
+  if (status === 403 || status === 503) {
+    console.warn(`[NOVABOX] Search blocked by the source (HTTP ${status}) — if persistent, NEBULA_ANIME_PROXY is the operator fix.`);
+    return (
+      `😕 *La recherche est bloquée par le site pour le moment.*\n\n` +
+      `Ce n'est pas un problème avec ton titre — le site refuse le bot pour l'instant.\n\n` +
+      `🔁 *Réessaie dans quelques minutes.*\n` +
+      `_Si le problème dure, préviens l'administrateur du bot._`
+    );
+  }
+  if (err?.code === "ECONNABORTED" || /timeout/i.test(err?.message || "")) {
+    console.warn(`[NOVABOX] Search timed out reaching the source (${err?.code || err?.message}).`);
+    return `😕 *Le site met trop de temps à répondre.*\n\n🔁 *Réessaie dans un instant.*\n_Si ça persiste, préviens l'administrateur du bot._`;
+  }
+  if (err?.code === "ENOTFOUND" || err?.code === "EAI_AGAIN") {
+    console.warn(`[NOVABOX] DNS resolution failed for the source (${err?.code}) — domain moved?`);
+    return `😕 *Le site est injoignable en ce moment.*\n\n🔁 *Réessaie plus tard.*\n_Si ça persiste, préviens l'administrateur du bot._`;
+  }
+  console.warn(`[NOVABOX] Search failed: ${err?.message || err}`);
+  return `😕 *La recherche a échoué.*\n\n🔁 *Réessaie dans un instant* — et vérifie l'orthographe du titre.`;
+}
+
+/**
+ * 9.9 → 9.18ooo (owner, terrain 18/10 « ça n'a pas changé ») : l'écran par
+ * défaut montre TOUT ce que le catalogue a trouvé — entrées VF d'abord
+ * (saisons regroupées/étiquetées, films nommés), entrées VOSTFR ensuite.
+ * Plus rien de trouvé n'est masqué ; chaque étiquette porte sa langue
+ * quand les deux coexistent. Retourne la liste réordonnée (le mapping
+ * `.a N` suit cet ordre), les étiquettes, et une note d'orientation.
+ */
+export function organizeVfScreen(
+  results: SourceSearchResult[],
+  opts?: { explicitVostfr?: boolean }
+): { results: SourceSearchResult[]; labels: Map<SourceSearchResult, string> | null; note: string | null } {
+  const vfEntries = results.filter((r) => r.language === "VF" && r.slug);
+  const vostfrEntries = results.filter((r) => r.language === "VOSTFR" && r.slug);
+  const marked = vfEntries.length > 0 && vostfrEntries.length > 0; // étiquettes bilingues
+  const labels = new Map<SourceSearchResult, string>();
+  const organize = (entries: SourceSearchResult[], language: "VF" | "VOSTFR"): SourceSearchResult[] => {
+    const organized = organizeVfSelection(
+      entries.map((r) => ({ title: r.title, url: r.url, slug: String(r.slug), isVf: r.language === "VF" }))
+    );
+    const byKey = new Map(entries.map((r) => [`${r.slug}|${r.url}`, r]));
+    const reordered: SourceSearchResult[] = [];
+    for (const o of organized) {
+      const r = byKey.get(`${o.result.slug}|${o.result.url}`);
+      if (!r) continue;
+      reordered.push(r);
+      labels.set(r, marked ? `${o.label} (${language})` : o.label);
+    }
+    return reordered;
+  };
+  if (vfEntries.length === 0) {
+    // Aucune VF : tout ce que le catalogue propose, organisé pareil.
+    return {
+      results: vostfrEntries.length > 0 ? organize(vostfrEntries, "VOSTFR") : results,
+      labels: vostfrEntries.length > 0 ? labels : null,
+      note:
+        results.length > 0 && !opts?.explicitVostfr
+          ? "🔍 _Aucune entrée VF pour cette recherche — voici tout ce que le catalogue propose :_"
+          : null,
+    };
+  }
+  // Entrées sans langue connue (impossibles sur va depuis 9.18ooo) : jamais perdues.
+  const known = new Set([...vfEntries, ...vostfrEntries]);
+  const leftovers = results.filter((r) => !known.has(r));
+  return {
+    results: [
+      ...organize(vfEntries, "VF"),
+      ...(vostfrEntries.length > 0 ? organize(vostfrEntries, "VOSTFR") : []),
+      ...leftovers,
+    ],
+    labels,
+    note:
+      vostfrEntries.length > 0
+        ? `🔎 _VF d'abord — le catalogue propose aussi ${vostfrEntries.length} entrée(s) VOSTFR, listées à la suite._`
+        : null,
+  };
+}
+
+/**
+ * 9.18sss (owner 18/10 : « oui » à la bascule automatique) — VOSTFR demandée
+ * sur le catalogue par défaut mais aucune entrée VOSTFR : on cherche
+ * AUTOMATIQUEMENT sur l'autre catalogue avant de répondre. Réponse honnête
+ * seulement s'il n'en a pas non plus (ou s'il est injoignable).
+ */
+export async function resolveVostfrRequest(
+  query: string,
+  vaResults: SourceSearchResult[]
+): Promise<
+  | { kind: "results" | "switched"; results: SourceSearchResult[] }
+  | { kind: "missing"; message: string }
+> {
+  const vostfrEntries = vaResults.filter((r) => r.language === "VOSTFR");
+  if (vostfrEntries.length > 0) return { kind: "results", results: vostfrEntries };
+  const hasVf = vaResults.some((r) => r.language === "VF");
+  let otherFailed = false;
+  try {
+    const other = await searchAnime(query, "as");
+    if (other.length > 0) return { kind: "switched", results: other };
+  } catch {
+    otherFailed = true;
+  }
+  return { kind: "missing", message: vostfrAutoMissingMessage(query, hasVf, otherFailed) };
+}
+
+/** Message honnête quand la VOSTFR manque PARTOUT (bascule automatique tentée). */
+export function vostfrAutoMissingMessage(query: string, hasVf: boolean, otherFailed: boolean): string {
+  const vfNote = hasVf ? `\n\n_ℹ️ Ce titre existe en VF : \`.a ${query}\`._` : ``;
+  if (otherFailed) {
+    return (
+      `❌ *Aucune VOSTFR pour ce titre sur le catalogue par défaut.*\n\n` +
+      `⚠️ *L'autre catalogue est injoignable en ce moment* — réessaie dans un instant.` +
+      vfNote
+    );
+  }
+  return (
+    `❌ *Aucune VOSTFR trouvée pour « ${query} ».*\n\n` +
+    `J'ai cherché sur les deux catalogues — vérifie l'orthographe ou essaie le titre international.` +
+    vfNote
+  );
+}
+
 const animeCommand: BotCommand = {
   name: "anime",
   category: "Novabox",
@@ -533,34 +1262,136 @@ const animeCommand: BotCommand = {
     const firstArg = (args[0] || "").toLowerCase();
     const sender = context.sender;
     const quickParams = parseQuickDownloadParams(args);
+    // 8.69: the chosen catalog — mono-source flow, user flag wins.
+    // 8.96 : défaut = voir-anime (owner) — sauf si l'opérateur l'a désactivé.
+    // 9.18rrr (owner 18/10) : la VOSTFR vient AUSSI de voir-anime (couverture
+    // complète depuis ooo/ppp) — plus de détour systématique par l'autre
+    // catalogue, qui reste joignable explicitement (`.a as <titre> vostfr`).
+    // 9.18gggg : 3e catalogue jetanimes — `.a jt <titre>` (alias jeta/jetanime).
+    let source = quickParams.source || effectiveDefaultSource();
 
     // Reset session helper
     const refreshSessionTimer = (session: AnimeSession) => {
       clearTimeout(session.timer);
       session.timer = setTimeout(() => {
         clearUserSession(sender);
-        context.reply("⏳ *Session Expired:* Your Anime download session has ended due to inactivity. Please start a new query with `.a <name>`.");
+        context.reply("⏳ *Session expirée* — trop longtemps sans activité.\n\n🔁 Relance ta recherche quand tu veux : `.a <titre>`");
       }, SESSION_TIMEOUT);
     };
+
+    // 9.18sss : `.a vostfr` / `.a vf` SEUL — bascule l'écran de sélection
+    // affiché (session active) ou la dernière recherche de ce chat dans
+    // l'autre langue. Avant, ce mot seul partait en recherche LITTÉRALE du
+    // mot « vostfr » comme titre. Les bascules d'une session plus avancée
+    // (étapes season/language) gardent leur handler dédié ci-dessous.
+    if (
+      args.length === 1 &&
+      (firstArg === "vostfr" || firstArg === "vf") &&
+      (!sessions.has(sender) || sessions.get(sender)!.step === "select_anime")
+    ) {
+      const langChoice: "VF" | "VOSTFR" = firstArg === "vostfr" ? "VOSTFR" : "VF";
+      const session = sessions.get(sender);
+      const base = session
+        ? {
+            query: session.userSearchQuery || session.pendingQuickParams?.animeQuery || session.animeTitle,
+            results: session.fullVaResults || session.searchResults || []
+          }
+        : getLastVaSearch(sender);
+      if (!base || !base.results.length || !base.results.some((r) => r.language)) {
+        return context.reply(
+          `🔎 *Pas de recherche récente à basculer* — relance avec \`.a <titre> ${langChoice.toLowerCase()}\`.`
+        );
+      }
+      const entries = base.results.filter((r) => r.language === langChoice);
+      if (entries.length === 0) {
+        return context.reply(
+          langChoice === "VOSTFR"
+            ? `❌ *Aucune entrée VOSTFR dans cette recherche* — relance avec \`.a ${base.query} vostfr\`.`
+            : `❌ *Aucune entrée VF dans cette recherche* — relance avec \`.a ${base.query}\`.`
+        );
+      }
+      const screen = organizeVfScreen(entries, { explicitVostfr: langChoice === "VOSTFR" });
+      const listText = screen.results
+        .map(
+          (r, i) =>
+            `*${i + 1}.* ${screen.labels?.get(r) ?? `${r.title}${r.subtitle ? ` (_${r.subtitle}_)` : ""}`}`
+        )
+        .join("\n");
+      clearUserSession(sender);
+      const newSession: AnimeSession = {
+        step: "select_anime",
+        source: "va",
+        fullVaResults: base.results,
+        searchResults: screen.results,
+        animeTitle: "",
+        animeUrl: "",
+        languages: [],
+        seasons: [],
+        userSearchQuery: base.query,
+        timer: null
+      };
+      setUserSession(sender, newSession);
+      refreshSessionTimer(newSession);
+      await context.react("🔄");
+      return context.reply(
+        `🎬 *Novabox - Sélectionner l'Anime* 🎬\n\n` +
+          (screen.note ? `${screen.note}\n\n` : ``) +
+          `Résultats ${langChoice} pour *"${base.query}"*. Choisissez l'anime souhaité:\n\n` +
+          `${listText}\n\n` +
+          `👉 Répondez avec: \`.a [numéro]\` (ex: \`.a 1\`)`
+      );
+    }
+
+    // Episode watcher has its own dedicated command (audit 8.31): a bare
+    // `.a watch` used to fall through to a literal search for the word
+    // "watch". Inside an active flow (episode step) the handler below
+    // still applies.
+    if (!sessions.has(sender) && ["watch", "unwatch", "watchlist"].includes(firstArg.toLowerCase())) {
+      return context.reply(
+        "🔔 *La veille épisodes a sa propre commande :* `.w`\n\n" +
+        "• Créer : `.w <titre>` _(_`.w solo leveling`_) puis_ `.w <numéro>`\n" +
+        "• Liste : `.w`\n" +
+        "• Arrêter : `.w rm <titre>`\n\n" +
+        "_Tu peux suivre plusieurs anime à la fois — tu seras notifié ici dès qu'un nouvel épisode sort._"
+      );
+    }
+
+    // 8.70: a catalog flag ALONE is not a search — the old behavior
+    // searched the literal word "as" (production log evidence). Guide instead.
+    if (args.length === 1 && ["as", "va"].includes((args[0] || "").toLowerCase().replace(/=+$/, ""))) {
+      await context.react("📘");
+      return context.reply(
+        `📘 *Catalogues au choix :*\n\n` +
+        `• \`.a <titre>\` — catalogue complet *(défaut)*\n` +
+        `• \`.a va <titre>\` — catalogue VF\n\n` +
+        `*Exemples :* \`.a solo leveling\` · \`.a va solo leveling\`\n\n` +
+        `_💡 Astuce : sépare bien les mots du titre (« solo leveling », pas « sololeveling »)._`
+      );
+    }
 
     // If no args and no active session, show usage
     if (args.length === 0 && !sessions.has(sender)) {
       await context.react("🎬");
       return context.reply(
         `🤖 *Nebula Bot - Anime Novabox Downloader* 🎬\n\n` +
-        `Search, play, and get direct ad-free download/streaming resources for any anime!\n\n` +
-        `*Quick Commands & Direct Download:*\n` +
-        `• Direct season download: \`.a jjk s3 all r2\`\n` +
-        `• Direct single episode: \`.a jjk s3 ep6 r2\`\n` +
-        `• Direct episode list: \`.a jjk s3 e1,2,3,5,7,8,9 r2\`\n` +
-        `• Direct episode range: \`.a jjk s3 2-9 r2\`\n` +
-        `• Search & choose resolution: \`.a solo leveling s1 all\`\n\n` +
-        `*Interactive Navigation:*\n` +
-        `• Search anime: \`.a [name]\` (e.g. \`.a Demon Slayer\`)\n` +
-        `• Select anime: \`.a [number]\` (e.g. \`.a 1\`)\n` +
-        `• Select season: \`.a s[number]\` (e.g. \`.a s1\`)\n` +
-        `• Select episode: \`.a ep[number]\` (e.g. \`.a ep1\`)\n` +
-        `• Select resolution: \`.a r [number]\` (e.g. \`.a r 1\`)`
+        `Recherche, téléchargement et streaming direct sans pub pour n'importe quel anime !\n\n` +
+        `*Catalogues (source au choix) :*\n` +
+        `• Catalogue complet *(défaut)* : \`.a [titre]\`\n` +
+        `• Catalogue VF : \`.a va [titre]\`\n` +
+        `• Catalogue VOSTFR récent : \`.a jt [titre]\` _(alias jeta, jetanime)_\n` +
+        `• Langue : \`.a [titre] vostfr\` _(VF par défaut)_\n\n` +
+        `*Téléchargement direct :*\n` +
+        `• Saison entière : \`.a jjk s3 all r2\`\n` +
+        `• Un épisode : \`.a jjk s3 ep6 r2\`\n` +
+        `• Liste d'épisodes : \`.a jjk s3 e1,2,3,5,7,8,9 r2\`\n` +
+        `• Plage d'épisodes : \`.a jjk s3 2-9 r2\`\n` +
+        `• Recherche + choix qualité : \`.a solo leveling s1 all\`\n\n` +
+        `*Navigation interactive :*\n` +
+        `• Rechercher : \`.a [titre]\` (ex. \`.a Demon Slayer\`)\n` +
+        `• Choisir l'anime : \`.a [numéro]\` (ex. \`.a 1\`)\n` +
+        `• Choisir la saison : \`.a s[numéro]\` (ex. \`.a s1\`)\n` +
+        `• Choisir l'épisode : \`.a ep[numéro]\` (ex. \`.a ep1\`)\n` +
+        `• Choisir la qualité : \`.a r [numéro]\` (ex. \`.a r 1\`)`
       );
     }
 
@@ -585,6 +1416,30 @@ const animeCommand: BotCommand = {
       }
     }
 
+    // 8.95 : question en attente « continuer en <langue> ? » (langue demandée
+    // absente des deux catalogues, pipeline rapide). Fail-closed : seul
+    // `.a oui` continue ; `.a non` annule ; toute autre réponse rappelle la
+    // question — l'ancienne continuation automatique 8.69 n'existe plus.
+    if (sessions.has(sender) && sessions.get(sender)!.pendingLanguageConfirm) {
+      const session = sessions.get(sender)!;
+      refreshSessionTimer(session);
+      const answer = bareLanguageAnswer(firstArg || "");
+      if (answer === "oui") {
+        const pending = session.pendingLanguageConfirm!;
+        session.pendingLanguageConfirm = undefined;
+        if (session.pendingQuickParams && pending.chosen) {
+          return await executeQuickDownloadPipeline(
+            sock, msg, context, session, pending.chosen,
+            { ...session.pendingQuickParams, language: pending.language }, true
+          );
+        }
+      } else if (answer === "non") {
+        clearUserSession(sender);
+        return context.reply("👌 *Annulé.* Relance quand tu veux avec `.a <titre>`.");
+      }
+      return context.reply(`❓ *Continuer en ${session.pendingLanguageConfirm!.language} ?*\nRéponds *oui* (ou \`.a oui\`) pour continuer, *non* pour annuler.`);
+    }
+
     // Step-by-step handler if there's an active session and the user is responding to the step
     if (sessions.has(sender) && (isStepAction || args.length === 0)) {
       const session = sessions.get(sender)!;
@@ -604,7 +1459,7 @@ const animeCommand: BotCommand = {
 
         const results = session.searchResults || [];
         if (choiceIndex < 0 || choiceIndex >= results.length) {
-          return context.reply(`❌ *Invalid Selection:* Please choose a valid anime number between *1* and *${results.length}*.\nExample: \`.a 1\``);
+          return context.reply(`❌ *Choix invalide :* réponds avec un numéro entre *1* et *${results.length}*.\nExemple : \`.a 1\``);
         }
 
         const chosen = results[choiceIndex];
@@ -618,129 +1473,79 @@ const animeCommand: BotCommand = {
         session.animeUrl = chosen.url;
 
         await context.react("⏳");
-        await context.reply(`✨ *Selected:* *${chosen.title}*\n🔗 Connecting to anime database...`);
+        await context.reply(`✨ *Sélectionné :* *${chosen.title}*\n🔗 Chargement des saisons...`);
 
         try {
-          // Parse available seasons
-          const seasons = await parseSeasons(chosen.url);
-          if (seasons.length === 0) {
-            clearUserSession(sender);
-            return context.reply("❌ *Error:* Unable to locate any seasons/episodes on this Anime page. Session terminated.");
+          // 8.69 (refonte sources choisies): wire the CHOSEN catalog with
+          // structural languages — VF by default, unless the user picked a
+          // labeled entry from the results list (va) or NEBULA_VF_DEFAULT=0.
+          let wantLang: "VF" | "VOSTFR" = process.env.NEBULA_VF_DEFAULT !== "0" ? "VF" : "VOSTFR";
+          if (session.source === "va") {
+            const chosenEntry = (session.searchResults || []).find((r) => r.url === chosen.url);
+            if (chosenEntry?.language === "VF" || chosenEntry?.language === "VOSTFR") {
+              wantLang = chosenEntry.language;
+            }
           }
-
-          // Deriving available languages
-          const languages = ["VOSTFR"];
-          
-          // Check if VF exists on season 1
-          const s1 = seasons[0];
-          const vfCheckUrl = s1.url.replace("/vostfr/", "/vf/");
-          const hasVf = await checkVfExists(vfCheckUrl);
-          if (hasVf) {
-            languages.push("VF");
-          }
-
-          session.languages = languages;
-          session.seasons = seasons;
-
-          // Default to VF if available (otherwise fallback to VOSTFR)
-          const defaultLang = hasVf ? "VF" : "VOSTFR";
-          session.selectedLanguage = defaultLang;
-          session.step = "season";
-
-          let filteredSeasons = seasons;
-          if (defaultLang === "VF") {
-            const vfSeasons = [];
-            for (const s of seasons) {
-              const pathParts = s.subPath.split("/");
-              const seasonFolder = pathParts[0];
-              const vfUrl = s.url.replace("/vostfr/", "/vf/");
-              const exists = await checkVfExists(vfUrl);
-              if (exists) {
-                vfSeasons.push({
-                  ...s,
-                  url: vfUrl,
-                  subPath: `${seasonFolder}/vf`
-                });
+          const wired = await wireSessionSeasons(session, chosen, wantLang);
+          if (wired.status === "missing" || wired.header) {
+            // 8.95 (owner) : fallback croisé — le même animé sur l'autre
+            // catalogue avec la langue demandée ?
+            const crossQuery = session.userSearchQuery || chosen.title;
+            const cross = await crossCatalogLanguageLookup(crossQuery, session.source, wantLang);
+            if (cross) {
+              await context.reply(`🔄 *${wantLang} absente sur ce catalogue — mais je l'ai trouvée ailleurs !* _Je continue là-bas._`);
+              session.source = cross.source;
+              session.searchResults = cross.results;
+              session.animeTitle = cross.chosen.title;
+              session.animeUrl = cross.chosen.url;
+              const rewired = await wireSessionSeasons(session, cross.chosen, wantLang);
+              if (rewired.status === "ok") {
+                return await sendSeasonSelectScreen(sock, msg, context, session, cross.chosen.title, rewired);
               }
-            }
-            if (vfSeasons.length > 0) {
-              filteredSeasons = vfSeasons;
+              // Improbable (langue vérifiée avant le switch) : écran habituel.
             }
           }
+          if (wired.status === "missing") {
+            clearUserSession(sender);
+            return context.reply(wired.message);
+          }
 
-          session.seasons = filteredSeasons;
-          const seasonsList = filteredSeasons.map((s, i) => `*s${i + 1}.* ${s.name}`).join("\n");
+          return await sendSeasonSelectScreen(sock, msg, context, session, chosen.title, wired);
 
-          await context.react("📂");
-          return context.reply(
-            `🎬 *Novabox - Select Season* 🎬\n` +
-            `• *Anime:* ${chosen.title}\n` +
-            `• *Language:* 🇫🇷 *${defaultLang}* (Default)${languages.includes("VOSTFR") ? `\n_💡 (To switch to VOSTFR, type \`.a vostfr\`)_` : ""}\n\n` +
-            `*Available Seasons:*\n${seasonsList}\n\n` +
-            `👉 Reply with: \`.a s[number]\` (e.g., \`.a s1\`)`
-          );
 
         } catch (err: any) {
           console.error("[NOVABOX] Search select Error:", err);
           clearUserSession(sender);
-          return context.reply("❌ *Error:* Failed to load anime seasons. Please try searching again.");
+          return context.reply("😕 *Impossible de charger les saisons de cet anime.*\n\n🔁 *Réessaie dans un instant* — si ça persiste, relance ta recherche.");
         }
       }
 
-      // Handle language switch (e.g. user specifies .a vostfr or .a vf)
+      // Handle language switch (.a vostfr / .a vf) — 8.69: re-filters the
+      // stored sourceSeasons LOCALLY (no network, no catalog rebuild, no
+      // cross-source jump). Missing language → honest message + other-flag guide.
       if (session.step === "season" || session.step === "language") {
         if (firstArg === "vostfr" || firstArg === "vf") {
-          const langChoice = firstArg === "vostfr" ? "VOSTFR" : "VF";
-          if (!session.languages.includes(langChoice)) {
-            return context.reply(`❌ *Unavailable Language:* The language *${langChoice}* is not available for this anime.`);
+          const langChoice: "VF" | "VOSTFR" = firstArg === "vostfr" ? "VOSTFR" : "VF";
+          if (!session.sourceSeasons || session.sourceSeasons.length === 0) {
+            return context.reply(`😕 *Session invalide.*\n\n🔁 *Relance ta recherche :* \`.a <titre>\``);
           }
-
-          session.selectedLanguage = langChoice;
+          const switched = applyPolicyToSession(session, langChoice);
+          if (switched.status === "missing") {
+            return context.reply(switched.message);
+          }
+          session.languageForcedByUser = true;
           session.step = "season";
-
-          let filteredSeasons = session.seasons;
-          if (langChoice === "VF") {
-            const vfSeasons = [];
-            for (const s of session.seasons) {
-              const pathParts = s.subPath.split("/");
-              const seasonFolder = pathParts[0];
-              const vfUrl = s.url.replace("/vostfr/", "/vf/");
-              const exists = await checkVfExists(vfUrl);
-              if (exists) {
-                vfSeasons.push({
-                  ...s,
-                  url: vfUrl,
-                  subPath: `${seasonFolder}/vf`
-                });
-              }
-            }
-            if (vfSeasons.length > 0) {
-              filteredSeasons = vfSeasons;
-            }
-          } else {
-            filteredSeasons = session.seasons.map(s => {
-              const pathParts = s.subPath.split("/");
-              const seasonFolder = pathParts[0];
-              return {
-                ...s,
-                url: s.url.replace("/vf/", "/vostfr/"),
-                subPath: `${seasonFolder}/vostfr`
-              };
-            });
-          }
-
-          session.seasons = filteredSeasons;
-          const seasonsList = filteredSeasons.map((s, i) => `*s${i + 1}.* ${s.name}`).join("\n");
-
+          const seasonsList = session.seasons.map((s, i) => `*s${i + 1}.* ${s.name}`).join(`\n`);
           await context.react("🗣️");
           return context.reply(
-            `🔄 *Language switched to ${langChoice}!*\n\n` +
-            `*Available Seasons:*\n${seasonsList}\n\n` +
-            `👉 Reply with: \`.a s[number]\` (e.g., \`.a s1\`)`
+            `🔄 *Langue : ${switched.language}*\n\n` +
+            (switched.header ? switched.header + `\n` : `*Saisons disponibles :*\n`) +
+            `${seasonsList}\n\n` +
+            (switched.guideHint ? switched.guideHint + `\n\n` : ``) +
+            `👉 Réponds avec : \`.a s[numéro]\` (ex : \`.a s1\`)`
           );
         }
       }
-
       // Handle season selection step
       if (session.step === "season") {
         let seasonIndex = -1;
@@ -761,26 +1566,69 @@ const animeCommand: BotCommand = {
         }
 
         if (seasonIndex < 0 || seasonIndex >= session.seasons.length) {
-          return context.reply(`❌ *Invalid Selection:* Please choose a valid season number between *1* and *${session.seasons.length}*.\nExample: \`.a s1\` or \`.a s1 d-\` to download entire season`);
+          return context.reply(`❌ *Choix invalide :* réponds avec un numéro de saison entre *1* et *${session.seasons.length}*.\nExemple : \`.a s1\` — ou \`.a s1 d-\` pour télécharger toute la saison`);
         }
 
         const selectedSeason = session.seasons[seasonIndex];
         session.selectedSeason = selectedSeason;
 
         await context.react("⏳");
-        await context.reply(`🔍 *Fetching episode listings for ${selectedSeason.name}...*`);
+        await context.reply(`🔍 *Chargement des épisodes de ${selectedSeason.name}...*`);
 
         try {
-          const jsUrl = selectedSeason.url + "episodes.js";
-          const eps = await parseEpisodes(jsUrl);
-          
-          if (!eps || Object.keys(eps).length === 0) {
-            clearUserSession(sender);
-            return context.reply("❌ *Error:* No episodes found in this season file. Session terminated.");
+          if (selectedSeason.isVoiranime) {
+            // voiranime VF season (audit 8.17): positional episode list instead
+            // of nakanime episodes.js; players are resolved lazily later.
+            const vaEps = voiranimeSelectableEpisodes(await voiranimeEpisodes(selectedSeason.url));
+            if (vaEps.length === 0) {
+              clearUserSession(sender);
+              return context.reply(`❌ *Erreur :* aucun épisode numéroté trouvé pour cette entrée. Session terminée.`);
+            }
+            session.voiranimeAnimeUrl = selectedSeason.url;
+            session.voiranimeEpisodes = vaEps;
+            session.episodes = { 1: new Array(vaEps.length).fill("") };
+            session.episodeListLabels = {};
+          } else if (selectedSeason.isJetanimes) {
+            // 9.18gggg — jetanimes season: positional episode list (liens
+            // /episodes/<serie>-saison-N-episode-M/), players resolved
+            // lazily at download time (options DooPlay -> admin-ajax).
+            const jtEps = await jetanimesSeasonEpisodes(
+              selectedSeason.url,
+              selectedSeason.jtSeason ?? 1,
+              selectedSeason.jtLanguage ?? undefined
+            );
+            if (jtEps.length === 0) {
+              clearUserSession(sender);
+              return context.reply(`❌ *Erreur :* aucun épisode trouvé pour cette saison. Session terminée.`);
+            }
+            session.jetanimesEpisodes = jtEps;
+            session.episodes = { 1: new Array(jtEps.length).fill("") };
+            session.episodeListLabels = {};
+          } else {
+            const jsUrl = selectedSeason.url + "episodes.js";
+            const { lists: eps, labels: epLabels } = await parseEpisodesDetailed(jsUrl);
+
+            if (!eps || Object.keys(eps).length === 0) {
+              clearUserSession(sender);
+              return context.reply("❌ *Erreur :* aucun épisode trouvé pour cette saison. Session terminée.");
+            }
+
+            session.episodes = eps;
+            session.episodeListLabels = epLabels;
+
+            // nakanime: register VF as AVAILABLE (`.a vf` accepted) but never
+            // auto-select it — language labels are unreliable (audit 8.6).
+            if (isNakanimeUrl(selectedSeason.url)) {
+              if (
+                Object.values(epLabels).some((l) => isNakanimeVfLabel(l.language)) &&
+                !session.languages.includes("VF")
+              ) {
+                session.languages.push("VF");
+              }
+            }
           }
 
-          session.episodes = eps;
-          const totalEpisodes = Math.max(...Object.values(eps).map(arr => arr.length));
+          const totalEpisodes = Math.max(...Object.values(session.episodes || {}).map(arr => arr.length));
 
           if (isSeasonDownload) {
             // User requested to download the entire season!
@@ -788,8 +1636,17 @@ const animeCommand: BotCommand = {
             session.selectedEpisodeIndices = Array.from({ length: totalEpisodes }, (_, i) => i);
             session.selectedEpisodeIndex = 0; // Reference first episode for stream quality discovery
 
+            // voiranime: resolve the first episode's player for stream inspection
+            if (session.voiranimeAnimeUrl) {
+              await fillVoiranimePlayers(session, [0]);
+            }
+            // 9.18gggg — jetanimes : idem, premier épisode pour l'inspection flux.
+            if (session.source === "jt" && session.jetanimesEpisodes) {
+              await fillJetanimesPlayers(session, [0]);
+            }
+
             await context.react("🔍");
-            await context.reply(`🔎 *Inspecting VidMoly stream for ${selectedSeason.name} (Total: ${totalEpisodes} Episodes)...*`);
+            await context.reply(`🔎 *Analyse du flux vidéo pour ${selectedSeason.name} (${totalEpisodes} épisodes)...*`);
 
             const resolved = await resolveEpisodeStream(session.episodes || {}, 0);
             const hlsUrl = resolved.hlsUrl;
@@ -810,35 +1667,44 @@ const animeCommand: BotCommand = {
               : `*r1.* 1080P Full HD\n*r2.* 720P High Definition\n*r3.* 480P Medium Quality\n*r4.* 360P Mobile Quality`;
 
             return context.reply(
-              `🎬 *Novabox - Full Season Batch Download* 📦\n` +
-              `• *Anime:* ${session.animeTitle}\n` +
-              `• *Language:* ${session.selectedLanguage}\n` +
-              `• *Season:* ${selectedSeason.name} (All ${totalEpisodes} episodes)\n` +
-              `• *Player Engine:* 📺 ${resolved.playerName || "VidMoly"}\n\n` +
-              `*Select resolution for all ${totalEpisodes} episodes:*\n` +
+              `🎬 *Novabox - Saison complète* 📦\n` +
+              `• *Anime :* ${session.animeTitle}\n` +
+              `• *Langue :* ${session.selectedLanguage}\n` +
+              `• *Saison :* ${selectedSeason.name} (${totalEpisodes} épisodes)\n` +
+              `• *Lecteur :* 📺 ${resolved.playerName || "VidMoly"}\n\n` +
+              `*Choisis la qualité pour les ${totalEpisodes} épisodes :*\n` +
               `${resOptions}\n\n` +
-              `👉 Reply with: \`.a r [number]\` (e.g., \`.a r 1\` or \`.a r 2\`)`
+              `👉 Réponds avec : \`.a r [numéro]\` (ex : \`.a r 1\` ou \`.a r 2\`)`
             );
           }
 
           session.step = "episode";
           
           return context.reply(
-            `🎬 *Novabox - Select Episode(s)* 🎬\n` +
-            `• *Anime:* ${session.animeTitle}\n` +
-            `• *Language:* ${session.selectedLanguage}\n` +
-            `• *Season:* ${selectedSeason.name}\n\n` +
-            `📦 *Total Episodes available:* ${totalEpisodes}\n\n` +
-            `*Options:*\n` +
-            `• Single episode: \`.a e2\` (or \`.a 2\` / \`.a ep2\`)\n` +
-            `• Multiple episodes: \`.a e2,e3,e4,e7,e9\` (or \`.a 2,3,4,7,9\`)\n` +
-            `• Episode range: \`.a 1-5\` (or \`.a e1-e5\`)\n\n` +
-            `👉 Reply with your desired episode(s):`
+            `🎬 *Novabox - Choisis l’épisode(s)* 🎬\n` +
+            `• *Anime :* ${session.animeTitle}\n` +
+            `• *Langue :* ${session.selectedLanguage}\n` +
+            `• *Saison :* ${selectedSeason.name}\n\n` +
+            // 9.18j : labels calculés via une variable neutre — le nom de la
+            // source ne doit JAMAIS apparaître dans une chaîne visible (8.42).
+            (() => {
+              const eps = session.voiranimeEpisodes || [];
+              if (eps.length > 0 && eps.every((e) => e.n === 0)) {
+                return `🎞️ *Film détecté* — ${eps.map((e) => e.label).join(", ")}\n\n`;
+              }
+              return `📦 *Épisodes disponibles :* ${totalEpisodes}\n\n`;
+            })() +
+            `*Options :*\n` +
+            `• Un épisode : \`.a e2\` (ou \`.a 2\` / \`.a ep2\`)\n` +
+            `• Plusieurs épisodes : \`.a e2,e3,e4,e7,e9\` (ou \`.a 2,3,4,7,9\`)\n` +
+            `• Plage d'épisodes : \`.a 1-5\` (ou \`.a e1-e5\`)\n` +
+            `• 🔔 Suivre les nouveaux épisodes : \`.a watch\`\n\n` +
+            `👉 Réponds avec le(s) épisode(s) voulu(s) :`
           );
         } catch (err: any) {
           console.error("[NOVABOX] Failed to parse episodes:", err);
           clearUserSession(sender);
-          return context.reply("❌ *Error:* Failed to load season episodes. Please try again.");
+          return context.reply("😕 *Impossible de charger les épisodes de cette saison.*\n\n🔁 *Réessaie dans un instant.*\n_Si ça persiste, préviens l\u2019administrateur du bot._");
         }
       }
 
@@ -847,6 +1713,11 @@ const animeCommand: BotCommand = {
         const fullArgStr = args.join(" ").trim();
         const totalEpisodes = Math.max(...Object.values(session.episodes || {}).map(arr => arr.length));
         const selectedIndices: number[] = [];
+
+        // Episode watcher (audit S4): `.a watch` / `.a unwatch [titre]` / `.a watchlist`
+        if (firstArg === "watch" || firstArg === "unwatch" || firstArg === "watchlist") {
+          return await handleWatchAction(context, session, msg);
+        }
 
         // Check for range format (e.g. 1-5 or e1-e5)
         const rangeMatch = fullArgStr.match(/^(?:ep|e)?(\d+)\s*-\s*(?:ep|e)?(\d+)$/i);
@@ -889,6 +1760,12 @@ const animeCommand: BotCommand = {
 
         session.selectedEpisodeIndices = selectedIndices;
         session.selectedEpisodeIndex = selectedIndices[0]; // Reference for initial stream inspection
+
+        // voiranime VF wiring (audit 8.17): resolve the players for the chosen
+        // episodes so stream inspection works exactly like the quick pipeline.
+        if (session.voiranimeAnimeUrl && session.voiranimeEpisodes) {
+          await fillVoiranimePlayers(session, selectedIndices);
+        }
 
         const isMulti = selectedIndices.length > 1;
         const episodeSummary = isMulti 
@@ -976,32 +1853,33 @@ const animeCommand: BotCommand = {
           }).join("\n");
 
           return context.reply(
-            `🎬 *Novabox - Select Real Stream Resolution* 🎬\n` +
-            `• *Anime:* ${session.animeTitle}\n` +
-            `• *Language:* ${session.selectedLanguage}\n` +
-            `• *Season:* ${session.selectedSeason?.name}\n` +
-            `• *Selected Episodes:* ${episodeSummary} (${selectedIndices.length} total)\n` +
-            `• *Active Stream Source:* 📺 ${hostName}\n\n` +
-            `*Exact Available Resolutions (Fast 480p/360p prioritized):*\n` +
+            `🎬 *Novabox - Choisis la Qualité* 🎬\n` +
+            `• *Anime :* ${session.animeTitle}\n` +
+            `• *Langue :* ${session.selectedLanguage}\n` +
+            `• *Saison :* ${session.selectedSeason?.name}\n` +
+            `• *Épisodes :* ${episodeSummary} (${selectedIndices.length} au total)\n` +
+            `• *Flux actif :* 📺 ${hostName}\n\n` +
+            `*Qualités réellement disponibles (480p/360p rapides en priorité) :*\n` +
             `${resOptions}\n\n` +
-            `👉 Reply with: \`.a r [number]\` (e.g., \`.a r 1\` or \`.a r1\`)`
+            `👉 Réponds avec : \`.a r [numéro]\` (ex : \`.a r 1\` ou \`.a r1\`)`
           );
         } else {
           // Standard resolution fallback when manifest could not be read
           session.step = "resolution";
           await context.react("⚙️");
           return context.reply(
-            `🎬 *Novabox - Select Resolution* 🎬\n` +
-            `• *Anime:* ${session.animeTitle}\n` +
-            `• *Language:* ${session.selectedLanguage}\n` +
-            `• *Season:* ${session.selectedSeason?.name}\n` +
-            `• *Selected Episodes:* ${episodeSummary} (${selectedIndices.length} total)\n\n` +
-            `*Choose your preferred download quality (Fast offline modes first):*\n` +
-            `*r1.* 480P Medium Quality (~75 MB - Fast download, direct video)\n` +
-            `*r2.* 360P Mobile Quality (~45 MB - Instant download)\n` +
-            `*r3.* 720P High Definition (~180 MB)\n` +
-            `*r4.* 1080P Full HD (~350 MB)\n\n` +
-            `👉 Reply with: \`.a r [number]\` (e.g., \`.a r 1\` or \`.a r1\`)`
+            `🎬 *Novabox - Choisis la Qualité* 🎬\n` +
+            `• *Anime :* ${session.animeTitle}\n` +
+            `• *Langue :* ${session.selectedLanguage}\n` +
+            `• *Saison :* ${session.selectedSeason?.name}\n` +
+            `• *Épisodes :* ${episodeSummary} (${selectedIndices.length} au total)\n\n` +
+            `⚠️ _Qualités réelles indisponibles (playlist protégée) — tailles estimées._\n` +
+            `*Choisis ta qualité de téléchargement :*\n` +
+            `*r1.* 480P Qualité moyenne (~75 Mo — téléchargement rapide, vidéo directe)\n` +
+            `*r2.* 360P Qualité mobile (~45 Mo — téléchargement instantané)\n` +
+            `*r3.* 720P Haute définition (~180 Mo)\n` +
+            `*r4.* 1080P Full HD (~350 Mo)\n\n` +
+            `👉 Réponds avec : \`.a r [numéro]\` (ex : \`.a r 1\` ou \`.a r1\`)`
           );
         }
       }
@@ -1021,6 +1899,7 @@ const animeCommand: BotCommand = {
           session.forceCompress = true;
           if (session.singleStreamDetected?.streamUrl) {
             session.selectedVariantUrl = session.singleStreamDetected.streamUrl;
+            session.selectedVariantEstimatedMB = session.singleStreamDetected.estimatedSizeMB;
           }
           await context.react("🚀");
           return await sendFinalEpisode(sock, msg, context, session, "480P [Compressed]");
@@ -1033,9 +1912,13 @@ const animeCommand: BotCommand = {
           const seasonNum = session.selectedSeason?.name.match(/\d+/)?.[0] || "01";
           const formattedSeason = `S${seasonNum.padStart(2, "0")}`;
           const formattedEpisode = `E${String(epNum).padStart(2, "0")}`;
-          const filename = sanitizeFilename(`${animeClean}_${lang}_1080P_${formattedSeason}_${formattedEpisode}`) + ".mp4";
+          // 9.18m (audit Z2) : le nom de fichier portait un _1080P_ codé en dur
+          // même quand la détection avait trouvé une autre résolution — le
+          // label détecté pilote désormais le nom (nettoyé, repli 1080P).
+          const detectedResForName = ((session.singleStreamDetected?.label as string) || "1080P").replace(/[^0-9a-zA-Z]/g, "") || "1080P";
+          const filename = sanitizeFilename(`${animeClean}_${lang}_${detectedResForName}_${formattedSeason}_${formattedEpisode}`) + ".mp4";
 
-          const vidmolyUrl = getVidMolyUrl(session.episodes, epIndex);
+          const vidmolyUrl = getVidMolyUrl(session.episodes, epIndex, session.episodeListLabels, session.selectedLanguage);
 
           clearUserSession(sender);
           await context.react("✅");
@@ -1049,11 +1932,11 @@ const animeCommand: BotCommand = {
             `📺 *Official Player Engine:* VidMoly\n` +
             `📄 *Filename:* \`${filename}\`\n\n` +
             `🔗 *Direct Streaming & Download:* \n` +
-            (vidmolyUrl ? `• 📺 *Play Ad-Free (VidMoly):* ${vidmolyUrl}\n` : "• 📺 *VidMoly Stream:* Direct HLS ready\n") +
+            (vidmolyUrl ? `• 📺 *Play Ad-Free (${playerSourceLabel(vidmolyUrl)}):* ${vidmolyUrl}\n` : "• 📺 *Stream:* Direct HLS ready\n") +
             `\n🌌 _Nebula Bot - Your ultimate media center_`
           );
         } else {
-          return context.reply("❌ *Invalid Selection:* Please choose *1* (Compress & Send) or *2* (Direct Links).\nExample: `.a 1`");
+          return context.reply("❌ *Choix invalide :* réponds *1* (compresser et envoyer) ou *2* (liens directs).\nExemple : `.a 1`");
         }
       }
 
@@ -1080,6 +1963,7 @@ const animeCommand: BotCommand = {
             const selectedVariant = variants[resIndex - 1];
             session.selectedVariantUrl = selectedVariant.url;
             session.selectedVariantHeaders = selectedVariant.headers;
+            session.selectedVariantEstimatedMB = selectedVariant.estimatedSizeMB;
             resChoice = selectedVariant.label;
             console.log(`[NOVABOX] Selected variant label: ${resChoice}, URL: ${selectedVariant.url}, estimatedSizeMB: ${selectedVariant.estimatedSizeMB}`);
             if (selectedVariant.estimatedSizeMB > 100 && (resChoice === "480P" || resChoice === "360P")) {
@@ -1104,7 +1988,7 @@ const animeCommand: BotCommand = {
 
         if (!resChoice) {
           const maxChoice = variants.length > 0 ? variants.length : 4;
-          return context.reply(`❌ *Invalid Selection:* Please choose a valid resolution choice (1 to ${maxChoice}).\nExample: \`.a r 1\` or \`.a r1\``);
+          return context.reply(`❌ *Choix invalide :* réponds avec une qualité entre *1* et *${maxChoice}*.\nExemple : \`.a r 1\` ou \`.a r1\``);
         }
 
         await context.react("🚀");
@@ -1118,18 +2002,84 @@ const animeCommand: BotCommand = {
       await context.reply(`🔍 *Recherche rapide pour:* "${quickParams.animeQuery}"...`);
 
       try {
-        let searchResults = await searchAnime(quickParams.canonicalQuery);
+        let searchResults = await searchAnime(quickParams.canonicalQuery, source);
+        let matchedQuery = quickParams.canonicalQuery;
         if (searchResults.length === 0 && quickParams.canonicalQuery !== quickParams.animeQuery) {
-          searchResults = await searchAnime(quickParams.animeQuery);
+          searchResults = await searchAnime(quickParams.animeQuery, source);
+          matchedQuery = quickParams.animeQuery;
         }
 
         if (searchResults.length === 0) {
           await context.react("❌");
-          return context.reply(`❌ *Aucun résultat trouvé* pour "${quickParams.animeQuery}". Veuillez vérifier l'orthographe.`);
+          return context.reply(searchEmptyMessage(quickParams.animeQuery, source));
         }
+
+        // 9.18rrr/sss (owner 18/10) : VOSTFR demandée → écran VOSTFR (entrées
+        // VOSTFR seules, organisées) sur le catalogue par défaut ; la liste
+        // COMPLÈTE part en session (bascule `.a vf`). Aucune VOSTFR → bascule
+        // AUTOMATIQUE vers l'autre catalogue (owner : « oui ») — réponse
+        // honnête seulement s'il n'en a pas non plus.
+        let fullVaResults: SourceSearchResult[] | undefined;
+        if (source === "va" && quickParams.language === "VOSTFR") {
+          const resolved = await resolveVostfrRequest(matchedQuery, searchResults);
+          if (resolved.kind === "missing") {
+            await context.react("❌");
+            return context.reply(resolved.message);
+          }
+          if (resolved.kind === "switched") {
+            source = "as";
+            searchResults = resolved.results;
+            console.log(
+              `[NOVABOX] bascule vostfr automatique « ${matchedQuery} » : autre catalogue, ${resolved.results.length} entrée(s)`
+            );
+            await context.reply("🔄 *Aucune VOSTFR sur le catalogue par défaut — je continue sur l'autre…*");
+          } else {
+            fullVaResults = searchResults;
+            searchResults = resolved.results;
+          }
+        }
+        // 9.9 (owner) : défaut VF → écran mixte (VF d'abord, VOSTFR à la suite).
+        const vfScreen =
+          source === "va" && !quickParams.language
+            ? organizeVfScreen(searchResults)
+            : fullVaResults
+              ? organizeVfScreen(searchResults, { explicitVostfr: true })
+              : null;
+        if (vfScreen) searchResults = vfScreen.results;
+        // 9.18sss : mémorise la recherche va (liste complète) pour `.a vostfr`/`.a vf` seul.
+        if (source === "va") rememberVaSearch(sender, matchedQuery, fullVaResults || searchResults);
 
         // Clear previous session
         clearUserSession(sender);
+
+        // 9.18lll (terrain 18/10) : la demande connaissait déjà la saison
+        // (« s1 ») mais le catalogue liste chaque saison comme une entrée —
+        // l'écran de sélection reposait une question déjà répondue. Choix
+        // auto UNIQUEMENT si saison/langue désignent une seule entrée.
+        const quickLabelOf = (r: (typeof searchResults)[number]) =>
+          vfScreen?.labels?.get(r as never) ?? `${r.title}${r.subtitle ? ` ${r.subtitle}` : ""}`;
+        // 9.18ooo : écran mixte — sans langue demandée, la préférence VF
+        // (défaut 9.9) tranche d'abord, la liste mixte ensuite (saison
+        // uniquement VOSTFR). Le cas terrain lll reste inchangé.
+        const autoChoice = pickVaQuickAutoChoice(searchResults, quickParams, quickLabelOf);
+        if (autoChoice) {
+          const newSession: AnimeSession = {
+            step: "select_anime",
+            source,
+            fullVaResults,
+            searchResults,
+            animeTitle: autoChoice.title,
+            animeUrl: autoChoice.url,
+            languages: [],
+            seasons: [],
+            pendingQuickParams: quickParams,
+            timer: null
+          };
+          setUserSession(sender, newSession);
+          refreshSessionTimer(newSession);
+          console.log(`[NOVABOX] sélection auto : ${autoChoice.title}`);
+          return await executeQuickDownloadPipeline(sock, msg, context, newSession, autoChoice, quickParams);
+        }
 
         const matchResult = isExactAnimeMatch(quickParams.animeQuery, searchResults);
 
@@ -1138,6 +2088,8 @@ const animeCommand: BotCommand = {
           const chosen = searchResults[matchResult.exactMatchIndex];
           const newSession: AnimeSession = {
             step: "select_anime",
+            source,
+            fullVaResults,
             searchResults,
             animeTitle: chosen.title,
             animeUrl: chosen.url,
@@ -1155,6 +2107,8 @@ const animeCommand: BotCommand = {
           // Vague / ambiguous query (e.g. "solo lev", "demon", "dragon") -> ask user to choose from list
           const newSession: AnimeSession = {
             step: "select_anime",
+            source,
+            fullVaResults,
             searchResults,
             animeTitle: "",
             animeUrl: "",
@@ -1168,21 +2122,24 @@ const animeCommand: BotCommand = {
           refreshSessionTimer(newSession);
 
           const listText = searchResults
-            .map((r, i) => `*${i + 1}.* ${r.title}${r.subtitle ? ` (_${r.subtitle}_)` : ""}`)
+            .map((r, i) => `*${i + 1}.* ${vfScreen?.labels?.get(r) ?? `${r.title}${r.subtitle ? ` (_${r.subtitle}_)` : ""}`}`)
             .join("\n");
 
           await context.react("🎬");
           return context.reply(
             `🎬 *Novabox - Sélectionnez l'Anime* 🎬\n\n` +
+            (vfScreen?.note ? `${vfScreen.note}\n\n` : "") +
             `Plusieurs animes correspondent à *"${quickParams.animeQuery}"*. Veuillez choisir pour continuer le téléchargement direct:\n\n` +
             `${listText}\n\n` +
             `👉 Répondez avec: \`.a [numéro]\` (ex: \`.a 1\`)`
           );
         }
       } catch (err: any) {
-        console.error("[NOVABOX] Quick Search Error:", err);
+        console.error("[NOVABOX] Quick Search Error:", err?.response?.status || err?.code || err?.message);
         await context.react("❌");
-        return context.reply("❌ *Erreur:* Échec de la recherche anime. Veuillez réessayer.");
+        if (err?.message === VA_DISABLED_CODE) return context.reply(vaDisabledMessage());
+        if (err?.message === JT_DISABLED_CODE) return context.reply(jtDisabledMessage());
+        return context.reply(searchFailureMessage(err));
       }
     }
 
@@ -1193,14 +2150,39 @@ const animeCommand: BotCommand = {
     await context.reply(`🔍 *Recherche de:* "${query}"...`);
 
     try {
-      let searchResults = await searchAnime(searchQuery);
+      let searchResults = await searchAnime(searchQuery, source);
+      let matchedQuery = searchQuery;
       if (searchResults.length === 0 && searchQuery !== query) {
-        searchResults = await searchAnime(query);
+        searchResults = await searchAnime(query, source);
+        matchedQuery = query;
       }
 
       if (searchResults.length === 0) {
         await context.react("❌");
-        return context.reply(`❌ *Aucun résultat trouvé* pour "${query}". Veuillez vérifier l'orthographe ou essayer un autre mot-clé.`);
+        return context.reply(searchEmptyMessage(query, source));
+      }
+
+      // 9.18rrr/sss : VOSTFR demandée → écran VOSTFR (entrées VOSTFR seules),
+      // liste complète conservée pour la bascule `.a vf` ; aucune VOSTFR →
+      // bascule AUTOMATIQUE vers l'autre catalogue (owner 18/10 : « oui »).
+      let fullVaResults: SourceSearchResult[] | undefined;
+      if (source === "va" && quickParams.language === "VOSTFR") {
+        const resolved = await resolveVostfrRequest(matchedQuery, searchResults);
+        if (resolved.kind === "missing") {
+          await context.react("❌");
+          return context.reply(resolved.message);
+        }
+        if (resolved.kind === "switched") {
+          source = "as";
+          searchResults = resolved.results;
+          console.log(
+            `[NOVABOX] bascule vostfr automatique « ${matchedQuery} » : autre catalogue, ${resolved.results.length} entrée(s)`
+          );
+          await context.reply("🔄 *Aucune VOSTFR sur le catalogue par défaut — je continue sur l'autre…*");
+        } else {
+          fullVaResults = searchResults;
+          searchResults = resolved.results;
+        }
       }
 
       // Clear any existing session to start fresh
@@ -1213,11 +2195,14 @@ const animeCommand: BotCommand = {
         const chosen = searchResults[matchResult.exactMatchIndex];
         const newSession: AnimeSession = {
           step: "select_anime",
+          source,
+          fullVaResults,
           searchResults,
           animeTitle: chosen.title,
           animeUrl: chosen.url,
           languages: [],
           seasons: [],
+          userSearchQuery: searchQuery, // 8.55: raw query for VF title matching
           timer: null
         };
         setUserSession(sender, newSession);
@@ -1226,100 +2211,130 @@ const animeCommand: BotCommand = {
         await context.react("⏳");
         await context.reply(`✨ *Sélectionné:* *${chosen.title}*\n🔗 Chargement des saisons...`);
 
-        const seasons = await parseSeasons(chosen.url);
-        if (seasons.length === 0) {
-          clearUserSession(sender);
-          return context.reply("❌ *Erreur:* Aucune saison trouvée pour cet anime.");
-        }
-
-        const languages = ["VOSTFR"];
-        const s1 = seasons[0];
-        const vfCheckUrl = s1.url.replace("/vostfr/", "/vf/");
-        const hasVf = await checkVfExists(vfCheckUrl);
-        if (hasVf) languages.push("VF");
-
-        const defaultLang = hasVf ? "VF" : "VOSTFR";
-        newSession.languages = languages;
-        newSession.selectedLanguage = defaultLang;
-        newSession.step = "season";
-
-        let filteredSeasons = seasons;
-        if (defaultLang === "VF") {
-          const vfSeasons = [];
-          for (const s of seasons) {
-            const pathParts = s.subPath.split("/");
-            const seasonFolder = pathParts[0];
-            const vfUrl = s.url.replace("/vostfr/", "/vf/");
-            const exists = await checkVfExists(vfUrl);
-            if (exists) {
-              vfSeasons.push({ ...s, url: vfUrl, subPath: `${seasonFolder}/vf` });
-            }
+        // 8.69 (refonte sources choisies): chosen-catalog wiring with
+        // structural languages — VF default, labeled-entry override on va.
+        let wantLang: "VF" | "VOSTFR" = process.env.NEBULA_VF_DEFAULT !== "0" ? "VF" : "VOSTFR";
+        if (newSession.source === "va") {
+          const chosenEntry = searchResults.find((r) => r.url === chosen.url);
+          if (chosenEntry?.language === "VF" || chosenEntry?.language === "VOSTFR") {
+            wantLang = chosenEntry.language;
           }
-          if (vfSeasons.length > 0) filteredSeasons = vfSeasons;
         }
-
-        newSession.seasons = filteredSeasons;
-        const seasonsList = filteredSeasons.map((s, i) => `*s${i + 1}.* ${s.name}`).join("\n");
+        const wired = await wireSessionSeasons(newSession, chosen, wantLang);
+        if (wired.status === "missing") {
+          clearUserSession(sender);
+          return context.reply(wired.message);
+        }
+        newSession.step = "season";
+        const seasonsList = newSession.seasons.map((s, i) => `*s${i + 1}.* ${s.name}`).join("\n");
 
         await context.react("📂");
         return context.reply(
           `🎬 *Novabox - Choisissez la Saison* 🎬\n` +
           `• *Anime:* ${chosen.title}\n` +
-          `• *Langue:* 🇫🇷 *${defaultLang}* (Par défaut)${languages.includes("VOSTFR") ? `\n_💡 (Pour changer en VOSTFR, tapez \`.a vostfr\`)_` : ""}\n\n` +
-          `*Saisons Disponibles:*\n${seasonsList}\n\n` +
-          `👉 Répondez avec: \`.a s[numéro]\` (ex: \`.a s1\`)`
+          `• *Langue:* 🇫🇷 *${wired.language}*\n` +
+          (wired.header
+            ? wired.header + `\n\n`
+            : seasonScreenLanguageHint(wired.language, newSession.languages.includes("VF")) + `\n\n`) +
+          `*Saisons disponibles :*\n` +
+          `${seasonsList}\n\n` +
+          (wired.guideHint ? wired.guideHint + `\n\n` : ``) +
+          `👉 Réponds avec : \`.a s[numéro]\` (ex : \`.a s1\`)`
         );
+
       }
 
       // Create a user session at the select_anime step
       const newSession: AnimeSession = {
         step: "select_anime",
+        source,
+        fullVaResults,
         searchResults,
         animeTitle: "",
         animeUrl: "",
         languages: [],
         seasons: [],
+        userSearchQuery: searchQuery, // 8.55: raw query for VF title matching
         timer: null
       };
 
       setUserSession(sender, newSession);
       refreshSessionTimer(newSession);
 
+      // 9.9 (owner) : défaut VF → écran mixte ; 9.18rrr : écran VOSTFR
+      // organisé (saisons regroupées) quand la VOSTFR est demandée.
+      const vfScreen =
+        newSession.source === "va" && !quickParams.language
+          ? organizeVfScreen(searchResults)
+          : newSession.source === "va" && quickParams.language === "VOSTFR"
+            ? organizeVfScreen(searchResults, { explicitVostfr: true })
+            : null;
+      if (vfScreen) {
+        searchResults = vfScreen.results;
+        newSession.searchResults = searchResults;
+      }
+      // 9.18sss : mémorise la recherche va (liste complète) pour `.a vostfr`/`.a vf` seul.
+      if (newSession.source === "va") {
+        rememberVaSearch(sender, matchedQuery, newSession.fullVaResults || searchResults);
+      }
+
       // Print list of matching anime
       const listText = searchResults
-        .map((r, i) => `*${i + 1}.* ${r.title}${r.subtitle ? ` (_${r.subtitle}_)` : ""}`)
+        .map((r, i) => `*${i + 1}.* ${vfScreen?.labels?.get(r) ?? `${r.title}${r.subtitle ? ` (_${r.subtitle}_)` : ""}`}`)
         .join("\n");
 
       await context.react("🎬");
       return context.reply(
         `🎬 *Novabox - Sélectionner l'Anime* 🎬\n\n` +
+        (vfScreen?.note ? `${vfScreen.note}\n\n` : ``) + // 9.18nnn : la note vivait dans le flux rapide, jamais ici
         `Résultats trouvés pour *"${query}"*. Choisissez l'anime souhaité:\n\n` +
         `${listText}\n\n` +
         `👉 Répondez avec: \`.a [numéro]\` (ex: \`.a 1\`)`
       );
 
     } catch (err: any) {
-      console.error("[NOVABOX] Search Error:", err);
+      console.error("[NOVABOX] Search Error:", err?.response?.status || err?.code || err?.message);
       await context.react("❌");
-      return context.reply("❌ *Erreur:* Échec de la recherche.");
+      if (err?.message === VA_DISABLED_CODE) return context.reply(vaDisabledMessage());
+      if (err?.message === JT_DISABLED_CODE) return context.reply(jtDisabledMessage());
+      return context.reply(searchFailureMessage(err));
     }
   }
 };
 
 // Universal helper to locate the official VidMoly embed URL exclusively
-function getVidMolyUrl(episodes: Record<number, string[]> | undefined, epIndex: number): string {
+function getVidMolyUrl(
+  episodes: Record<number, string[]> | undefined,
+  epIndex: number,
+  labels?: Record<number, { host: string; language: string }>,
+  language?: string
+): string {
   if (!episodes) return "";
+  const isVidMolyLike = (u: string) => u.includes("vidmoly") || u.includes("ansembed");
+
+  // 0. Language-aware pick first: the card's player link must match the
+  // session language instead of blindly returning the first vidmoly list
+  // (audit 8.6 — the link used to contradict the downloaded file).
+  if (labels && language) {
+    const wantVf = language.toUpperCase() === "VF";
+    for (const listId of Object.keys(episodes).map(Number).sort((a, b) => a - b)) {
+      const candidate = episodes[listId]?.[epIndex] || "";
+      if (candidate && isVidMolyLike(candidate) && isNakanimeVfLabel(labels[listId]?.language || "") === wantVf) {
+        return candidate;
+      }
+    }
+  }
 
   // 1. Primary Check: List 2 is the official VidMoly player on the streaming catalog
   const eps2Url = episodes[2]?.[epIndex] || "";
-  if (eps2Url && (eps2Url.includes("vidmoly") || eps2Url.includes("ansembed"))) {
+  if (eps2Url && isVidMolyLike(eps2Url)) {
     return eps2Url;
   }
 
   // 2. Scan all other player lists specifically for VidMoly / ansembed mirrors
   for (const listId of Object.keys(episodes).map(Number)) {
     const candidate = episodes[listId]?.[epIndex] || "";
-    if (candidate && (candidate.includes("vidmoly") || candidate.includes("ansembed"))) {
+    if (candidate && isVidMolyLike(candidate)) {
       return candidate;
     }
   }
@@ -1457,7 +2472,7 @@ async function extractHlsUrlFromVidMoly(embedUrl: string): Promise<{ hlsUrl: str
     }
 
     // 2. Packed Dean Edwards JS unpacker (handle single or multi-layer packed scripts)
-    const packedRegex = /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?return p\}\((['"][\s\S]*?['"])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"][\s\S]*?['"])\.split\(['"]\|['"]\)\)/g;
+    const packedRegex = /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?return p\}\((['"][\s\S]*?['"])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"][\s\S]*?['"])\.split\(['"]\|['"]\)(?:\s*,\s*[^)]*)?\)/g;
     let match: RegExpExecArray | null;
     while ((match = packedRegex.exec(html)) !== null) {
       try {
@@ -1538,7 +2553,8 @@ export async function probeMediaHeaders(targetUrl: string, refererUrl: string, o
       },
       timeout: 5000,
       maxRedirects: 5,
-      validateStatus: () => true
+      validateStatus: () => true,
+      ...animeProxyOptions()
     });
 
     const rawContentLength = res.headers["content-length"];
@@ -1563,155 +2579,34 @@ export async function probeMediaHeaders(targetUrl: string, refererUrl: string, o
   }
 }
 
-// Validate whether an individual stream sub-playlist is alive and delivers valid media content
-async function validateVidMolyStreamVariant(streamUrl: string, refererUrl: string, originUrl: string): Promise<boolean> {
-  try {
-    if (!(await isPublicFetchTarget(streamUrl, "stream variant"))) return false;
-    const res = await axios.get(streamUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": refererUrl,
-        "Origin": originUrl,
-        "Range": "bytes=0-2048"
-      },
-      timeout: 4000,
-      validateStatus: (status) => status >= 200 && status < 400
-    });
-
-    const data = typeof res.data === "string" ? res.data : "";
-    if (data.includes("#EXTM3U") || data.includes("#EXTINF") || data.includes("#EXT-X-") || data.includes(".ts") || data.includes(".mp4")) {
-      return true;
-    }
-    return res.status >= 200 && res.status < 300;
-  } catch {
-    return false;
-  }
-}
-
-// Inspect and parse master HLS playlist exclusively from VidMoly, dynamically fetching and validating all available resolutions from stream metadata
+// Inspect the master HLS playlist via the shared extractor so resolutions and
+// sizes are the REAL ones served by the CDN. Returns [] when the manifest
+// cannot be read — callers then offer an adaptive-quality attempt instead of
+// fabricated resolutions (audit findings R8).
 async function inspectHlsStreams(hlsUrl: string, refererUrl: string, originUrl: string): Promise<HlsVariant[]> {
   try {
     if (!(await isPublicFetchTarget(hlsUrl, "HLS playlist"))) return [];
-    // 1. Fetch master playlist from VidMoly
-    const res = await axios.get(hlsUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": refererUrl,
-        "Origin": originUrl,
-        "Accept": "*/*"
-      },
-      timeout: 6000,
-      validateStatus: () => true
-    });
-
-    if (res.status === 200 && typeof res.data === "string" && (res.data.includes("#EXT") || res.data.includes("BANDWIDTH"))) {
-      const content = res.data;
-      const rawVariants: HlsVariant[] = [];
-      const lines = content.split(/\r?\n/);
-      const baseUrl = hlsUrl.substring(0, hlsUrl.lastIndexOf("/") + 1);
-
-      // Standard anime episode duration estimation (~24 minutes = 1440 seconds)
-      const ESTIMATED_DURATION_SEC = 1440;
-
-      // 2. Parse VidMoly master HLS stream variants (#EXT-X-STREAM-INF)
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (line.startsWith("#EXT-X-STREAM-INF:")) {
-          const inf = line.substring("#EXT-X-STREAM-INF:".length);
-          
-          // Extract BANDWIDTH
-          const bwMatch = inf.match(/BANDWIDTH=(\d+)/i);
-          const bandwidth = bwMatch ? parseInt(bwMatch[1], 10) : 1500000;
-
-          // Extract RESOLUTION (e.g. 1920x1080, 1280x720, 854x480, 640x360)
-          const resMatch = inf.match(/RESOLUTION=(\d+x\d+)/i);
-          const resolution = resMatch ? resMatch[1] : "Adaptive";
-
-          // Find next non-empty line for stream URI
-          let uri = "";
-          for (let j = i + 1; j < lines.length; j++) {
-            const nextLine = lines[j].trim();
-            if (nextLine && !nextLine.startsWith("#")) {
-              uri = nextLine;
-              break;
-            }
-          }
-
-          if (uri) {
-            const streamUrl = uri.startsWith("http") ? uri : (baseUrl + uri);
-            
-            let label = "720P";
-            if (resolution.includes("1080") || bandwidth > 2500000) label = "1080P";
-            else if (resolution.includes("720") || (bandwidth > 1200000 && bandwidth <= 2500000)) label = "720P";
-            else if (resolution.includes("480") || (bandwidth > 600000 && bandwidth <= 1200000)) label = "480P";
-            else if (resolution.includes("360") || bandwidth <= 600000) label = "360P";
-
-            const estimatedMB = Math.max(15, Math.round((bandwidth * ESTIMATED_DURATION_SEC) / (8 * 1024 * 1024)));
-
-            rawVariants.push({
-              label,
-              resolution,
-              bandwidth,
-              estimatedSizeMB: estimatedMB,
-              url: streamUrl,
-              isDirectWhatsAppFit: estimatedMB <= 100
-            });
-          }
-        }
-      }
-
-      // If variants found in master playlist, sort and return (prioritizing 480P / 360P lightweight streams first)
-      if (rawVariants.length > 0) {
-        rawVariants.sort((a, b) => {
-          const order: Record<string, number> = { "480P": 1, "360P": 2, "720P": 3, "1080P": 4 };
-          const rankA = order[a.label.toUpperCase()] || 5;
-          const rankB = order[b.label.toUpperCase()] || 5;
-          if (rankA !== rankB) return rankA - rankB;
-          return b.bandwidth - a.bandwidth;
-        });
-        return rawVariants;
-      }
-    }
+    const tracks = await fetchHlsTracksAndSizes(hlsUrl, refererUrl || hlsUrl, originUrl);
+    return tracks
+      .filter((t) => !!t.url)
+      .map((t) => ({
+        label: t.resolution,
+        resolution: t.resolution,
+        bandwidth: t.bandwidth || 800000,
+        estimatedSizeMB: t.fileSizeBytes ? Math.max(1, Math.round(t.fileSizeBytes / (1024 * 1024))) : 75,
+        url: t.url,
+        isDirectWhatsAppFit: !t.fileSizeBytes || t.fileSizeBytes / (1024 * 1024) <= 100,
+        headers: t.headers
+      }));
   } catch (err: any) {
-    console.warn("[NOVABOX] VidMoly master playlist inspection note:", err.message);
+    console.warn("[NOVABOX] HLS inspection note:", err.message);
+    return [];
   }
+}
 
-  // Dynamic VidMoly structured sub-playlist resolution generation & validation (prioritizing 480p / 360p)
-  let isMasterTxt = false;
-  try {
-    isMasterTxt = !!hlsUrl && new URL(hlsUrl).pathname.endsWith("master.txt");
-  } catch {
-    isMasterTxt = !!hlsUrl && hlsUrl.includes("master.txt");
-  }
-
-  if (isMasterTxt) {
-    const candidateVariants: HlsVariant[] = [
-      { label: "480P", resolution: "854x480", bandwidth: 800000, estimatedSizeMB: 120, url: resolveAbsoluteUrl(hlsUrl, "index-f1-v1-a1.txt"), isDirectWhatsAppFit: false },
-      { label: "360P", resolution: "640x360", bandwidth: 450000, estimatedSizeMB: 65, url: resolveAbsoluteUrl(hlsUrl, "index-f1-v1-a1.txt"), isDirectWhatsAppFit: true },
-      { label: "720P", resolution: "1280x720", bandwidth: 1600000, estimatedSizeMB: 216, url: resolveAbsoluteUrl(hlsUrl, "index-f2-v1-a1.txt"), isDirectWhatsAppFit: false },
-      { label: "1080P", resolution: "1920x1080", bandwidth: 2800000, estimatedSizeMB: 486, url: resolveAbsoluteUrl(hlsUrl, "index-f3-v1-a1.txt"), isDirectWhatsAppFit: false }
-    ];
-
-    // Quickly validate primary 720p/1080p sub-playlists (candidate index 2 for 720p)
-    try {
-      const isValid = await validateVidMolyStreamVariant(candidateVariants[2].url, refererUrl, originUrl);
-      if (isValid) {
-        return candidateVariants;
-      }
-    } catch {
-      // Fallback
-    }
-
-    return candidateVariants;
-  }
-
-  // Resilient fallback quality variants when remote CDN restricts server-side playlist inspection (prioritizing 480p / 360p)
-  return [
-    { label: "480P", resolution: "854x480", bandwidth: 800000, estimatedSizeMB: 120, url: hlsUrl, isDirectWhatsAppFit: false },
-    { label: "360P", resolution: "640x360", bandwidth: 450000, estimatedSizeMB: 65, url: hlsUrl, isDirectWhatsAppFit: true },
-    { label: "720P", resolution: "1280x720", bandwidth: 1600000, estimatedSizeMB: 216, url: hlsUrl, isDirectWhatsAppFit: false },
-    { label: "1080P", resolution: "1920x1080", bandwidth: 2800000, estimatedSizeMB: 486, url: hlsUrl, isDirectWhatsAppFit: false }
-  ];
+/** True when re-encoding to targetHeight cannot shrink the file (audit 8.47). */
+export function compressionPointless(sourceHeight: number | null, targetHeight: number): boolean {
+  return sourceHeight !== null && sourceHeight > 0 && sourceHeight <= targetHeight;
 }
 
 // Execute high-performance stream download using FFmpeg with safe process isolation
@@ -1720,10 +2615,15 @@ async function executeFfmpegDownload(
   downloadSourceUrl: string,
   originUrl: string,
   localPath: string,
-  timeoutMs: number = 25000
+  timeoutMs: number = 25000,
+  onProgress?: (percent: number, bytesDone?: number) => void
 ): Promise<boolean> {
   // SSRF through downloader: never hand an unvalidated URL to a subprocess.
   if (!(await isPublicFetchTarget(targetHlsUrl, "downloader input"))) {
+    return false;
+  }
+  if (isDeadFileSlug(targetHlsUrl)) {
+    console.warn(`[NOVABOX_FFMPEG] Skipping known-dead file: ${targetHlsUrl.split("?")[0]}`);
     return false;
   }
 
@@ -1737,7 +2637,9 @@ async function executeFfmpegDownload(
   try {
     console.log(`[NOVABOX_FFMPEG] Starting primary Cat-Catch style downloader for: ${targetHlsUrl}`);
     // Use an elevated timeout for full HLS segment downloads (default to 4 minutes)
-    const success = await downloadHlsAppLevel(targetHlsUrl, localPath, headers, 240000);
+    const success = await downloadHlsAppLevel(targetHlsUrl, localPath, headers, 240000, (pct, detail) => {
+      if (onProgress) onProgress(pct, detail?.bytesDone);
+    });
     if (success && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
       console.log(`[NOVABOX_FFMPEG] Primary Cat-Catch style downloader succeeded! Size: ${fs.statSync(localPath).size} bytes`);
       return true;
@@ -1757,6 +2659,11 @@ async function executeFfmpegDownload(
       const headersStr = `Referer: ${downloadSourceUrl}\r\nOrigin: ${originUrl}\r\n`;
       const args = [
         "-y",
+        // 9.18aaaa : sans whitelist explicite, le demuxer HLS bloque les
+        // segments https d'une playlist locale (défaut file,crypto,data) —
+        // ce fallback était mort pour toute playlist auth_playlist_*.m3u8.
+        "-protocol_whitelist",
+        HLS_FFMPEG_PROTOCOL_WHITELIST,
         "-user_agent",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "-headers",
@@ -1786,37 +2693,27 @@ async function executeFfmpegDownload(
         localPath
       ];
 
-      const child = spawn(resolvedFfmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
-      const timer: NodeJS.Timeout = setTimeout(() => {
-        try { child.kill("SIGKILL"); } catch {}
-        if (localPlaylistPath && fs.existsSync(localPlaylistPath)) {
-          try { fs.unlinkSync(localPlaylistPath); } catch {}
-        }
-        resolve(false);
-      }, timeoutMs);
+      // 9.18m (audit Z3) : unifié avec runFfmpegKit — l'ancien spawn pipeait
+      // stderr SANS jamais le lire : erreurs invisibles au log, et risque
+      // latent de blocage quand le tampon du pipe se remplit de lignes de
+      // progression. La fenêtre glissante du kit capture la FIN de la sortie,
+      // là où ffmpeg imprime l'erreur fatale ; timeout/SIGKILL aussi gérés.
+      const res = await runFfmpegKit(args, timeoutMs);
 
-      child.on("error", () => {
-        clearTimeout(timer);
-        if (localPlaylistPath && fs.existsSync(localPlaylistPath)) {
-          try { fs.unlinkSync(localPlaylistPath); } catch {}
-        }
-        resolve(false);
-      });
+      if (localPlaylistPath && fs.existsSync(localPlaylistPath)) {
+        try { fs.unlinkSync(localPlaylistPath); } catch {}
+      }
 
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (localPlaylistPath && fs.existsSync(localPlaylistPath)) {
-          try { fs.unlinkSync(localPlaylistPath); } catch {}
+      if (res.ok && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
+        resolve(true);
+      } else {
+        if (fs.existsSync(localPath)) {
+          try { fs.unlinkSync(localPath); } catch {}
         }
-        if (code === 0 && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
-          resolve(true);
-        } else {
-          if (fs.existsSync(localPath)) {
-            try { fs.unlinkSync(localPath); } catch {}
-          }
-          resolve(false);
-        }
-      });
+        // Z3 : la VRAIE cause (fin de stderr) va enfin au log administrateur.
+        console.warn(`[NOVABOX_FFMPEG] Legacy network FFmpeg failed: ${res.stderr.slice(-600)}`);
+        resolve(false);
+      }
     } catch {
       if (localPlaylistPath && fs.existsSync(localPlaylistPath)) {
         try { fs.unlinkSync(localPlaylistPath); } catch {}
@@ -1832,30 +2729,78 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
     ? session.selectedEpisodeIndices 
     : [session.selectedEpisodeIndex || 0];
 
+  // 8.97 — mémoire des choix interactifs : le DERNIER téléchargement du chat
+  // (anime, saison, langue, qualité, épisodes) pour que l'agent résolve
+  // « le même anime », « l'épisode suivant », « le même en 720p ». Best-effort :
+  // un échec d'écriture ne bloque JAMAIS le téléchargement.
+  try {
+    const quick = session.pendingQuickParams;
+    const lastFromParsed = quick?.parsedEpisodeNumbers?.length
+      ? Math.max(...quick.parsedEpisodeNumbers)
+      : null;
+    recordAnimeChoice(context.sender, {
+      title: session.animeTitle || "",
+      source: session.source,
+      language: session.selectedLanguage === "VF" ? "VF" : "VOSTFR",
+      seasonName: session.selectedSeason?.name || (quick?.seasonNumber ? `Saison ${quick.seasonNumber}` : ""),
+      quality: resolution,
+      episodesSpec:
+        quick?.episodesSpec ||
+        (indices.length > 1
+          ? `e${indices[0] + 1}-e${indices[indices.length - 1] + 1}`
+          : `e${(indices[0] ?? 0) + 1}`),
+      lastEpisode: lastFromParsed ?? (indices.length ? Math.max(...indices) + 1 : null)
+    });
+  } catch {}
+
   const animeClean = session.animeTitle.replace(/\s+/g, "_");
   const lang = session.selectedLanguage || "VOSTFR";
   const seasonNum = session.selectedSeason?.name.match(/\d+/)?.[0] || "01";
   const formattedSeason = `S${seasonNum.padStart(2, "0")}`;
+  // 9.15 : clé de réutilisation — anime, saison, épisode, langue, résolution.
+  // Une demande identique (même d'un autre utilisateur) renvoie un lien sur
+  // le fichier DÉJÀ téléchargé : instantané, zéro bande passante.
+  const reuseKeyFor = (ep: number) => animeReuseKey(session.animeTitle, seasonNum, ep, lang, resolution);
 
   // If multiple episodes or full season requested, run batch processor
   if (indices.length > 1 || session.isSeasonZipDownload) {
     if (indices.length > MAX_BATCH_EPISODES) {
       await context.react("⚠️");
       return context.reply(
-        `⚠️ *Batch Limit:* This request covers *${indices.length} episodes*, which exceeds the safe batch limit of *${MAX_BATCH_EPISODES}*.\n` +
-        `Please split it into smaller requests (e.g. episodes 1–${MAX_BATCH_EPISODES}).`
+        `⚠️ *Trop d\u2019épisodes d\u2019un coup (${indices.length}).*\n\n` +
+        `La limite est de *${MAX_BATCH_EPISODES} épisodes par demande* — découpe en plusieurs fois (ex. épisodes 1 à ${MAX_BATCH_EPISODES}, puis la suite).`
       );
     }
     await context.react("⏳");
-    await context.reply(
+    const batchAnchor = await context.reply(
       `📦 *Nebula Novabox - Batch Media Preparation* 🚀\n\n` +
       `🎬 *Anime:* ${session.animeTitle}\n` +
       `🗣️ *Language:* ${lang}\n` +
       `📅 *Season:* ${session.selectedSeason?.name}\n` +
       `⚙️ *Resolution:* ${resolution}\n` +
       `📦 *Episodes to Process:* ${indices.length} episodes\n\n` +
-      `⏳ _Preparing direct links and stream packaging... Please wait a moment._`
+      `⏳ _Preparing direct episode links... Please wait a moment._`
     );
+
+    // 9.18hhhh — ce message devient le tableau de bord LIVE du lot :
+    // épisodes traités, barre globale, temps restant — édité sur place
+    // (re-ancré au pire 1 fois / 13 min pour un très long lot).
+    const sendBatchProgress: ProgressSendFn = async (text: string, editKey?: unknown) => {
+      const target = resolveLiveSocket(sock);
+      if (!target) throw new Error("no live socket");
+      return await target.sendMessage(
+        msg.key.remoteJid!,
+        editKey ? { text, edit: editKey as any } : { text },
+        { quoted: msg }
+      );
+    };
+    const batchProgress = createProgressReporter({
+      send: sendBatchProgress,
+      anchorKey: (batchAnchor as any)?.key,
+      title: `📦 ${session.animeTitle} — ${session.selectedSeason?.name || formattedSeason} (${indices.length} épisodes)`,
+      initialPhaseLabel: "Téléchargement des épisodes"
+    });
+    batchProgress.startBatch(indices.length);
 
     // Create tracked batch job for live status component
     const batchJob = createBatchJob({
@@ -1868,42 +2813,174 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
     });
     updateJobStatus(batchJob.id, "downloading", `Processing ${indices.length} episodes in parallel`);
 
-    const generatedLinks: Array<{ epNum: number; downloadUrl: string; sizeMB: number; filename: string }> = [];
-    const downloadedFilePaths: string[] = [];
+    // Garde-fou disque GLOBAL inter-bots (8.78) — depuis 8.81, ce batch
+    // réclame son besoin RÉEL estimé (taille/épisode × épisodes × 1,5,
+    // plafonnée par NEBULA_NOVABOX_MAX_BATCH_MB) dans un dossier partagé :
+    // les autres moteurs du même hôte voient la réservation et un nouveau
+    // batch est refusé si l'espace libre passait sous la réserve
+    // (NEBULA_MIN_FREE_DISK_MB). Libérée dans batchDownloadManager aux
+    // états terminaux (completed/failed/cancelled).
+    const perEpisodeMB =
+      session.selectedVariantEstimatedMB ||
+      session.singleStreamDetected?.estimatedSizeMB ||
+      session.availableVariants?.find(
+        (v) => v.url === session.selectedVariantUrl || v.label === resolution || v.resolution === resolution
+      )?.estimatedSizeMB ||
+      75;
+    const batchNeedMB = estimateBatchNeedMB(perEpisodeMB, indices.length);
+    const diskClaim = acquireDiskClaim(batchJob.id, batchNeedMB * 1024 * 1024);
+    if (!diskClaim.ok) {
+      updateJobStatus(batchJob.id, "failed", "Disk guard refused this batch", diskClaim.error);
+      await context.react("⚠️");
+      // Conseil actionnable : combien d'épisodes passent avec l'espace actuel ?
+      const availableBytes = availableForNewClaims();
+      const perEpisodeNeedMB = estimateBatchNeedMB(perEpisodeMB, 1);
+      const maxFits = availableBytes === null ? 0 : Math.floor(availableBytes / (perEpisodeNeedMB * 1024 * 1024));
+      return context.reply(
+        `⚠️ *Espace disque insuffisant pour lancer ce batch.*\n\n` +
+        `${diskClaim.error}\n\n` +
+        (maxFits >= 1
+          ? `💡 _Avec l'espace libre actuel, essaie plutôt ${maxFits} épisode(s) maximum d'un coup, ou réessaie plus tard._\n\n`
+          : `💡 _Réessaie plus tard, quand de l'espace sera libéré._\n\n`) +
+        // 8.88 : suggestion visible uniquement de l'owner (le chat peut être un groupe)
+        (context.isOwner
+          ? "🧹 _Anciens téléchargements qui encombrent ? Lance_ \`.purge\` _(alias_ \`.p\`_)_ _pour tout libérer immédiatement._\n\n"
+          : "") +
+        `🛡️ _Les téléchargements en cours ne sont pas affectés._`
+      );
+    }
+
+    const generatedLinks: Array<{ epNum: number; downloadUrl: string; sizeMB: number; filename: string; expiresAt: number }> = [];
+    let cacheHits = 0; // 9.15 : épisodes servis depuis le cache de réutilisation
+    let failedEpisodeCount = 0;
+    // 9.18xxx : épisodes dont la source a trompé l'étiquette qualité (flux
+    // 1080P servi sous une variante « 480P ») — corrigés + signalés au owner.
+    const qualityLies: Array<{ epNum: number; real: string; sizeMB: number }> = [];
+    // 9.18m (audit Z1) : fichiers éligibles au ZIP de saison, APPARIÉS à leur
+    // numéro d'épisode. L'ancien code faisait generatedLinks.map(...,
+    // downloadedFilePaths[idx]) : dès qu'un épisode venait du cache (présent
+    // dans generatedLinks mais absent de downloadedFilePaths), tous les
+    // fichiers suivants étaient décalés d'un cran — épisode 2 étiqueté 1,
+    // entrées undefined en fin de ZIP. Les épisodes CACHÉS alimentent
+    // maintenant le ZIP aussi (lien physique, zéro octet supplémentaire).
+    const zipEpisodeFiles: Array<{ epNum: number; filePath: string }> = [];
 
     // Clear session to prevent re-entrant execution
     clearUserSession(context.sender);
 
     // Process episodes with bounded concurrency (concurrency = 2) for maximum speed and container safety
-    const CONCURRENCY_LIMIT = 2;
+    // Episodes are processed SEQUENTIALLY by default: each pipeline holds
+    // ~2x the episode size in flight (segments + consolidated TS + ffmpeg),
+    // and two in parallel OOM-killed the whole bot on a 12-episode batch
+    // (audit 8.12). Raise with NEBULA_BATCH_CONCURRENCY on fat hosts.
+    const CONCURRENCY_LIMIT = Math.max(1, Number(process.env.NEBULA_BATCH_CONCURRENCY || 1));
     let totalMBDownloaded = 0;
     let quotaExceeded = false;
+    // 8.51: when RSS is still CRITICAL after the headroom pauses, launching
+    // another ~120 MB episode pipeline is how the kernel OOM-killer ended the
+    // 8.50 batch. Stop claiming new episodes and tell the user to re-ask.
+    let memoryStop = false;
+    // 9.18yyy (terrain 18/10, run 2) : le coffre de livraison (plafond 2 Go)
+    // était encore occupé par les liens du run précédent — restaurés au boot,
+    // donc bien vivants — quand E05/E07/E08 ont terminé leur téléchargement.
+    // registerTempDownload jetait « quota reached », le catch générique
+    // comptait l'épisode « refusé par la source » (faux : la source avait
+    // livré) et le fichier était libéré sans lien. Ces épisodes sont
+    // désormais différés avec leur VRAIE cause, hors « Épisodes échoués ».
+    const vaultDeferredEpisodes: Array<{ epNum: number; sizeMB: number }> = [];
 
     const processEpisodeTask = async (i: number) => {
-      if (quotaExceeded) return;
       const epIndex = indices[i];
       const epNum = epIndex + 1;
       const formattedEpisode = `E${String(epNum).padStart(2, "0")}`;
       const filenameBase = `${animeClean}_${lang}_${resolution}_${formattedSeason}_${formattedEpisode}`;
-      const filename = sanitizeFilename(filenameBase) + ".mp4";
+      let filename = sanitizeFilename(filenameBase) + ".mp4";
       const localPath = path.join(os.tmpdir(), `batch_${Date.now()}_${i}_${filename}`);
+
+      // 9.18yyy : défér honnête quand le coffre de livraison est plein —
+      // l'épisode est TÉLÉCHARGÉ mais non stockable : ce n'est jamais un
+      // refus de la source, et le rapport doit le dire avec sa vraie cause.
+      const deferForFullVault = (sizeBytes: number) => {
+        vaultDeferredEpisodes.push({ epNum, sizeMB: Math.round(sizeBytes / 1e6) });
+        const stats = getTempStorageStats();
+        console.warn(
+          `[NOVABOX] 🗄️ Coffre de livraison plein (${Math.round(stats.totalMB)}/${Math.round(
+            getTempMaxTotalBytes() / (1024 * 1024)
+          )} Mo) — ép. ${epNum} (${Math.round(
+            sizeBytes / 1e6
+          )} Mo) téléchargé mais non stocké : ce n'est pas la source qui refuse, ce sont les liens déjà livrés qui occupent le coffre. Réessaie dans quelques minutes.`
+        );
+        updateEpisodeProgress(batchJob.id, epNum, {
+          status: "failed",
+          progressPercent: 0,
+          error: "Coffre de livraison plein — pas un refus de la source, réessaie dans quelques minutes"
+        });
+      };
+
+      // 9.15 : épisode déjà présent dans le cache (quelqu'un l'a téléchargé
+      // dans les dernières 24 h) ? Lien instantané SANS re-téléchargement.
+      const cachedEp = lookupMediaReuse(reuseKeyFor(epNum));
+      if (cachedEp) {
+        try {
+          // 9.18yyy : honnêteté qualité AUSSI depuis le cache — la vérité
+          // reste le fichier (terrain : E08 réellement 1080P resservi en
+          // « 480P » depuis le cache du run précédent sans cette sonde).
+          let cacheFilename = filename;
+          try {
+            if (fastLaneMismatch(resolution, cachedEp.bytes, null)) {
+              const probedCache = await probeVideoInfo(cachedEp.filePath);
+              const realCache = fastLaneMismatch(resolution, cachedEp.bytes, probedCache.height);
+              if (realCache) {
+                cacheFilename = buildEpisodeFilename(animeClean, lang, realCache, formattedSeason, formattedEpisode);
+                qualityLies.push({ epNum, real: realCache, sizeMB: Math.round(cachedEp.bytes / 1e6) });
+                console.warn(
+                  `[NOVABOX] Qualité réelle E${String(epNum).padStart(2, "0")} : ${realCache} (cache, demandé ${resolution}, ${Math.round(
+                    cachedEp.bytes / 1e6
+                  )} Mo) — étiquette corrigée honnêtement.`
+                );
+              }
+            }
+          } catch {}
+          const rec = registerTempDownload(cachedEp.filePath, cacheFilename, { noCopy: true, jobId: batchJob.id });
+          generatedLinks.push({ epNum, downloadUrl: rec.downloadUrl, sizeMB: rec.sizeMB, filename: cacheFilename, expiresAt: rec.expiresAt });
+          zipEpisodeFiles.push({ epNum, filePath: cachedEp.filePath }); // 9.18m : le cache participe au ZIP (Z1)
+          cacheHits++;
+          updateEpisodeProgress(batchJob.id, epNum, { status: "completed", progressPercent: 100, sizeMB: rec.sizeMB, downloadUrl: rec.downloadUrl });
+          return;
+        } catch {} // quota de records → tombons dans le chemin normal
+      }
 
       updateEpisodeProgress(batchJob.id, epNum, { status: "downloading", progressPercent: 35 });
 
-      try {
-        // Collect mirror URLs for this episode
-        const mirrorUrls: string[] = [];
-        for (const listId of Object.keys(session.episodes || {}).map(Number)) {
-          const url = session.episodes?.[listId]?.[epIndex];
-          if (url && !mirrorUrls.includes(url)) {
-            mirrorUrls.push(url);
-          }
+      // 9.18hhhh — progression RÉELLE de cet épisode (les 35 % figés étaient
+      // un plâtre) : remonte au tableau de bord LIVE du lot ET au panneau
+      // (throttle ±10 % pour le store, l'édition WhatsApp a son propre
+      // throttle côté reporter).
+      let lastPanelPct = -10;
+      const onBatchEpProgress = (pct: number) => {
+        batchProgress.updateBatchItem(epNum, pct / 100, `ÉP ${epNum}`);
+        if (pct - lastPanelPct >= 10 || pct >= 100) {
+          lastPanelPct = pct;
+          try {
+            updateEpisodeProgress(batchJob.id, epNum, { progressPercent: Math.min(99, Math.floor(pct)) });
+          } catch {}
         }
+      };
+
+      try {
+        // Collect mirror URLs for this episode (session language first, audit 8.3)
+        const { primary: batchPrimary, secondary: batchSecondary } = splitMirrorsByLanguage(
+          session.episodes || {},
+          session.episodeListLabels,
+          epIndex,
+          session.selectedLanguage || "VOSTFR"
+        );
 
         let success = false;
-        if (mirrorUrls.length > 0) {
+        for (const tier of [batchPrimary, batchSecondary]) {
+          if (success || tier.length === 0) continue;
           try {
-            const fallbackResult = await downloadWithAllMirrorsFallback(mirrorUrls, resolution, localPath, 240000);
+            const fallbackResult = await downloadWithAllMirrorsFallback(tier, resolution, localPath, 240000, onBatchEpProgress);
             if (fallbackResult.success && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
               success = true;
             }
@@ -1928,33 +3005,90 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
               }
             }
 
-            success = await executeFfmpegDownload(targetHlsUrl, downloadSourceUrl, originUrl, localPath, 240000);
+            success = await executeFfmpegDownload(targetHlsUrl, downloadSourceUrl, originUrl, localPath, 240000, onBatchEpProgress);
+            if (!success) markDeadFileSlug(targetHlsUrl);
           }
         }
 
         if (success && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
           const thisMB = fs.statSync(localPath).size / (1024 * 1024);
+          // 9.18aaaa (terrain 18/10) : un épisode TÉLÉCHARGÉ n'est JAMAIS
+          // détruit ni menti « refusé par la source » — E10 (906 Mo) a été
+          // supprimé après un téléchargement réussi puis annoncé refusé.
+          // Le quota borne le lancement de NOUVEAUX épisodes, pas le travail
+          // déjà fait : celui-ci est livré, les suivants ne seront pas lancés.
           if (totalMBDownloaded + thisMB > MAX_BATCH_TOTAL_MB) {
-            try { fs.unlinkSync(localPath); } catch {}
             quotaExceeded = true;
-            updateEpisodeProgress(batchJob.id, epNum, { status: "failed", progressPercent: 0, error: "Batch byte quota exceeded" });
-            return;
+            console.warn(
+              `[NOVABOX] 📏 Quota du lot atteint (${Math.round(totalMBDownloaded + thisMB)}/${MAX_BATCH_TOTAL_MB} Mo) — ép. ${epNum} téléchargé sera LIVRÉ, aucun nouvel épisode ne sera lancé.`
+            );
           }
           totalMBDownloaded += thisMB;
 
-          // Move file into managed temporary store so the download link remains valid for full TTL
-          const tempDownload = registerTempDownload(localPath, filename, {
-            ttlMinutes: 120, // 2 hours for individual episodes
-            moveFile: true
-          });
+          // 9.18ddd (décision owner) : plus d'amincissement imposé en lot
+          // non plus — l'épisode original est livré tel quel (le quota
+          // d'octets du lot reste la garde disque).
 
-          downloadedFilePaths.push(tempDownload.filePath);
+          // Move file into managed temporary store — TTL glissant 8.83 :
+          // 30 min par défaut (NEBULA_LINK_TTL_MIN), remises à zéro à chaque
+          // téléchargement, vie totale plafonnée à 2 h.
+          // 9.18xxx : honnêteté qualité — la seule vérité est le fichier.
+          // Terrain 18/10 : E05/E08 « 480P » livrés à 710-725 Mo (flux
+          // 1080P servi sous une variante mal étiquetée, sans liste de
+          // pistes lisible). On sonde la hauteur RÉELLE et on corrige
+          // l'étiquette du lien au lieu de livrer un mensonge.
+          try {
+            const stSize = fs.statSync(localPath).size;
+            if (fastLaneMismatch(resolution, stSize, null)) {
+              const probedFast = await probeVideoInfo(localPath);
+              const real = fastLaneMismatch(resolution, stSize, probedFast.height);
+              if (real) {
+                filename = buildEpisodeFilename(animeClean, lang, real, formattedSeason, formattedEpisode);
+                qualityLies.push({ epNum, real, sizeMB: Math.round(stSize / 1e6) });
+                console.warn(
+                  `[NOVABOX] Qualité réelle E${String(epNum).padStart(2, "0")} : ${real} (demandé ${resolution}, ${Math.round(stSize / 1e6)} Mo) — étiquette corrigée honnêtement.`
+                );
+              }
+            }
+          } catch {}
+
+          // 9.15 : le fichier entre au cache de réutilisation (lien physique,
+          // zéro octet supplémentaire) — le prochain demandeur l'aura instantanément.
+          try { storeMediaReuse(reuseKeyFor(epNum), localPath, filename); } catch {}
+
+          // 9.18yyy : si le coffre est plein (liens déjà livrés vivants), on
+          // ne jette PAS l'épisode : le fichier vient d'entrer au cache de
+          // réutilisation — un lien noCopy le sert TEL QUEL sans occuper un
+          // octet du coffre (terrain : E6 passait à 56 Mo près, E7 était
+          // refusé pour 33 Mo de trop, tous deux « refusés par la source »).
+          const episodeBytes = fs.statSync(localPath).size;
+          let tempDownload: ReturnType<typeof registerTempDownload> | null = null;
+          if (wouldExceedTempQuota(episodeBytes)) {
+            const cachedNow = lookupMediaReuse(reuseKeyFor(epNum));
+            if (cachedNow) {
+              try {
+                tempDownload = registerTempDownload(cachedNow.filePath, filename, { noCopy: true, jobId: batchJob.id });
+                console.warn(
+                  `[NOVABOX] 🗄️ Coffre de livraison plein — ép. ${epNum} servi sans copie depuis le cache de réutilisation (zéro octet de coffre).`
+                );
+              } catch {} // retombe sur l'essai classique ci-dessous
+            }
+          }
+          if (!tempDownload) {
+            tempDownload = registerTempDownload(localPath, filename, {
+              moveFile: true,
+              jobId: batchJob.id // 8.88 : la purge owner épargne ce batch tant que son claim est vivant
+            });
+          }
+
+          zipEpisodeFiles.push({ epNum, filePath: tempDownload.filePath }); // 9.18m : apparié, plus de décalage d'index (Z1)
 
           generatedLinks.push({
             epNum,
             downloadUrl: tempDownload.downloadUrl,
             sizeMB: tempDownload.sizeMB,
-            filename
+            filename,
+            expiresAt: tempDownload.expiresAt
           });
 
           updateEpisodeProgress(batchJob.id, epNum, {
@@ -1964,30 +3098,93 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
             downloadUrl: tempDownload.downloadUrl
           });
         } else {
+          // 8.69: mono-source strict — no cross-source rescue anymore.
+          // The episode is honestly reported as failed; the user can
+          // switch catalogs himself if a CDN node blocks this file.
           if (fs.existsSync(localPath)) {
             try { fs.unlinkSync(localPath); } catch {}
           }
+          failedEpisodeCount++;
           updateEpisodeProgress(batchJob.id, epNum, { status: "failed", progressPercent: 0, error: "Stream unavailable" });
         }
       } catch (err: any) {
+        let caughtBytes = 0;
+        try { caughtBytes = fs.statSync(localPath).size; } catch {}
         if (fs.existsSync(localPath)) {
           try { fs.unlinkSync(localPath); } catch {}
         }
+        // 9.18yyy : un refus de quota du coffre n'est PAS un refus de la
+        // source — l'épisode est différé avec sa vraie cause (terrain :
+        // E5/E7/E8 annoncés « la source les refuse » alors qu'elle avait
+        // livré — c'était le coffre qui débordait des liens précédents).
+        if (String(err?.message || "").includes("Temporary download storage quota")) {
+          deferForFullVault(caughtBytes);
+          return;
+        }
+        failedEpisodeCount++;
         updateEpisodeProgress(batchJob.id, epNum, { status: "failed", progressPercent: 0, error: err?.message || "Stream error" });
       }
     };
 
     let nextEpisodeIdx = 0;
+    // Batch OOM hardening (audit 8.14): the VPS container is capped by its
+    // cgroup (~954 MB) while Node sizes its heap from HOST RAM, so V8 defers
+    // major GC indefinitely and transient Buffer garbage accumulates across
+    // episodes until the kernel OOM-killer strikes. npm start now passes
+    // --max-old-space-size=384 --expose-gc; an explicit GC between episodes
+    // keeps RSS flat. No-op when --expose-gc is absent.
+    const gcBetweenEpisodes = () => {
+      try {
+        (globalThis as any).gc?.();
+      } catch {}
+    };
     const worker = async () => {
       while (nextEpisodeIdx < indices.length) {
-        if (quotaExceeded) break;
+        if (quotaExceeded || memoryStop) break;
         const currentIdx = nextEpisodeIdx++;
+        const episodeWorkT0 = Date.now(); // 9.18dddd P1 : chrono par épisode
         await processEpisodeTask(currentIdx);
+        // 9.18hhhh — l'épisode est TRAITÉ (livré, caché, différéré ou échoué :
+        // l'avancement global du lot avance dans tous les cas, honnêtement).
+        batchProgress.completeBatchItem(indices[currentIdx] + 1);
+        const episodeWorkMs = Date.now() - episodeWorkT0;
+        gcBetweenEpisodes();
+        // 8.50 OOM hardening: heavy batches (~120 MB/episode) pushed RSS into
+        // the ~954 MB cgroup ceiling and the kernel killed the bot mid-batch.
+        // Observe the footprint and back off when pressure rises.
+        const guardT0 = Date.now();
+        const level = await enforceMemoryHeadroom(`batch episode ${currentIdx + 1}/${indices.length} done`);
+        const guardMs = Date.now() - guardT0;
+        console.log(
+          `[NOVABOX] ⏱️ ép. ${indices[currentIdx]} : travail ${(episodeWorkMs / 1000).toFixed(1)} s | garde ${(guardMs / 1000).toFixed(1)} s | cycle ${((episodeWorkMs + guardMs) / 1000).toFixed(1)} s`
+        );
+        if (level === "critical") {
+          console.warn(`[NOVABOX] Memory guard: RSS critical after headroom wait — deferring remaining episodes.`);
+          memoryStop = true;
+          break;
+        }
       }
     };
 
     const workers = Array.from({ length: Math.min(CONCURRENCY_LIMIT, indices.length) }, () => worker());
     await Promise.all(workers);
+    // 9.18hhhh — clôture du tableau de bord LIVE du lot avant le récapitulatif.
+    await batchProgress.finish(
+      `*📦 ${session.animeTitle} — ${session.selectedSeason?.name || formattedSeason}*\n✅ Lot traité — préparation des liens et du récapitulatif…`
+    );
+    // Episodes never claimed by a worker = deferred by the memory guard (an
+    // episode claimed and failed is NOT deferred — it is reported as failed).
+    const memoryDeferredCount = memoryStop ? indices.length - nextEpisodeIdx : 0;
+    // 9.18aaaa : épisodes jamais lancés parce que le quota d'octets du lot
+    // était atteint — différés honnêtes, jamais « refusés par la source ».
+    const quotaDeferredCount = quotaExceeded && !memoryStop ? indices.length - nextEpisodeIdx : 0;
+    // 9.18yyy : filtres du rapport — les différés coffre plein ne sont pas
+    // « refusés par la source », et la ligne qualité réelle ne doit parler
+    // QUE des liens réellement livrés (terrain run 2 : elle annonçait des
+    // liens « étiquetés 1080P » qui n'existaient pas).
+    const vaultDeferredSet = new Set(vaultDeferredEpisodes.map(v => v.epNum));
+    const deliveredEpSet = new Set(generatedLinks.map(g => g.epNum));
+    const deliveredLies = qualityLies.filter(q => deliveredEpSet.has(q.epNum));
 
     // If season zip was requested and multiple files downloaded, create a Season ZIP archive
     let zipDownloadUrl = "";
@@ -1995,12 +3192,21 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
     let zipSizeMB = 0;
     let zipFilePath = "";
 
-    if (downloadedFilePaths.length > 1) {
-      updateJobStatus(batchJob.id, "packaging", `📦 Packaging ${downloadedFilePaths.length} episodes into ZIP archive...`);
+    // Season ZIP packaging is OFF by default (audit 8.16, user decision
+    // 2026-08-31): batches deliver one high-speed temp link per episode.
+    // Set NEBULA_BATCH_ZIP=1 to restore the all-in-one archive behaviour.
+    const batchZipEnabled = process.env.NEBULA_BATCH_ZIP === "1";
+
+    if (batchZipEnabled && zipEpisodeFiles.length > 1) {
+      updateJobStatus(batchJob.id, "packaging", `📦 Packaging ${zipEpisodeFiles.length} episodes into ZIP archive...`);
       try {
-        const episodeInputs = generatedLinks.map((item, idx) => ({
-          filePath: downloadedFilePaths[idx],
-          episodeNumber: item.epNum
+        // 9.18m (Z1) : entrées APPARIÉES (épisode ↔ fichier) — le cache et
+        // les téléchargements frais alimentent la même liste, dans l'ordre
+        // d'arrivée, sans supposer que generatedLinks et les fichiers se
+        // correspondent indice par indice.
+        const episodeInputs = zipEpisodeFiles.map((entry) => ({
+          filePath: entry.filePath,
+          episodeNumber: entry.epNum
         }));
 
         const zipResult = await BatchZipManager.packageEpisodes({
@@ -2009,7 +3215,6 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
           season: formattedSeason,
           resolution,
           language: lang,
-          ttlMinutes: 180,
           namingStyle: "simple",
           batchJobId: batchJob.id,
           cleanupSourceFiles: false // Retain individual files for the individual episode links
@@ -2025,27 +3230,140 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         console.warn("[NOVABOX] Batch zip packaging note:", err.message);
       }
     } else if (generatedLinks.length > 0) {
-      updateJobStatus(batchJob.id, "completed", "Batch download ready");
+      updateJobStatus(
+        batchJob.id,
+        "completed",
+        memoryDeferredCount > 0 || vaultDeferredEpisodes.length > 0 || quotaDeferredCount > 0
+          ? `Batch ready (partiel — ${memoryDeferredCount} différé(s) garde mémoire, ${vaultDeferredEpisodes.length} différé(s) coffre plein, ${quotaDeferredCount} différé(s) quota du lot)`
+          : "Batch download ready"
+      );
     } else {
-      updateJobStatus(batchJob.id, "failed", "No streams could be resolved", "All streams CDN restricted");
+      updateJobStatus(
+        batchJob.id,
+        "failed",
+        memoryDeferredCount > 0
+          ? "Memory guard deferred all episodes"
+          : vaultDeferredEpisodes.length > 0
+            ? "Delivery vault full — episodes deferred"
+            : quotaDeferredCount > 0
+              ? "Batch byte quota reached — episodes deferred"
+              : "No streams could be resolved",
+        memoryDeferredCount > 0
+          ? "Pression RAM critique — réessaye dans quelques minutes"
+          : vaultDeferredEpisodes.length > 0
+            ? "Coffre de livraison plein — réessaie dans quelques minutes"
+            : quotaDeferredCount > 0
+              ? "Quota du lot atteint — demande le reste dans une nouvelle commande"
+              : "Aucun épisode téléchargeable (sources indisponibles)"
+      );
     }
 
     await context.react("✅");
 
     if (generatedLinks.length > 0) {
-      const linksText = generatedLinks
-        .map(g => `• 🎬 *Episode ${g.epNum}:* [${g.sizeMB} MB]\n  🔗 ${g.downloadUrl}`)
-        .join("\n\n");
+      // Multi-episode delivery (audit 8.39): ONE offline HTML document with
+      // per-episode buttons + "download all" instead of a wall of links the
+      // user must tap one by one inside WhatsApp. Falls back to the legacy
+      // links message if the document cannot be sent.
+      let pageDelivered = false;
+      let pageMode: "link" | "document" = "link"; // 9.18ffff : lien hébergé (primaire) ou document (repli)
+      // ZIP mode (NEBULA_BATCH_ZIP=1) is an explicit one-archive request — skip
+      // the HTML page then to avoid delivering both (audit 8.41).
+      if (generatedLinks.length > 1 && !zipDownloadUrl) {
+        try {
+          const expiresAt = generatedLinks.reduce(
+            (min, g) => (g.expiresAt && (!min || g.expiresAt < min) ? g.expiresAt : min),
+            0
+          );
+          const slug = (session.animeTitle || "anime").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "anime";
+          const pageFilename = `nebula-${slug}-${(session.selectedSeason?.name || formattedSeason || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 20) || "saison"}.html`;
+          const html = buildDownloadPage({
+            title: `${session.animeTitle} — ${session.selectedSeason?.name || formattedSeason}`,
+            subtitle: `${lang} · ${resolution} · ${generatedLinks.length} épisodes prêts`,
+            entries: generatedLinks.map(g => ({ label: `Épisode ${g.epNum}`, url: g.downloadUrl, sizeMB: g.sizeMB })),
+            expiresAt
+          });
+          // 9.18ffff : WhatsApp filtre désormais les documents text/html —
+          // la page est HÉBERGÉE (route /d/ + tunnel, inline) et le bot
+          // envoie le LIEN. Le pipeline document de WhatsApp n'intervient plus.
+          const pageLink = registerDownloadPage(html, pageFilename, { jobId: batchJob.id });
+          if (pageLink) {
+            await sock.sendMessage(
+              msg.key.remoteJid,
+              {
+                text:
+                  `📄 *Page de téléchargement prête* — ${generatedLinks.length} épisodes\n\n` +
+                  `🔗 ${pageLink}\n\n` +
+                  `👉 Ouvre ce lien dans Chrome : un seul bouton *« Tout télécharger »*, ou un bouton par épisode.\n` +
+                  `⏳ Valable ${getLinkTtlMinutes()} min (relancée à chaque ouverture).`
+              },
+              { quoted: msg }
+            );
+            pageDelivered = true;
+            pageMode = "link";
+            console.log(`[NOVABOX] Delivered download page as HOSTED LINK (${generatedLinks.length} links, inline).`);
+          } else {
+            // Repli : envoi en document (là où WhatsApp l'accepte encore).
+            await sock.sendMessage(
+              msg.key.remoteJid,
+              {
+                document: Buffer.from(html, "utf-8"),
+                mimetype: "text/html",
+                fileName: pageFilename
+              },
+              { quoted: msg }
+            );
+            pageDelivered = true;
+            pageMode = "document";
+            console.log(`[NOVABOX] Delivered offline download page (${generatedLinks.length} links) as HTML document.`);
+          }
+        } catch (pageErr: any) {
+          console.warn("[NOVABOX] HTML download page could not be sent — legacy links message:", pageErr?.message);
+        }
+      }
 
-      let responseMsg = 
+      // 9.18xxx/9.18yyy/9.18aaaa : « Épisodes échoués » = épisodes TENTÉS et
+      // non livrés — ni les différés mémoire (jamais lancés), ni les différés
+      // coffre plein (téléchargés puis non stockés : la source a livré), ni
+      // les différés quota du lot (jamais lancés non plus).
+      const attemptedEpNums = indices
+        .slice(0, indices.length - memoryDeferredCount - quotaDeferredCount)
+        .map(i => i + 1)
+        .filter(n => !vaultDeferredSet.has(n));
+      let responseMsg =
         `🚀 *NEBULA NOVABOX - BATCH DOWNLOAD COMPLETED* 🚀\n\n` +
         `🎬 *Anime:* ${session.animeTitle}\n` +
         `🗣️ *Language:* ${lang} | ${session.selectedSeason?.name}\n` +
         `⚙️ *Quality:* ${resolution}\n` +
         `📦 *Ready Episodes:* ${generatedLinks.length}/${indices.length}\n` +
-        `⏳ *Links Validity:* 3–4 Hours\n\n` +
-        `📥 *Direct Episode Links:*\n\n` +
-        `${linksText}\n\n`;
+        formatFailedEpisodes(
+          attemptedEpNums,
+          generatedLinks.map(g => g.epNum)
+        ) +
+        (deliveredLies.length > 0
+          ? `⚠️ *Qualité réelle :* ép. ${deliveredLies.map(q => `${q.epNum} servi en ${q.real} (${q.sizeMB} Mo)`).join(", ")} — la source n'a pas servi le ${resolution} demandé pour ${deliveredLies.length > 1 ? "ces épisodes" : "cet épisode"}, liens étiquetés avec la qualité réelle.\n`
+          : "") +
+        (vaultDeferredEpisodes.length > 0
+          ? `🗄️ *Coffre de livraison plein :* ép. ${vaultDeferredEpisodes.map(v => `${v.epNum} (${v.sizeMB} Mo)`).join(", ")} téléchargé(s) mais non stocké(s) — les liens déjà livrés occupent le coffre. Ce n'est pas la source qui refuse : redemande ces épisodes dans quelques minutes.\n`
+          : "") +
+        (quotaDeferredCount > 0
+          ? `📏 *Quota du lot atteint :* ${quotaDeferredCount} épisode(s) non lancé(s) — ce lot a déjà téléchargé ${Math.round(totalMBDownloaded)} Mo (plafond ${MAX_BATCH_TOTAL_MB} Mo). Ce n'est pas la source qui refuse : demande les épisodes restants dans une nouvelle commande.\n`
+          : "") +
+        (cacheHits > 0
+          ? `⚡ *Cache:* ${cacheHits}/${indices.length} épisode(s) déjà présents — servis instantanément, sans re-téléchargement.\n`
+          : "") +
+        (memoryDeferredCount > 0
+          ? `🛡️ *Garde mémoire:* ${memoryDeferredCount} épisode(s) non lancé(s) pour protéger le bot (pression RAM critique). Les épisodes livrés ci-dessus sont intacts — redemande les épisodes manquants dans quelques minutes.\n`
+          : "") +
+        `⏳ *Links Validity:* ${getLinkTtlMinutes()} min (reset at each download, max 2 h)\n\n` +
+        (pageDelivered
+          ? (pageMode === "link"
+              ? `📄 *Page de téléchargement :* le lien ci-dessus s'ouvre dans Chrome → un seul bouton *« Tout télécharger »* lance tous les épisodes d'un coup (ou bouton par épisode).\n\n`
+              : `📄 *Ouvre le fichier HTML ci-dessus dans Chrome* → un seul bouton *« Tout télécharger »* lance tous les épisodes d'un coup (ou bouton par épisode).\n\n`)
+          : `📥 *Direct Episode Links:*\n\n` +
+            generatedLinks
+              .map(g => `• 🎬 *Episode ${g.epNum}:* [${g.sizeMB} MB]\n  🔗 ${g.downloadUrl}`)
+              .join("\n\n") + "\n\n");
 
       if (zipDownloadUrl) {
         responseMsg += 
@@ -2056,7 +3374,10 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
             : `🔗 *High-Speed Link:* ${zipDownloadUrl}\n\n`);
       }
 
-      responseMsg += `💡 _Click any link above to start instant high-speed download or stream in your browser._\n🌌 _Nebula Bot - Your ultimate media center_`;
+      responseMsg +=
+        pageDelivered && !zipDownloadUrl
+          ? `🌌 _Nebula Bot - Your ultimate media center_`
+          : `💡 _Click any link above to start instant high-speed download or stream in your browser._\n🌌 _Nebula Bot - Your ultimate media center_`;
 
       await context.reply(responseMsg);
 
@@ -2078,20 +3399,26 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       return;
     } else {
       // Fallback: Generate full batch episode directory with instant high-speed player streaming links exclusively via VidMoly
+      const failureNotice =
+        memoryDeferredCount > 0
+          ? `🛡️ *Garde mémoire:* pression RAM critique — aucun épisode n'a été lancé pour protéger le bot. Redemande dans quelques minutes.\n\n`
+          : failedEpisodeCount > 0
+          ? `❌ *Téléchargement impossible pour les ${failedEpisodeCount} épisode(s)* — les sources les refusent pour le moment.\n🔁 Réessaie dans quelques minutes. En attendant, voici les liens de lecture :\n\n`
+          : "";
       const episodeLinksText = indices.map((idx) => {
         const epN = idx + 1;
-        const vUrl = getVidMolyUrl(session.episodes, idx);
+        const vUrl = getVidMolyUrl(session.episodes, idx, session.episodeListLabels, session.selectedLanguage);
         let line = `• 🎬 *Episode ${epN}:*\n`;
         if (vUrl) {
-          line += `  📺 *VidMoly (Official):* ${vUrl}\n`;
+          line += `  📺 *Lecteur (${playerSourceLabel(vUrl)}):* ${vUrl}\n`;
         } else {
-          line += `  📺 *VidMoly:* Stream ready in app\n`;
+          line += `  📺 *Lecteur:* Stream ready in app\n`;
         }
         return line.trim();
       }).join("\n\n");
 
       return await context.reply(
-        `📥 *NEBULA NOVABOX - BATCH EPISODES READY* 📥\n\n` +
+        `${failureNotice}📥 *NEBULA NOVABOX - BATCH EPISODES READY* 📥\n\n` +
         `🎬 *Anime:* ${session.animeTitle}\n` +
         `🗣️ *Language:* ${lang} | ${session.selectedSeason?.name}\n` +
         `⚙️ *Selected Resolution:* ${resolution}\n` +
@@ -2112,13 +3439,33 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
 
   // Formatted filename: [AnimeName]_[Language]_[Resolution]_[Season]_[Episode]
   const filenameBase = `${animeClean}_${lang}_${resolution}_${formattedSeason}_${formattedEpisode}`;
-  const filename = sanitizeFilename(filenameBase) + ".mp4";
+  let filename = sanitizeFilename(filenameBase) + ".mp4";
 
-  const vidmolyUrl = getVidMolyUrl(session.episodes, epIndex);
+  const vidmolyUrl = getVidMolyUrl(session.episodes, epIndex, session.episodeListLabels, session.selectedLanguage);
+
+  // 9.15 : déjà présent dans le cache (24 h glissantes) ? Livraison instantanée.
+  const cachedSingle = lookupMediaReuse(reuseKeyFor(epNum));
+  if (cachedSingle) {
+    try {
+      const rec = registerTempDownload(cachedSingle.filePath, filename, { noCopy: true });
+      clearUserSession(context.sender);
+      await context.react("⚡");
+      return void (await context.reply(
+        `⚡ *Déjà prêt — cache 24 h* (aucun re-téléchargement)\n\n` +
+        `🎬 *Anime:* ${session.animeTitle}\n` +
+        `🗣️ *Langue:* ${lang}\n` +
+        `🎞️ *Épisode:* Episode ${epNum}\n` +
+        `⚙️ *Résolution:* ${resolution}\n` +
+        `📦 *Taille:* ${rec.sizeMB} Mo\n\n` +
+        `🔗 *Lien:* ${rec.downloadUrl}\n\n` +
+        `⏳ Valable ${getLinkTtlMinutes()} min (remis à zéro à chaque téléchargement, max 2 h).`
+      ));
+    } catch {} // quota de records → chemin normal
+  }
 
   // React to let the user know we are downloading the video
   await context.react("⏳");
-  await context.reply(
+  const singleAnchor = await context.reply(
     `📥 *Nebula Novabox* - _Direct Media Preparation_\n\n` +
     `🎬 *Anime:* ${session.animeTitle}\n` +
     `🎞️ *Episode:* Episode ${epNum}\n` +
@@ -2126,19 +3473,41 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
     `⏳ _Downloading and packing stream segments into MP4... This will take about 10-25 seconds._`
   );
 
+  // 9.18hhhh — ce message devient le tableau de bord LIVE : barre, vitesse,
+  // Mo et temps restant, édité sur place (jamais de nouveau message par
+  // étape). Une édition échouée ne touche JAMAIS le téléchargement.
+  const sendProgress: ProgressSendFn = async (text: string, editKey?: unknown) => {
+    const target = resolveLiveSocket(sock);
+    if (!target) throw new Error("no live socket");
+    return await target.sendMessage(
+      msg.key.remoteJid!,
+      editKey ? { text, edit: editKey as any } : { text },
+      { quoted: msg }
+    );
+  };
+  const progress = createProgressReporter({
+    send: sendProgress,
+    anchorKey: (singleAnchor as any)?.key,
+    title: `📥 ${session.animeTitle} — ÉP ${epNum} (${resolution})`,
+    initialPhaseLabel: "Téléchargement direct"
+  });
+  const onDlProgress = (pct: number, bytesDone?: number) => {
+    progress.update({ percent: pct, bytesDone });
+  };
+
   let localPath = path.join(os.tmpdir(), filename);
   let compressedPath = "";
   let downloadSuccess = false;
   let activePlayerName = "Direct Stream";
 
-  // Collect mirror URLs for this episode
-  const mirrorUrls: string[] = [];
-  for (const listId of Object.keys(session.episodes || {}).map(Number)) {
-    const url = session.episodes?.[listId]?.[epIndex];
-    if (url && !mirrorUrls.includes(url)) {
-      mirrorUrls.push(url);
-    }
-  }
+  // Collect mirror URLs for this episode, split into language tiers so the
+  // session language (VF by default when available) is tried first (audit 8.3).
+  const { primary: langPrimaryMirrors, secondary: mirrorUrls } = splitMirrorsByLanguage(
+    session.episodes || {},
+    session.episodeListLabels,
+    epIndex,
+    session.selectedLanguage || "VOSTFR"
+  );
 
   // Multi-host stream resolution
   let streamToDownload: any = null;
@@ -2154,17 +3523,31 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         'Origin': streamOrigin
       }
     };
-    downloadSuccess = await executeDirectOrFfmpegDownload(streamToDownload, localPath, 240000);
+    downloadSuccess = await executeDirectOrFfmpegDownload(streamToDownload, localPath, 240000, onDlProgress);
+    if (downloadSuccess) {
+      try {
+        activePlayerName = new URL(session.selectedVariantUrl).hostname.replace(/^www\./, "");
+      } catch {}
+    }
   }
 
   // Multi-mirror fallback if direct selected variant failed or wasn't pre-selected
-  if (!downloadSuccess && mirrorUrls.length > 0) {
-    console.log(`[NOVABOX] Running multi-mirror download fallback for ${mirrorUrls.length} mirrors...`);
-    const fallbackResult = await downloadWithAllMirrorsFallback(mirrorUrls, resolution, localPath, 240000);
+  if (!downloadSuccess && langPrimaryMirrors.length > 0) {
+    console.log(`[NOVABOX] Multi-mirror download (${session.selectedLanguage || "VOSTFR"} lists first): ${langPrimaryMirrors.length} mirrors...`);
+    const fallbackResult = await downloadWithAllMirrorsFallback(langPrimaryMirrors, resolution, localPath, 240000, onDlProgress);
     if (fallbackResult.success && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
       downloadSuccess = true;
       if (fallbackResult.hostName) activePlayerName = fallbackResult.hostName;
       console.log(`[NOVABOX] Multi-mirror download fallback succeeded with host: ${fallbackResult.hostName}`);
+    }
+  }
+  if (!downloadSuccess && mirrorUrls.length > 0) {
+    console.log(`[NOVABOX] Retrying with the other language mirrors (${mirrorUrls.length})...`);
+    const fallbackResult = await downloadWithAllMirrorsFallback(mirrorUrls, resolution, localPath, 240000, onDlProgress);
+    if (fallbackResult.success && fs.existsSync(localPath) && fs.statSync(localPath).size > 1000) {
+      downloadSuccess = true;
+      if (fallbackResult.hostName) activePlayerName = fallbackResult.hostName;
+      console.log(`[NOVABOX] Cross-language mirror fallback succeeded with host: ${fallbackResult.hostName}`);
     }
   }
 
@@ -2172,8 +3555,8 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
   if (!downloadSuccess) {
     console.log(`[NOVABOX] Direct download failed. Attempting legacy VidMoly fallback resolution lookup...`);
     const resolved = await resolveEpisodeStream(session.episodes || {}, epIndex);
-    const downloadSourceUrl = resolved.refererUrl;
-    const originUrl = resolved.originUrl;
+    let downloadSourceUrl = resolved.refererUrl;
+    let originUrl = resolved.originUrl;
     let targetHlsUrl = resolved.hlsUrl;
     console.log(`[NOVABOX] Legacy VidMoly Resolved HLS: "${targetHlsUrl}", Referer: "${downloadSourceUrl}", Origin: "${originUrl}"`);
 
@@ -2194,11 +3577,72 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
           targetHlsUrl = resolveAbsoluteUrl(targetHlsUrl, "index-f3-v1-a1.txt");
         }
       }
+      // Multi-quality urlset masters 403 on some CDN nodes while their variant
+      // paths answer with the right referer — resolve the pair here too (the
+      // mirror path already does it at extraction time; audit 8.44).
+      if (targetHlsUrl.includes(".urlset/")) {
+        try {
+          const resolvedUrlset = await resolveVidmolyUrlset(targetHlsUrl, {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": downloadSourceUrl,
+            "Origin": originUrl
+          });
+          if (resolvedUrlset) {
+            targetHlsUrl = resolvedUrlset.mediaPlaylistUrl;
+            if (resolvedUrlset.headers.Referer) downloadSourceUrl = resolvedUrlset.headers.Referer;
+            if (resolvedUrlset.headers.Origin) originUrl = resolvedUrlset.headers.Origin;
+          }
+        } catch {}
+      }
       console.log(`[NOVABOX] Final target sub-playlist URL for download: "${targetHlsUrl}"`);
-      downloadSuccess = await executeFfmpegDownload(targetHlsUrl, downloadSourceUrl, originUrl, localPath, 240000);
+      downloadSuccess = await executeFfmpegDownload(targetHlsUrl, downloadSourceUrl, originUrl, localPath, 240000, onDlProgress);
       console.log(`[NOVABOX] Legacy VidMoly ffmpeg download finished. Success: ${downloadSuccess}`);
+      if (!downloadSuccess) markDeadFileSlug(targetHlsUrl);
     }
   }
+
+  // 9.18cccc : honnêteté qualité en SINGLE aussi (le batch le fait depuis
+  // 9.18xxx) — un « 480P » servi en 1080P (725 Mo) était livré étiqueté
+  // 480P sans aucune sonde. Même règle : la seule vérité est le fichier.
+  let singleQualityLieLine = "";
+  try {
+    if (downloadSuccess && fs.existsSync(localPath)) {
+      const stSizeSingle = fs.statSync(localPath).size;
+      if (fastLaneMismatch(resolution, stSizeSingle, null)) {
+        const probedSingle = await probeVideoInfo(localPath);
+        const realSingle = fastLaneMismatch(resolution, stSizeSingle, probedSingle.height);
+        if (realSingle) {
+          filename = buildEpisodeFilename(animeClean, lang, realSingle, formattedSeason, formattedEpisode);
+          singleQualityLieLine =
+            `⚠️ *Qualité réelle :* servi en ${realSingle} (${Math.round(stSizeSingle / 1e6)} Mo) — la source n'a pas servi le ${resolution} demandé, lien étiqueté avec la qualité réelle.\n\n`;
+          console.warn(
+            `[NOVABOX] Qualité réelle E${String(epNum).padStart(2, "0")} : ${realSingle} (single, demandé ${resolution}, ${Math.round(
+              stSizeSingle / 1e6
+            )} Mo) — étiquette corrigée honnêtement.`
+          );
+        }
+      }
+    }
+  } catch {}
+
+  // 9.18hhhh — clôture du tableau de bord LIVE : réussite avec la taille
+  // réelle, ou honnêteté sur l'échec (la barre ne reste JAMAIS figée).
+  if (downloadSuccess && fs.existsSync(localPath)) {
+    const doneSingleMB = fs.statSync(localPath).size / 1e6;
+    await progress.finish(
+      `*📥 ${session.animeTitle} — ÉP ${epNum}*\n✅ Téléchargement terminé (${doneSingleMB.toFixed(1).replace(".", ",")} Mo) — préparation de l'envoi…`
+    );
+  } else {
+    await progress.finish(
+      `*📥 ${session.animeTitle} — ÉP ${epNum}*\n⚠️ Téléchargement direct indisponible — je prépare une solution de repli…`
+    );
+  }
+
+  // 8.69: mono-source strict — the cross-source fallback is GONE. The
+  // delivered language is the requested one, period.
+  const deliveredLang = lang;
+  const fbLanguageNote = "";
+  const deliveredFilename = filename;
 
   // Clear user session to free memory
   clearUserSession(context.sender);
@@ -2206,31 +3650,85 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
   let activeSendPath = localPath;
 
   if (downloadSuccess && fs.existsSync(localPath)) {
+    // 8.63: assigned inside try once the shared caption builder exists.
+    let fallbackCaption = "";
     try {
       let stats = fs.statSync(localPath);
-      let fileSizeMB = stats.size / (1024 * 1024);
+      let fileSizeMB = stats.size / 1e6; // 9.18mm — Mo DÉCIMALS : ce que montrent navigateurs/WhatsApp (avant : Mio binaires « 387.8 MB » pour 406.6 MB réels)
       console.log(`[NOVABOX] Downloaded raw file size: ${fileSizeMB.toFixed(2)} MB`);
 
-      // Auto-compress with FFmpeg if file > 95MB and compression is requested or lower res was picked
-      const shouldCompress = fileSizeMB > 95 && (session.forceCompress || resolution === "480P" || resolution === "360P" || resolution.includes("Compress"));
+      // 9.18ddd (décision owner) : PLUS de conversion imposée — l'original
+      // part immédiatement. L'allègement devient une OFFRE (.slim) posée
+      // après l'enregistrement du lien : oui → 2-pass ~NEBULA_SLIM_TARGET_MB,
+      // non → rien (ce fichier ET son lien restent la livraison).
+
+      // Auto-compress ONLY when the raw file exceeds the 100 MB WhatsApp
+      // document ceiling (95-100 MB sends fine as a document — transcoding
+      // there was a pure time sink, audit 8.5). x264 veryfast + all cores.
+      let fitOptions: string[] | null = null;
+      let shouldCompress =
+        fileSizeMB > 100 &&
+        (session.forceCompress || resolution === "480P" || resolution === "360P" || resolution.includes("Compress"));
 
       if (shouldCompress) {
+        // A source already at/below 480p cannot meaningfully shrink by
+        // re-encoding to 480p — the 2-minute encode just times out (production
+        // log: 121.8s wasted) before the raw high-speed-link delivery anyway.
+        const probed = await probeVideoInfo(localPath);
+        if (compressionPointless(probed.height, 480)) {
+          shouldCompress = false;
+          console.log(`[NOVABOX] Source is already ${probed.height}p — compression skipped, delivering via high-speed link.`);
+        } else {
+          // Deterministic WhatsApp fit (audit 8.48): compute the bitrate that
+          // lands the output under the ceiling instead of CRF-26-and-hope.
+          // 92 MB target keeps a safety margin under the ~95-100 MB cap.
+          const fit = whatsappFitVideoOptions(probed.durationSec, 92, 480);
+          if (fit) {
+            fitOptions = fit.options;
+            console.log(`[NOVABOX] Deterministic WhatsApp fit: ${fit.videoKbps} kbps → ${fit.note}.`);
+          }
+        }
+      }
+
+      if (shouldCompress) {
+        const tComp = Date.now();
+        console.log(`[NOVABOX] Compressing ${fileSizeMB.toFixed(1)} MB -> 480p (veryfast) to fit WhatsApp limits...`);
         await context.reply(`🔄 *Compressing media for WhatsApp direct delivery...* (Target: < 95 MB)\n_This ensures smooth playable video in chat._`);
         compressedPath = path.join(os.tmpdir(), "comp_" + filename);
         
         try {
+          // Audit 8.48: when the duration probe succeeded, splice the
+          // deterministic WhatsApp-fit args (computed bitrate + maxrate) in
+          // place of the legacy fixed CRF 26 — the output size is then a
+          // mathematical certainty instead of a coin flip.
+          // 9.18m (audit Z3) : unifié avec runFfmpegKit — l'ancien spawn en
+          // stdio:"ignore" jetait TOUTE la sortie ffmpeg (l'erreur fatale est
+          // en FIN de sortie) ; la fenêtre glissante la capture désormais.
+          // Flags TS durcis 9.18k : le fichier local peut être un TS consolidé
+          // Cat-Catch aux DTS non monotones (+genpts, aresample,
+          // avoid_negative_ts make_zero) — mêmes armes que videoSlim.
           const ffmpegArgs = [
             "-y",
+            "-fflags",
+            "+genpts",
+            "-threads",
+            "0",
             "-i",
             localPath,
-            "-vf",
-            "scale=-2:480",
-            "-c:v",
-            "libx264",
-            "-crf",
-            "26",
-            "-preset",
-            "fast",
+            ...(fitOptions || ["-vf", "scale=-2:480", "-c:v", "libx264", "-crf", "26", "-preset", "veryfast"]),
+            // 9.18pp (audit F2) : cap threads. 9.18aaa : mêmes bornes mémoire
+            // MESURÉES que videoSlim (sendrec #205 : rc-lookahead/ref/bframes
+            // sont les 3 moteurs d'allocation x264 ; 622 → 244 Mo en 1080p
+            // avec -threads 1). Sur un VPS 1 Go, sans elles l'encodage OOM-tue
+            // le moteur entier (constat terrain 17/10).
+            "-threads",
+            "1",
+            "-x264-params",
+            "rc-lookahead=10:ref=1:bframes=0",
+            "-af",
+            "aresample=async=1:first_pts=0",
+            "-avoid_negative_ts",
+            "make_zero",
             "-c:a",
             "aac",
             "-b:a",
@@ -2240,45 +3738,60 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
             compressedPath
           ];
 
-          await new Promise<void>((resolve, reject) => {
-            const proc = spawn(resolvedFfmpegPath, ffmpegArgs, { stdio: "ignore" });
-            const timer = setTimeout(() => {
-              try { proc.kill("SIGKILL"); } catch {}
-              reject(new Error("FFmpeg compression timed out"));
-            }, 120000);
-
-            proc.on("close", (code) => {
-              clearTimeout(timer);
-              if (code === 0) resolve();
-              else reject(new Error(`FFmpeg exited with code ${code}`));
-            });
-
-            proc.on("error", (err) => {
-              clearTimeout(timer);
-              reject(err);
-            });
-          });
+          const compressRes = await runFfmpegKit(ffmpegArgs, 120000);
+          if (!compressRes.ok) {
+            throw new Error(`FFmpeg compression failed — fin de sortie ffmpeg: ${compressRes.stderr.slice(-600)}`);
+          }
 
           if (fs.existsSync(compressedPath)) {
             const compStats = fs.statSync(compressedPath);
             if (compStats.size > 0 && compStats.size < stats.size) {
               activeSendPath = compressedPath;
-              fileSizeMB = compStats.size / (1024 * 1024);
-              console.log(`[NOVABOX] Compressed file size: ${fileSizeMB.toFixed(2)} MB`);
+              fileSizeMB = compStats.size / 1e6; // 9.18mm — décimal
+              console.log(
+                `[NOVABOX] Compression OK: ${(compStats.size / 1048576).toFixed(2)} MB in ${((Date.now() - tComp) / 1000).toFixed(1)}s`
+              );
+            } else {
+              console.warn(`[NOVABOX] Compression produced no smaller file (${(compStats.size / 1048576).toFixed(1)} MB) in ${((Date.now() - tComp) / 1000).toFixed(1)}s — sending raw`);
             }
           }
-        } catch {
-          // Compression fallback
+        } catch (compErr: any) {
+          console.warn(`[NOVABOX] Compression failed/skipped after ${((Date.now() - tComp) / 1000).toFixed(1)}s: ${compErr?.message || compErr} — sending raw file`);
         }
       }
 
-      // Move file into managed temporary store so the download link remains valid for 2 hours
+      if (session.pipelineStartedAt) {
+        console.log(`[NOVABOX] Pipeline total so far (players+scan+download${shouldCompress ? "+compress" : ""}): ${((Date.now() - session.pipelineStartedAt) / 1000).toFixed(1)}s`);
+      }
+
+      // Move file into managed temporary store — TTL glissant 8.83 (défaut
+      // 30 min, reset à chaque téléchargement, 2 h de vie totale max).
       let tempDownload: any = null;
       try {
-        tempDownload = registerTempDownload(activeSendPath, filename, {
-          ttlMinutes: 120,
-          moveFile: true
-        });
+        // 9.15 : entrée au cache de réutilisation (lien physique).
+        try { storeMediaReuse(reuseKeyFor(epNum), activeSendPath, deliveredFilename); } catch {}
+        // 9.18cccc : coffre plein ? Le fichier vient d'entrer au cache de
+        // réutilisation — un lien noCopy le sert TEL QUEL (zéro octet de
+        // coffre), même chemin prudent que le batch (9.18yyy). Sans lui, un
+        // épisode single >100 Mo était livré SANS lien alors que la source
+        // avait livré et que le fichier était disponible.
+        const singleBytes = fs.statSync(activeSendPath).size;
+        if (wouldExceedTempQuota(singleBytes)) {
+          const cachedSingleNow = lookupMediaReuse(reuseKeyFor(epNum));
+          if (cachedSingleNow) {
+            try {
+              tempDownload = registerTempDownload(cachedSingleNow.filePath, deliveredFilename, { noCopy: true });
+              console.warn(
+                `[NOVABOX] 🗄️ Coffre de livraison plein — épisode servi sans copie depuis le cache de réutilisation (zéro octet de coffre).`
+              );
+            } catch {} // retombe sur l'essai classique ci-dessous
+          }
+        }
+        if (!tempDownload) {
+          tempDownload = registerTempDownload(activeSendPath, deliveredFilename, {
+            moveFile: true
+          });
+        }
         if (tempDownload && tempDownload.filePath) {
           activeSendPath = tempDownload.filePath;
         }
@@ -2288,20 +3801,63 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
 
       const tempDownloadLink = tempDownload ? tempDownload.downloadUrl : "";
 
-      const caption = 
+      // 9.18ddd : l'offre d'allègement — la question qui accompagne la
+      // livraison (jamais imposée, valable 10 min, .slim pour accepter).
+      let slimOfferText = "";
+      // 9.18cccc : l'offre parle du fichier RÉELLEMENT livré — après une
+      // compression WhatsApp-fit, l'ancien test (taille ORIGINALE) proposait
+      // de re-compresser un fichier déjà compressé.
+      const deliveredBytes =
+        tempDownload?.filePath && fs.existsSync(tempDownload.filePath)
+          ? fs.statSync(tempDownload.filePath).size
+          : stats.size;
+      if (deliveredBytes > slimTriggerBytes() && tempDownload && tempDownload.filePath) {
+        // 9.18fff : cible ADAPTÉE à la durée (probe léger) — l'offre annonce
+        // le vrai chiffre : ~190 Mo pour un épisode, ~590 Mo pour un film
+        // de 90 min (plancher qualité 800 kbps).
+        const probedOffer = await probeVideoInfo(tempDownload.filePath);
+        const offer = registerSlimOffer(String(msg.key.remoteJid || context.sender || ""), {
+          tempFilePath: tempDownload.filePath,
+          sourceUrl: tempDownloadLink,
+          filename: deliveredFilename,
+          bytes: deliveredBytes,
+          targetMB: slimEffectiveTargetMB(stats.size, probedOffer.durationSec || 0, slimTargetMB()),
+          meta: {
+            title: session.animeTitle,
+            season: session.selectedSeason?.name,
+            episode: `Episode ${epNum}`,
+            resolution,
+            lang: deliveredLang,
+            player: activePlayerName
+          }
+        });
+        slimOfferText = "\n\n" + slimOfferLine(offer.bytes, offer.targetMB, slimEtaMinutes(offer.bytes, "aggressive"));
+      }
+
+      // 8.63 (M2 tranche 1): shared caption builder — the success and the
+      // delivery-error captions previously duplicated these lines; keeping
+      // ONE source of truth so language honesty edits cannot drift apart.
+      const captionHead =
         `📥 *NEBULA NOVABOX DOWNLOAD* 📥\n\n` +
         `🎬 *Anime:* ${session.animeTitle}\n` +
-        `🗣️ *Language:* ${lang}\n` +
+        `🗣️ *Language:* ${deliveredLang}${fbLanguageNote}\n` +
         `📅 *Season:* ${session.selectedSeason?.name}\n` +
         `🎞️ *Episode:* Episode ${epNum}\n` +
         `⚙️ *Resolution:* ${resolution}\n` +
-        `📦 *Size:* ${fileSizeMB.toFixed(1)} MB\n` +
+        singleQualityLieLine;
+      const captionTail = (highSpeedLink: string) =>
         `📺 *Player Source:* ${activePlayerName}\n` +
-        `📄 *Filename:* \`${filename}\`\n\n` +
-        (tempDownloadLink ? `🚀 *Direct High-Speed Download (Browser/PC):*\n🔗 ${tempDownloadLink}\n⏳ _Valid for 2 Hours_\n\n` : "") +
-        (vidmolyUrl ? `• 📺 *Play Ad-Free (VidMoly):* ${vidmolyUrl}\n` : "") +
+        `📄 *Filename:* \`${deliveredFilename}\`\n\n` +
+        (highSpeedLink ? `🚀 *Direct High-Speed Download (Browser/PC):*\n🔗 ${highSpeedLink}\n⏳ _Valid ${getLinkTtlMinutes()} min after each download (max 2 h)_\n\n` : "") +
+        (vidmolyUrl ? `• 📺 *Play Ad-Free (${playerSourceLabel(vidmolyUrl)}):* ${vidmolyUrl}\n` : "") +
         `\n🌌 _Nebula Bot - Your ultimate media center_`;
 
+      const caption = captionHead + `📦 *Size:* ${fileSizeMB.toFixed(1)} MB\n` + captionTail(tempDownloadLink) + slimOfferText;
+      fallbackCaption = captionHead + captionTail("") + slimOfferText;
+
+      const tSend = Date.now();
+      const logSendDone = (lane: string) =>
+        console.log(`[NOVABOX] WhatsApp ${lane} send resolved in ${((Date.now() - tSend) / 1000).toFixed(1)}s`);
       if (fileSizeMB <= 60) {
         // Send as a direct playable video in chat
         console.log(`[NOVABOX] Delivering direct video file in chat: "${activeSendPath}" (${fileSizeMB.toFixed(2)} MB)`);
@@ -2310,6 +3866,7 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
           caption: caption,
           mimetype: "video/mp4"
         }, { quoted: msg });
+        logSendDone("video");
       } else if (fileSizeMB <= 100) {
         // Send caption first
         await context.reply(caption);
@@ -2318,15 +3875,16 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
         await sock.sendMessage(msg.key.remoteJid, {
           document: { url: activeSendPath },
           mimetype: "video/mp4",
-          fileName: filename
+          fileName: deliveredFilename
         }, { quoted: msg });
+        logSendDone("document");
       } else {
         // File exceeds WhatsApp 100MB direct attachment limit
         if (tempDownloadLink) {
           await context.reply(
             `🚀 *TEMPORARY HIGH-SPEED DOWNLOAD LINK* 🚀\n\n` +
             `⚠️ *File Size:* ${fileSizeMB.toFixed(1)} MB (Exceeds WhatsApp 100MB limit)\n` +
-            `⏳ *Link Validity:* 2 Hours (Auto-expires)\n` +
+            `⏳ *Link Validity:* ${getLinkTtlMinutes()} min after each download (max 2 h)\n` +
             `🎬 *Anime:* ${session.animeTitle}\n` +
             `🗣️ *Language:* ${lang} | ${session.selectedSeason?.name} - Ep ${epNum}\n` +
             `⚙️ *Quality:* ${resolution}\n` +
@@ -2346,19 +3904,8 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       await context.react("✅");
     } catch (sendErr: any) {
       console.error("[NOVABOX] Delivery error:", sendErr);
-      const fallbackCaption = 
-        `📥 *NEBULA NOVABOX DOWNLOAD* 📥\n\n` +
-        `🎬 *Anime:* ${session.animeTitle}\n` +
-        `🗣️ *Language:* ${lang}\n` +
-        `📅 *Season:* ${session.selectedSeason?.name}\n` +
-        `🎞️ *Episode:* Episode ${epNum}\n` +
-        `⚙️ *Resolution:* ${resolution}\n` +
-        `📺 *Player Source:* ${activePlayerName}\n` +
-        `📄 *Filename:* \`${filename}\`\n\n` +
-        (vidmolyUrl ? `• 📺 *Play Ad-Free (VidMoly):* ${vidmolyUrl}\n` : "") +
-        `\n🌌 _Nebula Bot - Your ultimate media center_`;
       await context.reply(
-        `❌ *Error sending downloaded file. Falling back to stream links:*\n\n` + fallbackCaption
+        `❌ *Impossible d\u2019envoyer le fichier — voici les liens de lecture à la place :*\n\n` + fallbackCaption
       );
     } finally {
       // Cleanup raw local temp files if they still exist and were not moved into temp download manager
@@ -2383,15 +3930,21 @@ async function sendFinalEpisode(sock: any, msg: any, context: BotCommandContext,
       `⚙️ *Resolution:* ${resolution}\n` +
       `📺 *Player Source:* ${activePlayerName}\n` +
       `📄 *Filename:* \`${filename}\`\n\n` +
-      (vidmolyUrl ? `• 📺 *Play Ad-Free (VidMoly):* ${vidmolyUrl}\n` : "") +
+      (vidmolyUrl ? `• 📺 *Play Ad-Free (${playerSourceLabel(vidmolyUrl)}):* ${vidmolyUrl}\n` : "") +
       `\n🌌 _Nebula Bot - Your ultimate media center_`;
 
     // If download failed or file doesn't exist, fallback to sending streaming links
     await context.react("✅");
     await context.reply(
-      `⚠️ *Direct file download is temporarily unavailable.* Here are your streaming & download links:\n\n` + caption
+      `⚠️ *Le téléchargement direct est momentanément indisponible.*\nVoici tes liens de lecture :\n\n` + caption
     );
   }
+
+  // 8.51: single-episode pipelines churn ~2x episode size in Buffers too —
+  // run the same headroom check as the batch worker so sequential single
+  // downloads across a long session also give the kernel room to reclaim.
+  // (The batch path returns above — its guard runs per episode instead.)
+  await enforceMemoryHeadroom(`single E${String(epNum).padStart(2, "0")} done`);
 }
 
 

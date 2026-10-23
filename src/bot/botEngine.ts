@@ -1,23 +1,62 @@
-import makeWASocket, {
+// NOTE: use the NAMED export only. This module is ESM-only ("type": "module")
+// with no CJS build; in the esbuild CJS production bundle a default import
+// compiles to `(0, import_baileys.default)(...)`, and esbuild's __toESM
+// interop sets `.default` to the whole require(esm) namespace instead of the
+// function — which crashed the bot with "(0, import_baileys.default) is not
+// a function". Named imports pass through the wrapper untouched.
+import {
+  makeWASocket,
   DisconnectReason,
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  downloadContentFromMessage
 } from "@whiskeysockets/baileys";
 import pino from "pino";
+// 9.0c (SEC) : avant toute connexion — libsignal console.info des sessions
+// complètes (rootKey/privKey…) à la fermeture ; on les avale ICI.
+import "./suppressLibsignalNoise.js";
+// 9.18ggg (audit 17/10) — publication du socket vivant pour les envois tardifs.
+import { setLiveSocket } from "./liveSocket.js";
 import { Boom } from "@hapi/boom";
 import fs from "fs";
 import { getConfig } from "./config.js";
-import { getCommand, initRegistry } from "./commandRegistry.js";
-import { BotCommandContext, GroupMember } from "./types.js";
+import { ownerDeliveryJid, resolveOwnerIdentity } from "./ownerIdentity.js";
+import { getCommand, initRegistry, isRegistryReady } from "./commandRegistry.js";
+import { BotCommandContext } from "./types.js";
 import { incrementCommandStats } from "./commandStats.js";
-import { generateTextWithFallback } from "./geminiClient.js";
+import { generateTextWithFallback, isAIConfigured } from "./geminiClient.js";
+import { getPersonaPrompt } from "./persona.js";
+import {
+  getMemoryContext,
+  recordExchange,
+  compactIfNeeded,
+  defaultMemorySummarizer
+} from "./services/aiMemory.js";
 import { database } from "./database.js";
-import { inspectMessageSafety } from "./utils/antibot.js";
 import { checkAIQuota, consumeAIQuota, withAIConcurrency } from "./aiQuota.js";
-import { authorizeCommand, resolveRole } from "./accessControl.js";
-import { getGroupPolicy } from "./groupAccessStore.js";
-import { recordAudit } from "./auditTrail.js";
+import { setWatchSender, startWatchScheduler } from "./services/episodeWatchService.js";
+import { setDigestSender, startDigestScheduler } from "./services/digestService.js";
+import { startBackupScheduler } from "./services/backupService.js";
+import {
+  assessDowntime,
+  formatDowntimeDuration,
+  formatReturnMessage,
+  readLivenessMarker,
+  startLivenessHeartbeat
+} from "./services/downtimeService.js";
+import { dispatchBotCommand, type DispatchInfo } from "./commandDispatch.js";
+import { handleAgentMessage, messageAddressesBot, type AgentMessageInfo, type AgentExecutor } from "./services/agentRunner.js";
+import { handleIncomingCalls } from "./services/callGate.js";
+import { describeMessageMedia, extractQuotedText } from "./utils/quotedMedia.js";
+import { getRecentMessage, recordRecentMessage } from "./services/recentMessages.js";
+import { peekPendingConfirmation } from "./services/agentBrain.js";
+import { hasPendingLanguageConfirm, bareLanguageAnswer } from "./commands/novabox.js";
+import { bareYtvChoiceAnswer, hasPendingYtvChoice } from "./commands/ytvideo.js";
+import { checkAsrBudget, chargeAsrBudget, isAsrEnabled, transcribeVoiceNote } from "./services/voiceTranscribe.js";
+import { getAnimeChoiceContext, messageSuggestsAnimeHistory } from "./services/animeChoices.js";
+import { isBannedUser, touchGroup, touchUser } from "./userDirectory.js";
+import { setAnnounceSender } from "./services/announcementService.js";
 
 
 const groupMetadataCache = new Map<string, { data: any; timestamp: number }>();
@@ -32,7 +71,7 @@ export function invalidateGroupMetadataCache(groupId?: string) {
   }
 }
 
-async function getCachedGroupMetadata(sock: any, groupId: string) {
+export async function getCachedGroupMetadata(sock: any, groupId: string) {
   const cached = groupMetadataCache.get(groupId);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     return cached.data;
@@ -80,6 +119,58 @@ const botState: BotState = {
   reconnectTimeout: null,
 };
 
+/**
+ * 9.18mmm — notification de (re)connexion, DÉCISION OWNER 18/10 : le
+ * « is online and connected! » à chaque reconnexion n'était PAS un spam
+ * pour lui — 9.18ggg (P6) l'avait supprimé sur lecture de l'audit, il
+ * revient INTÉGRALEMENT, amélioré :
+ *  - première connexion du démarrage → le message classique ;
+ *  - chaque reconnexion → « reconnecté ⚡ » avec la CAUSE (flux synchronisé
+ *    515/428 = routine WhatsApp, vs connexion perdue 408) et le temps de
+ *    rétablissement — l'owner sait d'un coup d'œil si c'est bénin ;
+ *  - vraie chute (assessDowntime) → message de downtime détaillé (priorité).
+ */
+let bootOpenNotified = false;
+
+/** Mémo de la dernière fermeture (cause de la reconnexion suivante). */
+export interface DisconnectMemo {
+  statusCode: number | null;
+  /** true = 515/428/restartRequired (flux synchronisé — routine WhatsApp). */
+  routine: boolean;
+  at: number;
+}
+
+let lastDisconnectMemo: DisconnectMemo | null = null;
+
+/** Plus vieille reconnexion qu'on décrive encore en « rétabli en X s ». */
+const RECONNECT_MEMO_MAX_MS = 10 * 60_000;
+
+/**
+ * Message « en ligne » pour l'owner (pur, testé) :
+ *  - démarrage du process (ou mémo périmé > 10 min = facto un redémarrage)
+ *    → le message classique que l'owner aime retrouver ;
+ *  - reconnexion fraîche → cause + temps de rétablissement.
+ */
+export function formatOnlineNotice(
+  botName: string,
+  prefix: string,
+  firstBootOpen: boolean,
+  memo: DisconnectMemo | null,
+  now = Date.now()
+): string {
+  const classic = `🌌 *${botName}* is online and connected!\nPrefix: \`${prefix}\``;
+  if (firstBootOpen || !memo) return classic;
+  const elapsed = now - memo.at;
+  if (elapsed > RECONNECT_MEMO_MAX_MS) return classic;
+  const secs = Math.max(1, Math.round(elapsed / 1000));
+  const cause = memo.routine
+    ? "flux synchronisé (routine WhatsApp)"
+    : memo.statusCode === 408
+      ? "connexion perdue puis rétablie"
+      : "reconnexion";
+  return `🌌 *${botName}* reconnecté ⚡\n${cause} — rétabli en ${secs} s\nPrefix: \`${prefix}\``;
+}
+
 /** M6: mask a WhatsApp number in logs (keep only the last 4 digits). */
 export function maskLogNumber(value: string): string {
   const digits = String(value || "").replace(/[^0-9]/g, "");
@@ -120,12 +211,153 @@ export function getBotState() {
   };
 }
 
+/**
+ * 9.18ggg → 9.18qqq (owner 18/10 « tout s'éteint ~5 min ») — budget de
+ * reconnexion. ggg avait raison de supprimer l'arrêt définitif au 5e échec
+ * (audit 17/10 §3) mais l'a remplacé par une pause longue de 5 MINUTES :
+ * or les échecs en RAFALE sont la norme côté Baileys 7.x (408/515, issue
+ * upstream #2192) — 5 échecs consécutifs tombaient en ~30 s, puis le bot
+ * restait TOTALEMENT éteint 5 minutes, même si le réseau était rétabli
+ * depuis 4 min 30. Backoff exponentiel plafonné : 5 s, 5 s, 10 s, 20 s,
+ * 40 s, puis 60 s pour toujours. Une panne longue coûte au plus 1
+ * tentative/min (même protection anti-hammering), une panne brève se
+ * répare en ≤ ~1 min, et on ne s'arrête JAMAIS seul (garantie ggg).
+ */
+export const RECONNECT_BASE_DELAY_MS = 5_000;
+export const RECONNECT_MAX_DELAY_MS = 60_000;
+
+export interface ReconnectPlan {
+  delayMs: number;
+  /** Nouveau compteur après décision. */
+  count: number;
+}
+
+export function nextReconnectPlan(reconnectCount: number): ReconnectPlan {
+  const exp = Math.max(0, reconnectCount - 1); // 1re et 2e tentative à 5 s
+  const delayMs = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** exp, RECONNECT_MAX_DELAY_MS);
+  return { delayMs, count: reconnectCount + 1 };
+}
+
+/**
+ * 9.18xx — télécommande Nova (agent dans la poche).
+ *
+ * Exécute un texte EXACTEMENT comme si l'owner l'avait tapé sur WhatsApp :
+ *  - préfixe (`.`) → dispatchBotCommand (chemin préfixe éprouvé) ;
+ *  - langage naturel → handleAgentMessage (l'agent IA, DM = adressé au bot).
+ * Les réponses partent dans le CHAT WHATSAPP de l'owner (OWNER_NUMBER) —
+ * le canal naturel : liens de téléchargement, notes vocales, écrans
+ * interactifs y arrivent déjà.
+ *
+ * Garde-fous (décision owner 17/10, patterns recherche API security) :
+ *  - texte ≤ 500 chars, non vide ;
+ *  - commandes SYSTÈME exclues (stop/update/restart/purge) : elles ont leur
+ *    interface dédiée dans Nova → Réglages, pas de doublon d'attaque ;
+ *  - moteur déconnecté / OWNER_NUMBER absent → refus honnête ;
+ *  - journal d'audit [NOVA] à chaque exécution.
+ * Jamais de shell, jamais d'eval : tout passe par le registre typé.
+ */
+export const REMOTE_EXCLUDED_COMMANDS = new Set(["stop", "update", "restart", "purge"]);
+
+/** Tests uniquement — simule un moteur connecté avec le sock donné. */
+export function __setRemoteStateForTests(socket: any, status: string): void {
+  botState.socket = socket;
+  setLiveSocket(socket); // 9.18ggg — cohérence avec le socket vivant publié
+  botState.status = status as any;
+}
+
+export async function runAsOwnerCommand(text: string): Promise<{ ok: boolean; message: string }> {
+  const t = String(text || "").trim();
+  if (!t) return { ok: false, message: "Texte vide." };
+  if (t.length > 500) return { ok: false, message: "Texte trop long (max 500 caractères)." };
+
+  const config = getConfig();
+  const prefix = config.prefix || ".";
+  // Politique AVANT l'état de connexion : commandes système exclues et
+  // commande inconnue refusée honnêtement, quoi qu'il arrive au moteur.
+  let parsedCommand: { commandName: string; args: string[] } | null = null;
+  if (t.startsWith(prefix)) {
+    const body = t.slice(prefix.length).trim();
+    const args = body.split(/\s+/);
+    const commandName = (args.shift() || "").toLowerCase();
+    if (REMOTE_EXCLUDED_COMMANDS.has(commandName)) {
+      return { ok: false, message: `Commande \`${prefix}${commandName}\` bloquée à distance — utilise l'onglet Réglages de Nova (plus sûr).` };
+    }
+    if (!getCommand(commandName)) {
+      return { ok: false, message: `Commande inconnue \`${prefix}${commandName}\` — \`${prefix}menu\` pour la liste.` };
+    }
+    parsedCommand = { commandName, args };
+  }
+  const ownerDigits = String(process.env.OWNER_NUMBER || config.ownerNumber || "").replace(/\D/g, "");
+  if (ownerDigits.length < 8) {
+    return { ok: false, message: "OWNER_NUMBER non configuré — la télécommande ne sait pas où répondre." };
+  }
+  // 9.18yy (F6) : livrer au LID mémorisé quand on le connaît (routage
+  // direct), sinon au PN — même politique que le digest et le « bot en ligne ».
+  const ownerJid = ownerDeliveryJid(ownerDigits);
+  const sock = botState.socket;
+  if (!sock || botState.status !== "connected") {
+    return { ok: false, message: "Le moteur WhatsApp n'est pas connecté — réessaie quand le bot est en ligne." };
+  }
+
+  // Message synthétique : les réponses (reply/quoted) partent vers ce chat.
+  const synthMsg = {
+    key: { remoteJid: ownerJid, fromMe: false, id: `3EB0NOVA${Date.now().toString(16).toUpperCase()}` },
+    message: { conversation: t },
+    pushName: "Nova Remote",
+  };
+  const info: DispatchInfo = {
+    senderJid: ownerJid,
+    actorJid: ownerJid,
+    senderName: "Nova (télécommande)",
+    senderNumber: ownerDigits,
+    isOwner: true,
+    isAdmin: false,
+    isGroup: false,
+    prefix,
+    text: t,
+    messageContent: synthMsg.message,
+  };
+
+  try {
+    if (parsedCommand) {
+      const outcome = await dispatchBotCommand(sock, synthMsg, info, parsedCommand.commandName, parsedCommand.args, "prefix");
+      addLog(`[NOVA] 📱 commande distante : ${t.slice(0, 80)}`);
+      return {
+        ok: outcome.ok && !outcome.hadError && !outcome.denied,
+        message: "✓ Exécuté — la réponse arrive sur WhatsApp.",
+      };
+    }
+    // Langage naturel → l'agent IA (répond dans le chat owner, voix comprise).
+    const exec: AgentExecutor = (commandName, args) =>
+      dispatchBotCommand(sock, synthMsg, info, commandName, args, "agent");
+    const agentInfo: AgentMessageInfo = {
+      senderJid: ownerJid,
+      actorJid: ownerJid,
+      actorNumber: ownerDigits,
+      senderName: "Nova (télécommande)",
+      isOwner: true,
+      text: t,
+      botName: config.botName,
+      prefix,
+      mediaHint: null,
+      quotedTextExcerpt: null,
+      voiceNote: false,
+    };
+    const handled = await handleAgentMessage(sock, synthMsg, agentInfo, exec);
+    if (!handled) return { ok: false, message: "Le message n'a pas abouti (agent indisponible ?)." };
+    addLog(`[NOVA] 📱 message agent distant : ${t.slice(0, 80)}`);
+    return { ok: true, message: "Agent sollicité — la réponse arrive sur WhatsApp." };
+  } catch (e: any) {
+    return { ok: false, message: `Échec : ${String(e?.message || e).slice(0, 120)}` };
+  }
+}
+
 export function clearLogs() {
   botState.logs = ["🤖 Logs cleared."];
 }
 
 /** Decodes a data: URI into a Buffer (used for AI-generated images). */
-function bufferFromDataUri(dataUri: string): Buffer | null {
+export function bufferFromDataUri(dataUri: string): Buffer | null {
   const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(dataUri);
   if (!match) return null;
   try {
@@ -221,12 +453,11 @@ export async function simulateMessage(senderName: string, text: string): Promise
 
   // Check if starts with prefix
   if (!text.startsWith(prefix)) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey && apiKey !== "MY_GEMINI_API_KEY" && apiKey.trim() !== "") {
+    if (isAIConfigured()) {
       try {
         const aiAnswer = await generateTextWithFallback(
           text,
-          `You are ${config.botName}, an intelligent WhatsApp multi-device bot assistant in direct private chat. Provide helpful, conversational, natural, and crisp responses.`,
+          getPersonaPrompt("dm", config.botName),
           "gemini-3.7-flash"
         );
         addLog(`[Simulator Direct AI] Generated direct reply for "${maskLogText(text)}"`);
@@ -256,7 +487,7 @@ export async function simulateMessage(senderName: string, text: string): Promise
   let replyImageUrl: string | undefined = undefined;
   let reactionEmoji: string | undefined = undefined;
 
-  // Mock sock + msg so commands that send directly (roast, hidetag, download) work too.
+  // Mock sock + msg so commands that send directly (hidetag, download) work too.
   const mockSock = createMockSocket({
     replyText: () => replyText,
     setReply: (t) => { replyText = t; },
@@ -350,6 +581,10 @@ export async function simulateMessage(senderName: string, text: string): Promise
 // promise now guarantees one socket per (re)start cycle.
 let startInFlight: Promise<void> | null = null;
 
+/** 9.18qqq : incrémenté à chaque arrêt manuel — une relance programmée par
+ * le catch de démarrage ne doit jamais ressusciter un moteur arrêté. */
+let stopEpoch = 0;
+
 export function startLiveBot(isManualStart = false, pairingPhone?: string): Promise<void> {
   if (startInFlight) return startInFlight;
   startInFlight = runStartLiveBot(isManualStart, pairingPhone).finally(() => {
@@ -363,6 +598,12 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
     addLog("⚠️ Bot is already connected.");
     return;
   }
+
+  // 9.18zz — marqueur de vie : on capture l'état AVANT que les heartbeats
+  // de ce process ne le rafraîchissent. Périmé = le moteur était absent
+  // (chute / reboot / arrêt) → la reconnexion notifiera la durée à l'owner.
+  const bootAliveAt = readLivenessMarker()?.at ?? null;
+  startLivenessHeartbeat();
 
   if (pairingPhone) {
     botState.connectionMode = "pair_code";
@@ -390,6 +631,7 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
       }
     } catch (e) {}
     botState.socket = null;
+    setLiveSocket(null);
   }
 
   addLog(pairingPhone ? `🔌 Starting Baileys in Pairing Code mode for +${botState.pairingNumber}...` : "🔌 Starting Baileys Live Connection (QR mode)...");
@@ -402,7 +644,7 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
   }
 
   try {
-    await initRegistry();
+    if (!isRegistryReady()) await initRegistry(); // 8.56: server.ts already init at boot
 
     // Auth state directory
     const authDir = process.env.NEBULA_AUTH_DIR || "nebula_auth_info";
@@ -434,12 +676,17 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
       markOnlineOnConnect: true,
       connectTimeoutMs: 60_000,
       defaultQueryTimeoutMs: 60_000,
-      keepAliveIntervalMs: 10_000,
+      // 9.18ggg : 30 s = le défaut Baileys. Le 10 s d'avant abaissait le
+      // seuil d'auto-coupure « 408 Connection was lost » à 15 s de silence
+      // reçu (keepAliveIntervalMs + 5 s dans socket.js) : une pause GC/CPU
+      // pendant un gros média suffisait à couper la connexion (audit 17/10 §2).
+      keepAliveIntervalMs: 30_000,
       generateHighQualityLinkPreview: false,
       retryRequestDelayMs: 250,
     });
 
     botState.socket = sock;
+    setLiveSocket(sock); // 9.18ggg — socket vivant publiable pour les envois tardifs
 
     // If account is already registered, ensure pairing mode flags are cleared
     if (state.creds.registered || state.creds.me?.id) {
@@ -531,9 +778,56 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         const configuredOwner = envOwnerNumber || config.ownerNumber;
         const ownerDigits = configuredOwner.replace(/[^0-9]/g, "");
         if (ownerDigits.length >= 8) {
-          const ownerJid = `${ownerDigits}@s.whatsapp.net`;
-          sock.sendMessage(ownerJid, { text: `🌌 *${config.botName}* is online and connected!\nPrefix: \`${config.prefix}\`` }).catch(() => {});
+          // 9.18yy (F6) : LID mémorisé en priorité (routage direct), sinon PN.
+          const ownerJid = ownerDeliveryJid(ownerDigits);
+          // 9.18zz : si le marqueur capturé au démarrage était périmé, le
+          // moteur était réellement tombé — on chiffre la coupure au lieu
+          // du simple « online » (notification de chute sans FCM).
+          const downtime = assessDowntime(bootAliveAt, Date.now());
+          if (downtime.notify) {
+            addLog(`🔄 [CHUTE] retour après ${formatDowntimeDuration(downtime.downtimeMs)} d'indisponibilité`);
+            sock.sendMessage(ownerJid, { text: formatReturnMessage(config.botName, downtime) }).catch(() => {});
+          } else {
+            // 9.18mmm (décision owner 18/10) : à CHAQUE (re)connexion — le
+            // message classique au démarrage, cause + temps de rétablissement
+            // sur les reconnexions de routine.
+            sock.sendMessage(ownerJid, {
+              text: formatOnlineNotice(config.botName, config.prefix, !bootOpenNotified, lastDisconnectMemo),
+            }).catch(() => {});
+          }
+          bootOpenNotified = true;
+          lastDisconnectMemo = null;
         }
+
+        // Episode watcher (`.a watch`, audit S4): refresh the sender with the
+        // live socket on every (re)connection, then start the scheduler once.
+        setWatchSender(async (chatJid, text) => {
+          await sock.sendMessage(chatJid, { text });
+        });
+        startWatchScheduler();
+
+        // 8.99 — digest quotidien du propriétaire (8 h, NEBULA_DIGEST=0 off)
+        // : même pattern que le watcher — sender réinjecté à chaque
+        // (re)connexion, planificateur démarré une seule fois.
+        setDigestSender(async (text) => {
+          if (ownerDigits.length >= 8) {
+            // 9.18yy (F6) : livrer au LID connu — un matin de routing PN→LID
+            // manqué ne doit plus faire perdre le digest.
+            await sock.sendMessage(ownerDeliveryJid(ownerDigits), { text });
+          }
+        });
+        startDigestScheduler();
+
+        // 9.18yy — sauvegarde quotidienne du dossier de données du bot
+        // (audit 16/10) : chaque moteur sauvegarde SON NEBULA_DATA_DIR,
+        // NEBULA_BACKUP=0 coupe, rétention 7, journalisée dans le Journal.
+        startBackupScheduler((message) => addLog(message));
+
+        // 9.16 — annonces du dashboard : sender réinjecté à chaque
+        // (re)connexion, même pattern que le digest et le watcher.
+        setAnnounceSender(async (jid, text) => {
+          await sock.sendMessage(jid, { text });
+        });
       }
 
       if (connection === "close") {
@@ -551,6 +845,9 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         const isBadSession = statusCode === DisconnectReason.loggedOut || statusCode === DisconnectReason.badSession || statusCode === 403 || isConflict;
         const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515 || statusCode === 428;
         const shouldReconnect = !isBadSession;
+        // 9.18mmm : mémoire de la cause — le prochain « open » pourra dire à
+        // l'owner POURQUOI on s'est reconnecté et en combien de temps.
+        lastDisconnectMemo = { statusCode: statusCode ?? null, routine: isRestartRequired, at: Date.now() };
 
         if (isRestartRequired) {
           addLog("🔄 WhatsApp session synchronized / stream refresh (Status Code: 515). Resuming connection with saved credentials in 1.2s...");
@@ -564,6 +861,7 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         }
 
         botState.socket = null;
+        setLiveSocket(null);
 
         if (isBadSession) {
           addLog("🗑️ Session is invalid, unlinked, or conflicted. Clearing stored credentials to allow a clean fresh scan/pairing...");
@@ -583,12 +881,14 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
           if (isRestartRequired) {
             delayMs = 1200; // Allow credentials to flush to disk before re-initializing
           } else {
-            if (botState.reconnectCount >= 5) {
-              addLog("🚫 Reconnection failure limit reached. Bot stopped.");
-              return;
-            }
-            botState.reconnectCount++;
-            addLog(`🔄 Attempting reconnect (${botState.reconnectCount}/5) in 5 seconds...`);
+            // 9.18qqq : fini la pause de 5 MINUTES après 5 échecs — les
+            // rafales 408/515 de Baileys 7.x la déclenchaient en ~30 s
+            // puis coupaient le bot TOTALEMENT. Backoff plafonné à 60 s,
+            // indéfiniment (ggg : jamais d'arrêt définitif — conservé).
+            const plan = nextReconnectPlan(botState.reconnectCount);
+            botState.reconnectCount = plan.count;
+            addLog(`🔄 Attempting reconnect (tentative ${plan.count}) in ${Math.round(plan.delayMs / 1000)}s...`);
+            delayMs = plan.delayMs;
           }
 
           if (botState.reconnectTimeout) {
@@ -676,11 +976,20 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
     });
 
     // Message handler with memory guards
+    // 9.18jj (A) — décrochage honnête : rejet propre + guidage note vocale.
+    sock.ev.on("call", (calls: any[]) => {
+      void handleIncomingCalls(sock, calls, { prefix: getConfig().prefix || "." });
+    });
+
     sock.ev.on("messages.upsert", async (m: any) => {
       if (m.type !== "notify") return;
 
       for (const msg of m.messages) {
         if (!msg.message) continue;
+
+        // 9.8 : registre borné des messages récents (reçus ET émis) —
+        // résout les replies dont la citation a été épurée (chat éphémère).
+        recordRecentMessage(String(msg.key?.remoteJid || ""), String(msg.key?.id || ""), msg.message);
 
         // Unwrap ephemeral, viewOnce, or other wrapper messages
         let messageContent = msg.message;
@@ -721,8 +1030,12 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         const actualSenderNumber = actualSenderJid.split("@")[0].replace(/[^0-9]/g, "");
         const envOwnerNumber = (process.env.OWNER_NUMBER || "").trim();
         const configuredOwner = envOwnerNumber || config.ownerNumber;
-        const cleanedOwner = configuredOwner.replace(/[^0-9]/g, "");
-        const isOwner = cleanedOwner ? (actualSenderNumber === cleanedOwner) : false;
+        // 8.89 : le message peut arriver d'un jid @lid (WhatsApp « masquer mon
+        // numéro ») — résolution LID→numéro via Baileys puis comparaison
+        // EXACTE (helper partagé avec whois ; comportement IDENTIQUE pour les
+        // jids téléphone). Fallback NEBULA_OWNER_LID si la table est inconnue.
+        const ownerCheck = await resolveOwnerIdentity(sock, actualSenderJid, configuredOwner);
+        const isOwner = ownerCheck.isOwner;
 
         // Add visual live logs to the dashboard so the user knows messages are being processed
         if (text.trim()) {
@@ -732,91 +1045,221 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
         // Active Group Moderation Engine
         const isGroup = senderJid.endsWith("@g.us");
         let isSenderAdmin = false;
-        let isBotAdmin = false;
 
         if (isGroup && !isFromMe) {
-          const settings = database.getGroupSettings(senderJid);
-
           try {
             const groupMetadata = await getCachedGroupMetadata(sock, senderJid);
             if (groupMetadata) {
-              const botJid = sock.user?.id ? (sock.user.id.split(":")[0] + "@s.whatsapp.net") : "";
               const senderParticipant = groupMetadata.participants.find((p: any) => p.id.split("@")[0] === actualSenderNumber);
-              const botParticipant = groupMetadata.participants.find((p: any) => p.id.split("@")[0] === botJid.split("@")[0]);
-
               isSenderAdmin = senderParticipant?.admin === "admin" || senderParticipant?.admin === "superadmin";
-              isBotAdmin = botParticipant?.admin === "admin" || botParticipant?.admin === "superadmin";
             }
+            // 9.16/9.18 — répertoire : le groupe est connu dès son premier
+            // message, avec sa taille (ciblage annonces du dashboard).
+            touchGroup(senderJid, {
+              name: groupMetadata?.subject,
+              memberCount: Array.isArray(groupMetadata?.participants) ? groupMetadata.participants.length : undefined,
+            });
           } catch (e) {}
+        }
 
-          // 1. Antilink & Antibot Filtering using antibot utility
-          if ((settings.antilink || settings.antibot) && !isSenderAdmin && !isOwner) {
-            const safety = inspectMessageSafety(senderJid, text, msg, actualSenderJid);
-            if (safety.isViolation) {
-              addLog(`🛡️ [Security Violation] ${safety.description} from @${maskLogNumber(actualSenderNumber)} in group ${maskLogNumber(senderJid)}`);
-
-              if (isBotAdmin) {
-                await sock.sendMessage(senderJid, { delete: msg.key });
-
-                if (safety.action === "kick") {
-                  await sock.groupParticipantsUpdate(senderJid, [actualSenderJid], "remove");
-                  await sock.sendMessage(senderJid, {
-                    text: `🚫 *Security Enforcement:* @${actualSenderNumber} has been kicked.\n*Reason:* ${safety.description}`,
-                    mentions: [actualSenderJid]
-                  });
-                } else if (safety.action === "warn") {
-                  await sock.sendMessage(senderJid, {
-                    text: `⚠️ *Security Warning:* @${actualSenderNumber}, ${safety.description}`,
-                    mentions: [actualSenderJid]
-                  });
-                } else {
-                  await sock.sendMessage(senderJid, {
-                    text: `⚠️ *Notice:* Prohibited message from @${actualSenderNumber} has been removed.`,
-                    mentions: [actualSenderJid]
-                  });
-                }
-              }
-              continue; // Prevent command execution / normal message processing
-            }
-          }
-
-          // 2. Antitag (Mass Mentions) Filtering
-          if (settings.antitag && !isSenderAdmin && !isOwner) {
-            const ctxInfo = msg.message?.extendedTextMessage?.contextInfo || messageContent?.extendedTextMessage?.contextInfo;
-            const mentionedJids = ctxInfo?.mentionedJid || [];
-            if (mentionedJids.length >= 4) {
-              addLog(`🛡️ [Antitag] Mass mention (${mentionedJids.length} tags) detected from @${actualSenderNumber}`);
-
-              if (isBotAdmin) {
-                await sock.sendMessage(senderJid, { delete: msg.key });
-
-                if (settings.antitagAction === "kick") {
-                  await sock.groupParticipantsUpdate(senderJid, [actualSenderJid], "remove");
-                  await sock.sendMessage(senderJid, {
-                    text: `🚫 *Antitag enforcement:* @${actualSenderNumber} has been kicked for mass mentioning group members.`,
-                    mentions: [actualSenderJid]
-                  });
-                } else {
-                  await sock.sendMessage(senderJid, {
-                    text: `⚠️ *Antitag warning:* Mass mentions are disabled in this group, @${actualSenderNumber}.`,
-                    mentions: [actualSenderJid]
-                  });
-                }
-              }
-              continue; // Prevent command execution / normal message processing
-            }
+        // 9.16 — répertoire utilisateurs : chaque message (hors échos du bot)
+        // rafraîchit fiche, compteurs et dernier contact. Un banni est
+        // ignoré par TOUT le moteur ; le propriétaire ne peut jamais l'être.
+        if (!isFromMe) {
+          // 9.18 — ownerCheck a déjà résolu le LID vers le vrai numéro (pour
+          // tout expéditeur @lid, owner ou pas) : on le conserve dans la
+          // fiche, zéro appel Baileys supplémentaire.
+          touchUser(actualSenderJid, {
+            name: msg.pushName || "",
+            resolvedNumber: ownerCheck.resolvedNumber || undefined,
+          });
+          if (!isOwner && isBannedUser(actualSenderJid)) {
+            continue;
           }
         }
 
+        // Moderation hooks (antilink/antitag/antibot) were removed with the
+        // 8.59 command curation; welcome/goodbye and RoleGuard remain active.
         // Allow owner to run commands on their own session, but ignore regular self messages that don't start with prefix
         if (isFromMe && !text.startsWith(prefix)) {
           continue;
         }
 
-        // Direct AI response in private chat when not starting with prefix
-        if (!isGroup && !isFromMe && !text.startsWith(prefix)) {
-          const apiKey = process.env.GEMINI_API_KEY;
-          if (apiKey && apiKey !== "MY_GEMINI_API_KEY" && apiKey.trim() !== "") {
+        // 8.93 : infos de dispatch partagées entre le chemin préfixe et l'agent.
+        const dispatchInfo: DispatchInfo = {
+          senderJid,
+          actorJid: actualSenderJid,
+          senderName,
+          senderNumber,
+          isOwner,
+          isAdmin: isSenderAdmin,
+          isGroup,
+          prefix,
+          text,
+          messageContent,
+        };
+
+        // 9.6b/9.11 : contexte de reply pour l'agent — nature du média cité
+        // (+ repli registre stanzaId 9.8) et extrait du TEXTE cité (lien,
+        // titre — audit B4). Calculés une fois, utilisés en DM ET en groupe.
+        let mediaHint = describeMessageMedia(messageContent);
+        let quotedTextExcerpt: string | null = null;
+        {
+          const ctxInfo = messageContent?.extendedTextMessage?.contextInfo;
+          const quotedRaw = ctxInfo?.quotedMessage;
+          quotedTextExcerpt = extractQuotedText(quotedRaw);
+          if (!mediaHint || !quotedTextExcerpt) {
+            const stanzaId = ctxInfo?.stanzaId;
+            if (stanzaId) {
+              const stored = getRecentMessage(senderJid, String(stanzaId));
+              if (stored) {
+                if (!mediaHint) {
+                  const q = describeMessageMedia(stored);
+                  if (q) mediaHint = { what: q.what, how: "reply" };
+                }
+                if (!quotedTextExcerpt) quotedTextExcerpt = extractQuotedText(stored);
+              }
+            }
+          }
+        }
+
+        // 9.13/9.15d : note vocale adressée au bot → transcription Gemini
+        // (audio natif — l'ASR NIM hébergé n'existe pas, cf. voiceTranscribe),
+        // puis tour
+        // agent sur le texte obtenu. DM : toujours ; groupe : seulement si le
+        // message s'adresse au bot (mention/reply — même porte que 9.11).
+        // Échec = réponse honnête, jamais de tour IA sur un texte vide.
+        if (!isFromMe && !text.trim() && messageContent.audioMessage) {
+          const voiceAddressed = !isGroup || messageAddressesBot(msg, sock?.user?.id);
+          if (voiceAddressed) {
+            if (!isAsrEnabled()) {
+              await sock.sendMessage(senderJid, {
+                text: "🎙️ Je ne peux pas encore écouter les notes vocales (transcription désactivée ou clé Gemini absente) — écris-moi ton message."
+              }, { quoted: msg });
+              continue;
+            }
+            const budget = checkAsrBudget(actualSenderJid);
+            if (!budget.allowed) {
+              await sock.sendMessage(senderJid, {
+                text: `⏳ Budget transcription atteint (10 notes vocales/heure) — réessaie dans ${budget.retryAfterMin} min ou écris-moi.`
+              }, { quoted: msg });
+              continue;
+            }
+            await sock.sendPresenceUpdate("recording", senderJid).catch(() => {});
+            try {
+              const stream = await downloadContentFromMessage(messageContent.audioMessage, "audio");
+              let buffer = Buffer.alloc(0);
+              for await (const chunk of stream) {
+                buffer = Buffer.concat([buffer, chunk]);
+                if (buffer.length > 16 * 1024 * 1024) break;
+              }
+              const asr = await transcribeVoiceNote(buffer);
+              if (!asr.ok) {
+                addLog(`[ASR] Échec transcription : ${asr.error}`);
+                await sock.sendMessage(senderJid, {
+                  text: `🎙️ Je n'ai pas réussi à transcrire cette note vocale (${asr.error}).`
+                }, { quoted: msg });
+                continue;
+              }
+              chargeAsrBudget(actualSenderJid);
+              addLog(`[ASR] Note vocale transcrite (${asr.text.length} caractères) de ${maskLogNumber(actualSenderNumber)}`);
+              if (isAIConfigured()) {
+                const handled = await handleAgentMessage(
+                  sock,
+                  msg,
+                  {
+                    senderJid,
+                    actorJid: actualSenderJid,
+                    actorNumber: actualSenderNumber,
+                    senderName,
+                    isOwner,
+                    text: asr.text,
+                    voiceNote: true,
+                    botName: config.botName,
+                    prefix,
+                    mediaHint: null,
+                    quotedTextExcerpt: null
+                  },
+                  (commandName, args) =>
+                    dispatchBotCommand(sock, msg, dispatchInfo, commandName, args, "agent")
+                );
+                if (handled) continue;
+              } else {
+                await sock.sendMessage(senderJid, {
+                  text: `🎙️ (transcription) « ${asr.text.slice(0, 800)} »\n\n_L'agent IA est désactivé — la transcription brute ci-dessus._`
+                }, { quoted: msg });
+                continue;
+              }
+            } catch (err: any) {
+              addLog(`[ASR] Erreur inattendue : ${err?.message || err}`);
+              await sock.sendMessage(senderJid, {
+                text: "🎙️ Erreur inattendue pendant la transcription — réessaie ou écris-moi."
+              }, { quoted: msg });
+              continue;
+            }
+          }
+        }
+
+        // Direct AI response in private chat when not starting with prefix.
+        // 9.18j (retour terrain 13/10) : text.trim() obligatoire — un média
+        // sans caption (sticker, image, document) produisait un tour IA à
+        // PROMPT VIDE : Gemini répondait n'importe quoi (« Je suis NOVA… »,
+        // « Je suis à ton écoute ! »), brûlait le quota IA et remplissait
+        // les logs d'erreurs NIM « Textless prompt ». Les notes vocales
+        // restent gérées plus haut (ASR) ; un sticker n'a rien à dire.
+        if (!isGroup && !isFromMe && text.trim() && !text.startsWith(prefix)) {
+          // 8.95b : question novabox en attente (« continuer en VOSTFR ? ») —
+          // un « oui »/« non » nu doit RÉPONDRE À CETTE QUESTION, pas partir
+          // dans l'agent IA (qui reformulerait une nouvelle demande).
+          // Priorité à la confirmation de l'agent si les deux pendent (elle
+          // est alors plus récente : l'agent vient de poser sa question).
+          const bareAnswer = bareLanguageAnswer(text);
+          if (
+            bareAnswer &&
+            hasPendingLanguageConfirm(senderJid) &&
+            !peekPendingConfirmation(actualSenderJid)
+          ) {
+            await dispatchBotCommand(sock, msg, dispatchInfo, "a", [bareAnswer], "agent");
+            continue;
+          }
+          // 9.12 (B5, décision owner) : « 1 »/« 2 » nu alors qu'un choix .ytv
+          // de CET utilisateur est en attente → consommé SANS tour IA (éco
+          // tokens — même logique que la confirmation de langue ci-dessus).
+          const bareYtv = bareYtvChoiceAnswer(text);
+          if (
+            bareYtv &&
+            hasPendingYtvChoice(senderJid, actualSenderJid) &&
+            !peekPendingConfirmation(actualSenderJid)
+          ) {
+            await dispatchBotCommand(sock, msg, dispatchInfo, "ytvideo", [bareYtv], "agent");
+            continue;
+          }
+          if (isAIConfigured()) {
+            // 8.93 agent beta (privé uniquement) : l'IA traduit la demande
+            // naturelle en commande existante et l'exécute aux droits de
+            // l'utilisateur (RoleGuard inchangé). Renvoie false → l'IA
+            // n'est pas configurée : laisser le chemin normal répondre.
+            const handledByAgent = await handleAgentMessage(
+              sock,
+              msg,
+              {
+                senderJid,
+                actorJid: actualSenderJid,
+                actorNumber: actualSenderNumber,
+                senderName,
+                isOwner,
+                text,
+                botName: config.botName,
+                prefix,
+                mediaHint,
+                quotedTextExcerpt,
+              },
+              (commandName, args) =>
+                dispatchBotCommand(sock, msg, dispatchInfo, commandName, args, "agent")
+            );
+            if (handledByAgent) {
+              continue;
+            }
             const quota = checkAIQuota(actualSenderJid);
             if (!quota.allowed) {
               await sock.sendMessage(senderJid, { text: `⚠️ ${quota.error}` }, { quoted: msg });
@@ -829,13 +1272,25 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
                 } catch (pe) {}
               }
               consumeAIQuota(actualSenderJid);
+              const memoryBlock = getMemoryContext(senderJid);
+              // 8.97/8.99 — dernier téléchargement anime du chat, comme
+              // l'agent — mais SEULEMENT si le message y ressemble (leçon
+              // Mastra : pas d'historique inutile dans « salut ça va »).
+              const choiceBlock = messageSuggestsAnimeHistory(text)
+                ? getAnimeChoiceContext(senderJid)
+                : null;
               const answer = await withAIConcurrency(() =>
                 generateTextWithFallback(
                   text,
-                  `You are ${config.botName}, an intelligent WhatsApp multi-device bot assistant. You are chatting directly in a 1-on-1 private conversation. Keep responses helpful, direct, concise, natural, and clean.`,
+                  getPersonaPrompt("dm", config.botName) +
+                    (memoryBlock ? `\n\n${memoryBlock}` : "") +
+                    (choiceBlock ? `\n\n${choiceBlock}` : ""),
                   "gemini-3.7-flash"
                 )
               );
+              // Per-conversation memory (audit 8.38) — fire and forget.
+              recordExchange(senderJid, text, answer);
+              compactIfNeeded(senderJid, defaultMemorySummarizer).catch(() => {});
               if (sock && typeof sock.sendPresenceUpdate === "function") {
                 try {
                   await sock.sendPresenceUpdate("paused", senderJid);
@@ -847,6 +1302,16 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
             } catch (error: any) {
               console.error("[Private Chat AI Error]:", error);
               addLog(`❌ [Private Chat AI Error]: ${error.message}`);
+              // 8.71: users used to get TOTAL SILENCE when the AI chain
+              // failed (production logs: the same users retrying 3-5x).
+              // Honest French notice, same tone as the other messages.
+              try {
+                await sock.sendMessage(
+                  senderJid,
+                  { text: "😕 *L’IA est momentanément indisponible.*\n\n🔁 *Réessaie dans un instant.*\n_Si ça persiste, préviens l’administrateur du bot._" },
+                  { quoted: msg }
+                );
+              } catch {}
             }
           } else {
             // Friendly fallback guide if AI key is not yet configured
@@ -861,200 +1326,88 @@ async function runStartLiveBot(isManualStart = false, pairingPhone?: string) {
           }
         }
 
+        // 9.11 (audit M1, décision owner) : l'agent répond AUSSI en groupe,
+        // mais uniquement si le message S'ADRESSE au bot (mention @ ou reply
+        // à un message du bot) — jamais sur la conversation générale.
+        if (isGroup && !isFromMe && !text.startsWith(prefix)) {
+          // 9.12 (B5, décision owner) : « 1 »/« 2 »/« video »/« playlist » nu
+          // d'un utilisateur ayant un choix .ytv en attente → consommé SANS
+          // tour IA (l'écran a été déclenché PAR cet utilisateur — sans ça,
+          // la consigne « Réponds avec 1 ou 2 » serait mensongère en groupe).
+          const bareYtv = bareYtvChoiceAnswer(text);
+          if (
+            bareYtv &&
+            hasPendingYtvChoice(senderJid, actualSenderJid) &&
+            !peekPendingConfirmation(actualSenderJid)
+          ) {
+            await dispatchBotCommand(sock, msg, dispatchInfo, "ytvideo", [bareYtv], "agent");
+            continue;
+          }
+          if (isAIConfigured() && messageAddressesBot(msg, sock?.user?.id)) {
+            const handledByAgent = await handleAgentMessage(
+              sock,
+              msg,
+              {
+                senderJid,
+                actorJid: actualSenderJid,
+                actorNumber: actualSenderNumber,
+                senderName,
+                isOwner,
+                text,
+                botName: config.botName,
+                prefix,
+                mediaHint,
+                quotedTextExcerpt,
+              },
+              (commandName, args) =>
+                dispatchBotCommand(sock, msg, dispatchInfo, commandName, args, "agent")
+            );
+            if (handledByAgent) continue;
+          }
+          continue;
+        }
+
         if (!text.startsWith(prefix)) continue;
 
 
         const body = text.slice(prefix.length).trim();
         const args = body.split(/\s+/);
         const commandName = args.shift()?.toLowerCase() || "";
-
-        const command = getCommand(commandName);
-        if (!command) {
-          addLog(`⚠️ Unknown or dynamically excluded command: "${commandName}"`);
-          continue;
-        }
-
-        // Build dynamic reply and react handlers
-        const replyHandler = async (textStr: string, mediaUrl?: string) => {
-          try {
-            // Typing simulation to enhance interaction realism
-            if (sock && typeof sock.sendPresenceUpdate === "function") {
-              try {
-                await sock.sendPresenceUpdate("composing", senderJid);
-                // Simulated typing delay depending on text length (approx 15ms per character, capped between 600ms and 2.5s)
-                const typingDelay = Math.min(Math.max(textStr.length * 15, 600), 2500);
-                await new Promise((resolve) => setTimeout(resolve, typingDelay));
-                await sock.sendPresenceUpdate("paused", senderJid);
-              } catch (presErr: any) {
-                addLog(`[Presence] Failed to send typing simulation: ${presErr.message}`);
-              }
-            }
-
-            if (mediaUrl) {
-              // Decode data: URIs (e.g. AI-generated images) into a buffer —
-              // Baileys cannot fetch data URIs directly.
-              if (mediaUrl.startsWith("data:")) {
-                const buffer = bufferFromDataUri(mediaUrl);
-                if (buffer) {
-                  return await sock.sendMessage(senderJid, {
-                    image: buffer,
-                    caption: textStr
-                  }, { quoted: msg });
-                }
-              }
-              return await sock.sendMessage(senderJid, {
-                image: { url: mediaUrl },
-                caption: textStr
-              }, { quoted: msg });
-            } else {
-              return await sock.sendMessage(senderJid, { text: textStr }, { quoted: msg });
-            }
-          } catch (e: any) {
-            addLog(`Error sending message: ${e.message}`);
-          }
-        };
-
-        const reactHandler = async (emoji: string) => {
-          try {
-            return await sock.sendMessage(senderJid, {
-              react: { text: emoji, key: msg.key }
-            });
-          } catch (e: any) {
-            addLog(`Error reacting: ${e.message}`);
-          }
-        };
-
-        // Sensible media handling - dynamic buffer downloader (operates on the unwrapped message)
-        const mediaDownloader = async (): Promise<Buffer | null> => {
-          try {
-            const messageType = Object.keys(messageContent)[0];
-            if (!["imageMessage", "videoMessage", "documentMessage", "audioMessage"].includes(messageType)) {
-              return null;
-            }
-
-            addLog(`Downloading media content of type: ${messageType}`);
-            const stream = await (sock as any).downloadContentFromMessage(
-              messageContent[messageType as keyof typeof messageContent],
-              messageType.replace("Message", "")
-            );
-
-            let buffer = Buffer.alloc(0);
-            const MAX_MEDIA_BYTES = 100 * 1024 * 1024; // WhatsApp media ceiling
-            for await (const chunk of stream) {
-              buffer = Buffer.concat([buffer, chunk]);
-              if (buffer.length > MAX_MEDIA_BYTES) {
-                addLog("Media download aborted: exceeds the 100 MB memory cap.");
-                return null;
-              }
-            }
-
-            // Log memory safe usage
-            addLog(`Media download finished. Buffer size: ${Math.round(buffer.length / 1024)} KB.`);
-            return buffer;
-          } catch (err: any) {
-            addLog(`Media download failed: ${err.message}`);
-            return null;
-          }
-        };
-
-        const context: BotCommandContext = {
-          sender: senderJid,
-          senderName,
-          isOwner,
-          isAdmin: isSenderAdmin,
-          prefix,
-          commandName,
-          args,
-          fullMessage: text,
-          reply: replyHandler,
-          react: reactHandler,
-          downloadMedia: mediaDownloader,
-          getGroupMetadata: async (jid: string) => {
-            return await getCachedGroupMetadata(sock, jid);
-          },
-          getGroupMembers: async (jid: string): Promise<GroupMember[]> => {
-            const meta = await getCachedGroupMetadata(sock, jid);
-            if (meta && Array.isArray(meta.participants)) {
-              return meta.participants.map((p: any) => ({
-                id: p.id,
-                number: p.id.split("@")[0].replace(/[^0-9]/g, ""),
-                admin: p.admin || null,
-              }));
-            }
-            return [];
-          },
-          updateParticipants: async (jid: string, participants: string[], action: "add" | "remove" | "promote" | "demote") => {
-            if (sock && typeof sock.groupParticipantsUpdate === "function") {
-              return await sock.groupParticipantsUpdate(jid, participants, action);
-            }
-            return null;
-          },
-          kickMember: async (jid: string, participantJid: string) => {
-            if (sock && typeof sock.groupParticipantsUpdate === "function") {
-              return await sock.groupParticipantsUpdate(jid, [participantJid], "remove");
-            }
-            return null;
-          },
-          promoteMember: async (jid: string, participantJid: string) => {
-            if (sock && typeof sock.groupParticipantsUpdate === "function") {
-              return await sock.groupParticipantsUpdate(jid, [participantJid], "promote");
-            }
-            return null;
-          },
-          demoteMember: async (jid: string, participantJid: string) => {
-            if (sock && typeof sock.groupParticipantsUpdate === "function") {
-              return await sock.groupParticipantsUpdate(jid, [participantJid], "demote");
-            }
-            return null;
-          },
-        };
-
-        addLog(`💬 Executing dynamic command: [${commandName}] for ${senderName} (${maskLogNumber(senderNumber)})`);
-
-        // RoleGuard (M1): declarative ACL gate — fail closed on any error so a
-        // policy/registry problem can never escalate to "everyone allowed".
-        try {
-          const accessPolicy = getGroupPolicy(senderJid);
-          const aclDecision = authorizeCommand(
-            { name: commandName, category: command.category || "misc" },
-            resolveRole({ isOwner, isAdmin: isSenderAdmin, isGroup }),
-            accessPolicy,
-            {
-              ownerOnly: (command as any).ownerOnly,
-              adminOnly: (command as any).adminOnly,
-              groupOnly: (command as any).groupOnly,
-              privateOnly: (command as any).privateOnly,
-            }
-          );
-          if (!aclDecision.allowed) {
-            addLog(`⛔ RoleGuard denied [${commandName}] for ${senderName} (${maskLogNumber(senderNumber)}): ${aclDecision.reason}`);
-            recordAudit(`wa:${maskLogNumber(senderNumber)}`, "roleguard.deny", commandName, aclDecision.reason);
-            await replyHandler(`⛔ *Access Denied:* ${aclDecision.reason}.`);
-            return;
-          }
-        } catch (aclErr: any) {
-          addLog(`⛔ RoleGuard error on [${commandName}] for ${senderName}: ${aclErr.message || aclErr} (fail-closed)`);
-          await replyHandler(`⛔ *Access Denied:* unable to verify permission for this command.`);
-          return;
-        }
-
-        try {
-          incrementCommandStats(commandName);
-          await command.execute(sock, msg, context);
-        } catch (err: any) {
-          addLog(`❌ Error in ${commandName}: ${err.message || err}`);
-          await replyHandler(`❌ *Nebula Error:* Failed to execute command \`${commandName}\`.\nReason: ${err.message || err}`);
-        }
+        // 8.93 : le dispatch (contexte, RoleGuard, stats, exécution) vit dans
+        // commandDispatch.ts — source unique partagée avec l'agent IA.
+        await dispatchBotCommand(sock, msg, dispatchInfo, commandName, args, "prefix");
       }
     });
 
   } catch (error: any) {
     botState.status = "error";
     addLog(`❌ Failed to start bot connection: ${error.message || error}`);
+    // 9.18qqq : cet échec (réseau au démarrage, fetch de version Baileys,
+    // state d'auth illisible…) laissait le moteur MORT jusqu'à un
+    // redémarrage manuel — le process vivait (health-check 200) et plus
+    // personne ne relançait. Même backoff plafonné que la boucle de
+    // reconnexion ; un arrêt manuel pendant la fenêtre annule la relance.
+    if (botState.reconnectTimeout) {
+      clearTimeout(botState.reconnectTimeout);
+      botState.reconnectTimeout = null;
+    }
+    const epoch = stopEpoch;
+    const plan = nextReconnectPlan(botState.reconnectCount);
+    botState.reconnectCount = plan.count;
+    addLog(`🔄 Relance programmée dans ${Math.round(plan.delayMs / 1000)}s (le moteur ne s'arrête plus jamais seul).`);
+    botState.reconnectTimeout = setTimeout(() => {
+      botState.reconnectTimeout = null;
+      if (epoch !== stopEpoch) {
+        addLog("🛑 Relance annulée — arrêt manuel du moteur.");
+        return;
+      }
+      startLiveBot(false);
+    }, plan.delayMs);
   }
 }
 
 export function stopLiveBot() {
+  stopEpoch++; // 9.18qqq : invalide toute relance programmée par le catch
   if (botState.reconnectTimeout) {
     clearTimeout(botState.reconnectTimeout);
     botState.reconnectTimeout = null;
@@ -1070,6 +1423,7 @@ export function stopLiveBot() {
       }
     } catch (e) {}
     botState.socket = null;
+    setLiveSocket(null);
   }
   botState.status = "disconnected";
   botState.qrCode = "";

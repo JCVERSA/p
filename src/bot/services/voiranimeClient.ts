@@ -1,0 +1,420 @@
+/**
+ * ============================================================================
+ *  VoirAnime client — voir-anime.to (VF-first source, audit §8.9)
+ * ============================================================================
+ *  Ground truth (verified 2026-08-31 from the production VPS):
+ *   - HTML pages answer 200 from datacenter IPs (only /wp-json/ is CF-403,
+ *     which we do not need). WordPress "Madara" theme.
+ *   - Search: GET /?s=<query> -> result cards linking /anime/<slug>/.
+ *     VF entries are STRUCTURAL: slug ends with "-vf" (title ends " (VF)").
+ *     Each season is its own entry (e.g. "...-r2", "...-3").
+ *   - Anime page: episode links /anime/<slug>/<ep-slug>-NN-vf/ (or -vostfr/,
+ *     film/oav slugs for movies).
+ *   - Episode page: player iframe on voembed.net/embed-<code>.html (extracted
+ *     by the generic packed-player probe; real HLS qualities inside).
+ *
+ *  Used for explicit VF requests (`.a <q> ... vf ...`); any failure falls
+ *  back to the nakanime path.
+ */
+
+import { safeAxiosGet } from "../urlSafety.js";
+import * as cheerio from "cheerio";
+import { animeProxyOptions } from "./scrapingProxy.js";
+
+const VOIRANIME_ORIGIN = "https://voir-anime.to";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const PAGE_TIMEOUT_MS = 12000;
+
+export interface VoiranimeSearchResult {
+  title: string;
+  url: string; // https://voir-anime.to/anime/<slug>/
+  slug: string;
+  isVf: boolean;
+}
+
+async function fetchHtml(url: string): Promise<string> {
+  const resp = await safeAxiosGet(url, {
+    headers: { "User-Agent": UA, Referer: `${VOIRANIME_ORIGIN}/`, Accept: "text/html" },
+    timeout: PAGE_TIMEOUT_MS,
+    validateStatus: (s) => s === 200,
+    ...animeProxyOptions()
+  });
+  return typeof resp.data === "string" ? resp.data : "";
+}
+
+/** True when a slug/href identifies a VF entry (structural, not a label). */
+export function isVoiranimeVfSlug(slugOrUrl: string): boolean {
+  const s = (slugOrUrl || "").toLowerCase();
+  return /-vf\/?$/.test(s);
+}
+
+/**
+ * Parses a Madara search-results page into anime entries (exported for
+ * tests). Extracts /anime/<slug>/ links with their titles, deduped, order
+ * preserved (relevance order).
+ */
+export function parseVoiranimeSearch(html: string): VoiranimeSearchResult[] {
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const out: VoiranimeSearchResult[] = [];
+  const seen = new Set<string>();
+
+  // Result cards (madara): .page-item-detail anchors; generic fallback: any
+  // link pointing to /anime/<slug>/ that is not a genre/release listing.
+  const candidates = $("a[href*='/anime/']").toArray();
+  for (const el of candidates) {
+    const href = $(el).attr("href") || "";
+    // 9.18nnn : hrefs absolus OU relatifs (/anime/<slug>/) — selon le
+    // thème, certaines grilles rendent des liens relatifs.
+    const m = href.match(new RegExp(`^(?:${VOIRANIME_ORIGIN})?/anime/([a-z0-9-]+)/?$`, "i"));
+    if (!m) continue;
+    const slug = m[1];
+    if (slug === "anime" || seen.has(slug)) continue;
+    // Skip taxonomy links by requiring the anchor to look like a title link
+    // (inside a post title, or carrying the entry title attribute/text).
+    const title =
+      $(el).attr("title")?.trim() ||
+      $(el).text().replace(/\s+/g, " ").trim() ||
+      "";
+    if (!title || title.length < 2) continue;
+    // Genre/filter navigation links carry genre-ish text — skip obvious ones.
+    if (/^(action|adventure|comedy|drama|fantasy|horror|mecha|mystery|romance|sci-fi|thriller|vostfr|vf)$/i.test(title)) continue;
+    seen.add(slug);
+    const url = `${VOIRANIME_ORIGIN}/anime/${slug}/`;
+    out.push({ title: title.replace(/\s*\(VF\)\s*$/i, "").trim(), url, slug, isVf: slug.endsWith("-vf") });
+    if (out.length >= 30) break;
+  }
+  return out;
+}
+
+/** Search VoirAnime and return entries (VF entries flagged structurally). */
+// ── 9.9 : organisation VF de l'écran de sélection ───────────────────────────
+// Owner : par défaut la liste ne montre QUE les entrées VF, regroupées par
+// anime avec les saisons étiquetées (« — Saison 2 ») et les films nommés —
+// le site publie une page par saison (« Kimetsu no Yaiba 2/3/4 ») et la
+// liste brute ressemblait à des animes différents. Pure — testée.
+
+export interface OrganizedVfEntry {
+  result: VoiranimeSearchResult;
+  /** Saison déduite (null pour les films/OAV). */
+  season: number | null;
+  isFilm: boolean;
+  baseTitle: string;
+  /** Étiquette prête pour la liste : « Kimetsu no Yaiba — Saison 2 ». */
+  label: string;
+}
+
+const FILM_SLUG_RE = /(^|[-_])(film|movie|oav)([-_]|$)/i;
+
+/**
+ * Retire le marqueur de saison final (« Kimetsu no Yaiba 2 », « … R2 »,
+ * « … S2 » — 9.18nnn : le « S2 » n'était PAS dépouillé, d'où les écrans
+ * « … Isekai Seikatsu S2 — Saison 2 » et les saisons jamais groupées).
+ */
+function stripSeasonMarker(title: string): string {
+  const m = title.match(/^(.*?)[\s]+[RrSs]?(\d+)\s*$/);
+  if (m && m[1].trim().length >= 2) return m[1].trim();
+  return title.trim();
+}
+
+/**
+ * Regroupe et étiquette les entrées VF : par anime (ordre d'apparition),
+ * saisons croissantes puis films/OAV. Marqueurs reconnus : slug trailing
+ * « -N » / « -rN » / « -sN » / « -saison-N » (conventions du site), titre
+ * final « N » ou « R2 » ; sans marqueur = saison 1 (convention voir-anime,
+ * cohérente avec resolveVoiranimeSeason).
+ */
+export function organizeVfSelection(entries: VoiranimeSearchResult[]): OrganizedVfEntry[] {
+  const analyzed: OrganizedVfEntry[] = entries.map((e) => {
+    const bare = e.slug.replace(/-vf$/i, "");
+    const isFilm = FILM_SLUG_RE.test(bare) || /\b(film|movie|oav)\b/i.test(e.title);
+    // 9.18nnn : préfixe de colon >= 4 caractères — « Re:Zero … » (préfixe
+    // « Re ») se groupait sous la base « re » avec TOUT les « Re:… » du
+    // catalogue ; le groupement par titre complet est le bon.
+    const colon = e.title.match(/^([^:]{4,}):\s*(.+)$/);
+    const slugM =
+      bare.match(/-(\d+)$/) || bare.match(/-r(\d+)$/) ||
+      bare.match(/-s(\d+)$/) || bare.match(/-saison-(\d+)$/);
+    const titleM =
+      e.title.match(/\sR(\d)\s*$/i) ||
+      e.title.match(/\sS(\d+)\s*$/i) || // 9.18nnn : « … S2 » (titre officiel Re:Zero)
+      e.title.match(/\s(?:season|saison)\s+(\d+)\s*$/i) ||
+      e.title.match(/\s(\d+)\s*$/);
+    const explicit = !!(slugM || titleM); // marqueur de saison RÉEL (pas le défaut)
+    const season = isFilm || !explicit ? (explicit ? parseInt((slugM || titleM)![1], 10) : 1) : parseInt((slugM || titleM)![1], 10);
+
+    // Clé de regroupement : préfixe avant « : » (les saisons d'un même anime
+    // partagent le préfixe), sinon le titre sans son marqueur.
+    const groupKey = stripSeasonMarker(colon ? colon[1] : e.title);
+    let label: string;
+    if (isFilm) {
+      const sub = colon ? colon[2].trim() : "";
+      label = sub ? `${groupKey} — Film : ${sub}` : `${groupKey} — Film`;
+    } else if (explicit) {
+      label = `${stripSeasonMarker(e.title)} — Saison ${season}`;
+    } else if (colon) {
+      // Sous-titre distinctif SANS marqueur de saison (ex. « Mugen
+      // Ressha-hen », un film non marqué) : titre complet, honnête —
+      // on n'invente pas une « Saison 1 » qui pourrait être fausse.
+      label = e.title;
+    } else {
+      label = `${groupKey} — Saison 1`; // convention voir-anime (cf. resolveVoiranimeSeason)
+    }
+    return { result: e, season: isFilm ? null : season, isFilm, baseTitle: groupKey, label };
+  });
+
+  // Groupement par anime (clé = base, ordre de première apparition).
+  const groups: Array<{ base: string; items: OrganizedVfEntry[] }> = [];
+  for (const a of analyzed) {
+    const key = a.baseTitle.toLowerCase();
+    let g = groups.find((x) => x.base === key);
+    if (!g) { g = { base: key, items: [] }; groups.push(g); }
+    g.items.push(a);
+  }
+  const out: OrganizedVfEntry[] = [];
+  for (const g of groups) {
+    g.items.sort((x, y) => {
+      if (x.isFilm !== y.isFilm) return x.isFilm ? 1 : -1;
+      if (!x.isFilm) return (x.season ?? 99) - (y.season ?? 99);
+      return x.label.localeCompare(y.label, "fr");
+    });
+    out.push(...g.items);
+  }
+  return out;
+}
+
+export async function voiranimeSearch(query: string): Promise<VoiranimeSearchResult[]> {
+  // 9.18nnn (retour terrain 18/10) : l'ancienne recherche unique `/?s=…`
+  // (WordPress générique, tous types de posts, correspondance sur
+  // titre+contenu) rate des titres que le SITE trouve : « rezero » ne
+  // contient pas « Re:Zero » (les deux-points !) — 2 entrées remontées sur
+  // les ~6 du catalogue, et des « aucun résultat » pour des animes pourtant
+  // présents. Le formulaire Madara du site poste `?s=…&post_type=wp-manga`
+  // (recherche restreinte aux fiches anime) : on interroge les DEUX en
+  // parallèle et on fusionne (dédup par slug) — l'union ne peut qu'élargir.
+  const urls = [
+    `${VOIRANIME_ORIGIN}/?s=${encodeURIComponent(query)}&post_type=wp-manga`,
+    `${VOIRANIME_ORIGIN}/?s=${encodeURIComponent(query)}`,
+  ];
+  const settled = await Promise.allSettled(urls.map((u) => fetchHtml(u)));
+  const merged: VoiranimeSearchResult[] = [];
+  const seen = new Set<string>();
+  let contributing = 0;
+  for (const r of settled) {
+    if (r.status !== "fulfilled") continue;
+    const parsed = parseVoiranimeSearch(r.value);
+    if (parsed.length) contributing++;
+    for (const e of parsed) {
+      if (seen.has(e.slug)) continue;
+      seen.add(e.slug);
+      merged.push(e);
+    }
+  }
+  if (contributing > 1) {
+    console.log(`[NOVABOX] recherche va « ${query} » : ${merged.length} entrée(s) après fusion des deux modes de recherche du site`);
+  }
+  if (merged.length === 0) {
+    const failed = settled.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+    if (failed) {
+      // Au moins une requête a échoué réseau : erreur honnête plutôt qu'un
+      // faux « aucun résultat ».
+      throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason));
+    }
+  }
+  return merged;
+}
+
+/**
+ * 9.18ppp : décompose un slug en franchise — base (sans langue ni marqueur
+ * de saison), saison détectée, langue structurelle. Pur. « …-s4-vf » →
+ * base « … », saison 4, VF ; « …-vf » → saison null (convention S1) ;
+ * « mushoku-tensei-3-vf » → saison 3 (marqueur numérique nu du site).
+ */
+export function voiranimeSlugFamily(slug: string): { base: string; season: number | null; language: "VF" | "VOSTFR" | null } {
+  const s = (slug || "").toLowerCase().replace(/\/+$/, "");
+  let language: "VF" | "VOSTFR" | null = null;
+  let rest = s;
+  if (/(^|[-_])vost(?:fr)?$/.test(rest)) {
+    language = "VOSTFR";
+    rest = rest.replace(/[-_]vost(?:fr)?$/, "");
+  } else if (/(^|[-_])vf$/.test(rest)) {
+    language = "VF";
+    rest = rest.replace(/[-_]vf$/, "");
+  }
+  let season: number | null = null;
+  const m =
+    rest.match(/-saison-(\d+)$/) || rest.match(/-s(\d+)$/) ||
+    rest.match(/-r(\d+)$/) || rest.match(/-(\d+)$/);
+  if (m && m.index !== undefined) {
+    season = parseInt(m[1], 10);
+    rest = rest.slice(0, m.index);
+  }
+  return { base: rest, season, language };
+}
+
+/**
+ * 9.18ppp (terrain 18/10 04:41) : la recherche du site rate des SAISONS
+ * entières d'une franchise — « rezero » ne matche pas « Re:Zero » dans le
+ * titre (WordPress cherche le mot entier, deux-points compris), donc seules
+ * les pages dont le CONTENU contient la requête remontent : 2 saisons VF
+ * sur 4 (lien owner : …/rezero-kara-hajimeru-isekai-seikatsu-s4-vf/).
+ * Correctif générique, sans aucune URL devinée : dès qu'une saison d'une
+ * franchise est trouvée, on RECHERCHE LE TITRE DE BASE de la franchise —
+ * tous les titres de ses saisons le contiennent (le titre matche le titre).
+ * Les résultats hors franchise sont filtrés par base de slug (pas de bruit),
+ * la fusion est dédupliquée, ≤ 3 familles (latence), et un échec réseau
+ * laisse la liste inchangée — jamais de régression.
+ */
+export async function completeVoiranimeFranchises(
+  results: VoiranimeSearchResult[]
+): Promise<VoiranimeSearchResult[]> {
+  if (!results.length) return results;
+  const families = new Map<string, VoiranimeSearchResult[]>();
+  for (const r of results) {
+    if (!r.slug) continue;
+    const base = voiranimeSlugFamily(r.slug).base;
+    if (!base) continue;
+    const list = families.get(base);
+    if (list) list.push(r);
+    else families.set(base, [r]);
+  }
+  const seen = new Set(results.map((r) => r.slug));
+  const additions = await Promise.all(
+    Array.from(families.entries())
+      .slice(0, 3)
+      .map(async ([base, members]) => {
+        try {
+          // Titre le plus court de la famille (= titre de base de la franchise).
+          const title = members
+            .map((m) => stripSeasonMarker(m.title).replace(/\s*\(vf\)\s*$/i, "").trim())
+            .filter((t) => t.length >= 3)
+            .sort((a, b) => a.length - b.length)[0];
+          if (!title) return [] as VoiranimeSearchResult[];
+          const html = await fetchHtml(
+            `${VOIRANIME_ORIGIN}/?s=${encodeURIComponent(title)}&post_type=wp-manga`
+          );
+          const fresh = parseVoiranimeSearch(html).filter((f) => {
+            if (!f.slug || seen.has(f.slug)) return false;
+            const fb = voiranimeSlugFamily(f.slug).base;
+            return fb === base || fb.startsWith(`${base}-`);
+          });
+          for (const f of fresh) seen.add(f.slug);
+          if (fresh.length) {
+            console.log(
+              `[NOVABOX] complétion « ${title} » : +${fresh.length} entrée(s) — saisons retrouvées via le titre de la franchise`
+            );
+          }
+          return fresh;
+        } catch {
+          return [] as VoiranimeSearchResult[]; // une famille en échec ne bloque jamais
+        }
+      })
+  );
+  const flat = additions.flat().slice(0, 40 - results.length);
+  return flat.length ? [...results, ...flat] : results;
+}
+
+export interface VoiranimeEpisode {
+  n: number; // episode number from the URL (0 for film/oav)
+  url: string;
+  label: string; // "Épisode N" | "Film" | "OAV"
+}
+
+/**
+ * Parses an anime page into its episode list (exported for tests).
+ * Episode URLs end with -NN-vf/ or -NN-vostfr/; films/OAVs use film-/oav-
+ * prefixes without a number.
+ */
+export function parseVoiranimeEpisodes(html: string, animeUrl: string): VoiranimeEpisode[] {
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const base = animeUrl.replace(/\/$/, "");
+  const slug = base.split("/").pop() || "";
+  const out: VoiranimeEpisode[] = [];
+  const seen = new Set<string>();
+
+  $(`a[href*='/${slug}/']`).each((_, el) => {
+    const href = $(el).attr("href") || "";
+    const m = href.match(new RegExp(`^${base}/(.+)$`, "i"));
+    if (!m) return;
+    const tail = m[1].replace(/\/$/, "");
+    if (tail.includes("/")) return; // sub-path, not an episode
+    const key = tail.toLowerCase();
+    if (seen.has(key)) return;
+
+    const epNum = tail.match(/-(\d+)-(?:vf|vostfr)$/i);
+    if (epNum) {
+      seen.add(key);
+      out.push({ n: parseInt(epNum[1], 10), url: `${base}/${tail}/`, label: `Épisode ${parseInt(epNum[1], 10)}` });
+      return;
+    }
+    if (/^(film|oav|movie)-/.test(key) || /-(film|oav|movie)$/i.test(key)) {
+      seen.add(key);
+      const label = key.startsWith("film") || /film/.test(key) ? "Film" : "OAV";
+      out.push({ n: 0, url: `${base}/${tail}/`, label });
+    }
+  });
+
+  out.sort((a, b) => a.n - b.n);
+  return out;
+}
+
+/** Episode list of a VoirAnime entry. */
+export async function voiranimeEpisodes(animeUrl: string): Promise<VoiranimeEpisode[]> {
+  const html = await fetchHtml(animeUrl);
+  return parseVoiranimeEpisodes(html, animeUrl);
+}
+
+/**
+ * Parses an episode page and returns the player embed URL (voembed.net or
+ * any iframe embed host). Exported for tests.
+ */
+export function parseVoiranimePlayer(html: string): string | null {
+  if (!html) return null;
+  const $ = cheerio.load(html);
+  let found: string | null = null;
+  $("iframe").each((_, el) => {
+    if (found) return;
+    const src = $(el).attr("src") || $(el).attr("data-src") || "";
+    if (/^https?:\/\/[^/]+\/embed-/i.test(src) || /(embed|player)[^/]*\.[a-z]{2,}\//i.test(src)) {
+      found = src;
+    }
+  });
+  if (!found) {
+    const m = html.match(/https?:\/\/[^\s"'<>]+\/embed-[a-z0-9-]+\.html/i);
+    if (m) found = m[0];
+  }
+  return found;
+}
+
+/** Player embed URL for one episode page. */
+export async function voiranimeEpisodePlayer(episodeUrl: string): Promise<string | null> {
+  try {
+    const html = await fetchHtml(episodeUrl);
+    return parseVoiranimePlayer(html);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Picks the VF entry matching a requested season number from a franchise's
+ * VF entries: an entry whose title/slug carries the number (e.g. "R2",
+ * "-2", "season 2") wins; season 1 falls back to the first VF entry.
+ * Exported for tests.
+ */
+export function resolveVoiranimeSeason(
+  vfEntries: VoiranimeSearchResult[],
+  requestedSeason: number
+): VoiranimeSearchResult | null {
+  if (vfEntries.length === 0) return null;
+  for (const e of vfEntries) {
+    const hay = `${e.title} ${e.slug}`.toLowerCase();
+    // explicit season markers
+    if (new RegExp(`(^|[^0-9])(s|saison|season)[ .-]?${requestedSeason}([^0-9]|$)`).test(hay)) return e;
+    // trailing number in the slug ("...-2-vf") or title ("... 2")
+    if (new RegExp(`(^|[^0-9])${requestedSeason}([^0-9]|$)`).test(hay)) return e;
+  }
+  if (requestedSeason <= 1) return vfEntries[0];
+  return null;
+}

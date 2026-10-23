@@ -1,0 +1,117 @@
+import fs from "fs";
+import { isOwnerSender } from "./aiQuota.js"; // 9.18pp
+import path from "path";
+
+/**
+ * Budget web partagé (9.0) — .search / .fetch / .wiki.
+ *
+ * Ces commandes ne consomment AUCUN token IA (recherche déterministe),
+ * mais elles sortent sur internet depuis l'IP du VPS : sans plafond, un
+ * contact peut marteler DuckDuckGo/Wikipédia et faire bloquer l'IP pour
+ * tout le monde. Ce module applique :
+ *  - un quota journalier PAR EXPÉDITEUR, partagé par les trois commandes
+ *    (défaut 20, env NEBULA_WEB_DAILY_LIMIT) ;
+ *  - une persistance JSON dans le data dir (les redémarrages ne
+ *    réinitialisent pas le budget — même modèle que aiQuota).
+ *
+ * Comptabilisé uniquement en cas de SUCCÈS : un échec réseau ne mange pas
+ * le budget de l'utilisateur.
+ */
+
+function getDataDir(): string {
+  return process.env.NEBULA_DATA_DIR || path.join(process.cwd(), "database");
+}
+
+function getQuotaFile(): string {
+  return path.join(getDataDir(), "web_usage.json");
+}
+
+/** Résolu à chaque appel (et non à l'import) : testable et chaud en env. */
+export function getWebDailyLimit(): number {
+  const n = Number(process.env.NEBULA_WEB_DAILY_LIMIT || 20);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 20;
+}
+
+interface UsageRecord {
+  date: string; // YYYY-MM-DD (UTC)
+  count: number;
+}
+
+let usage: Record<string, UsageRecord> = {};
+try {
+  if (fs.existsSync(getQuotaFile())) {
+    usage = JSON.parse(fs.readFileSync(getQuotaFile(), "utf-8"));
+  }
+} catch (e: any) {
+  console.warn("[WebQuota] Failed to load usage file:", e?.message || e);
+}
+
+let saveTimer: NodeJS.Timeout | null = null;
+function scheduleSave() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      fs.mkdirSync(getDataDir(), { recursive: true });
+      const tmp = `${getQuotaFile()}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(usage, null, 2), "utf-8");
+      fs.renameSync(tmp, getQuotaFile());
+    } catch (e: any) {
+      console.warn("[WebQuota] Failed to save usage file:", e?.message || e);
+    }
+  }, 500);
+}
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function recordFor(sender: string): UsageRecord {
+  const r = usage[sender];
+  if (!r || r.date !== today()) {
+    const fresh: UsageRecord = { date: today(), count: 0 };
+    usage[sender] = fresh;
+    return fresh;
+  }
+  return r;
+}
+
+export interface WebQuotaStatus {
+  allowed: boolean;
+  remaining: number;
+  limit: number;
+}
+
+export function checkWebQuota(sender: string): WebQuotaStatus {
+  // 9.18pp (décision owner 16/10, esprit 9.18gg « mon bot, mes clés ») :
+  // les outils web tournent sur la clé Tavily de l'owner — il échappe au
+  // plafond (même règle que les quotas IA/TTS, LID compris).
+  if (isOwnerSender(sender)) return { allowed: true, remaining: 1_000_000, limit: 1_000_000 };
+  const limit = getWebDailyLimit();
+  const r = usage[sender];
+  const used = r && r.date === today() ? r.count : 0;
+  const remaining = Math.max(0, limit - used);
+  return { allowed: remaining > 0, remaining, limit };
+}
+
+export function consumeWebQuota(sender: string): void {
+  if (isOwnerSender(sender)) return; // 9.18pp — owner illimité, rien à compter
+  recordFor(sender).count += 1;
+  scheduleSave();
+}
+
+/** 9.18 (B) — usage web du jour pour le dashboard (sans consommation). */
+export function getWebQuotaUsage(sender: string): { used: number; limit: number } {
+  const limit = getWebDailyLimit();
+  const r = usage[sender];
+  const used = r && r.date === today() ? r.count : 0;
+  return { used, limit };
+}
+
+/** 9.16 — remet à zéro le quota web du jour pour un utilisateur (dashboard). */
+export function resetWebQuota(sender: string): boolean {
+  if (!usage[sender]) return false;
+  delete usage[sender];
+  scheduleSave();
+  return true;
+}
