@@ -82,6 +82,10 @@ const EXPECTED_INVENTORY: Array<{ name: string; aliases: string[] }> = [
   { name: "welcome", aliases: ["bienvenue"] },
   { name: "goodbye", aliases: ["aurevoir"] },
   { name: "warn", aliases: [] },
+  // 9.18nnnn : P2 (décision owner 24/10 « p2 ») — paroles LRCLIB sans clé
+  // + sondage natif WhatsApp.
+  { name: "lyrics", aliases: ["paroles"] },
+  { name: "poll", aliases: ["sondage", "vote"] },
 ];
 
 describe("inventaire définitif des commandes (8.59)", () => {

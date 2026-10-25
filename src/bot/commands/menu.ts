@@ -100,12 +100,18 @@ export const MENU_SECTIONS: MenuSection[] = [
       ["whois", "Profil d'un membre du groupe"],
       ["purge", "Purge de l'espace disque (owner)"],
       ["remind", "Rappel programmé (ex: .remind 18h texte)"],
+      ["lyrics", "Paroles d'une chanson (seul après .ytm, ou .lyrics <titre>)"],
     ],
   },
   {
     emoji: "📊",
     title: "GENERAL",
-    entries: [["ping", "Vitesse et latence"], ["menu", "Cette liste (alias .cmds)"], ["help", "Aide détaillée par commande"]],
+    entries: [
+      ["ping", "Vitesse et latence"],
+      ["poll", "Sondage natif (.poll Question | choix 1 | choix 2)"],
+      ["menu", "Cette liste (alias .cmds)"],
+      ["help", "Aide détaillée par commande"],
+    ],
   },
 ];
 

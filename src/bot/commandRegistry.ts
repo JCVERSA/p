@@ -28,6 +28,8 @@ import { muteCommand, unmuteCommand, grouplinkCommand, groupinfoCommand } from "
 import { tagallCommand, hidetagCommand, delCommand } from "./commands/groupAnnounce.js";
 import { welcomeCommand, goodbyeCommand } from "./commands/groupWelcome.js";
 import warnCommand from "./commands/warn.js";
+import lyricsCommand from "./commands/lyrics.js";
+import pollCommand from "./commands/poll.js";
 import traceCommand from "./commands/trace.js";
 import menuCommand from "./commands/menu.js";
 import aiCommand from "./commands/ai.js";
@@ -151,6 +153,8 @@ function getBuiltinCommands(): BotCommand[] {
     welcomeCommand,
     goodbyeCommand,
     warnCommand,
+    lyricsCommand,
+    pollCommand,
   ];
 }
 
