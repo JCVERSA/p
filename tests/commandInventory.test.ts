@@ -65,6 +65,23 @@ const EXPECTED_INVENTORY: Array<{ name: string; aliases: string[] }> = [
   { name: "take", aliases: ["steal", "repack"] },
   { name: "viewonce", aliases: ["vv", "readvo", "readviewonce"] },
   { name: "dl", aliases: ["download", "gdl"] },
+  // 9.18mmmm : suite admin groupe P1 (décision owner 24/10 « ok comme par p1 »).
+  // kick/promote/demote/hidetag SORTENT de la liste bannie 8.59 — implémentations
+  // NEUVES 100% maison (inspiration KnightBot, zéro copier-coller), refus admin,
+  // seuil warn NEBULA_WARN_KICK. Arsenal « anti- » et .members restent bannis.
+  { name: "kick", aliases: ["expulse"] },
+  { name: "promote", aliases: [] },
+  { name: "demote", aliases: [] },
+  { name: "mute", aliases: [] },
+  { name: "unmute", aliases: [] },
+  { name: "grouplink", aliases: ["lien"] },
+  { name: "groupinfo", aliases: ["ginfo"] },
+  { name: "tagall", aliases: ["everyone", "tous"] },
+  { name: "hidetag", aliases: ["tag", "ghost"] },
+  { name: "del", aliases: ["delete", "supprime"] },
+  { name: "welcome", aliases: ["bienvenue"] },
+  { name: "goodbye", aliases: ["aurevoir"] },
+  { name: "warn", aliases: [] },
 ];
 
 describe("inventaire définitif des commandes (8.59)", () => {
@@ -89,9 +106,12 @@ describe("inventaire définitif des commandes (8.59)", () => {
     await initRegistry();
     // 9.18llll : sticker/s/download/dl SORTIS de la liste bannie — décision
     // owner 23/10 (nouvelles implémentations, pas le retour du legacy 8.59).
+    // 9.18mmmm : kick/promote/demote/hidetag SORTIS à leur tour — décision
+    // owner 24/10 (P1 suite admin groupe, code maison). L'arsenal « anti- »
+    // (antilink/antitag/antibot), .members, .owner et .access restent bannis.
     const banned = [
       "media", "m", "translate",
-      "owner", "kick", "promote", "demote", "members", "hidetag",
+      "owner", "members",
       "antilink", "antitag", "antibot", "access"
     ];
     for (const cmd of getCommands()) {

@@ -23,6 +23,11 @@ import stickerCommand from "./commands/sticker.js";
 import takeCommand from "./commands/take.js";
 import viewonceCommand from "./commands/viewonce.js";
 import dlCommand from "./commands/dl.js";
+import { kickCommand, promoteCommand, demoteCommand } from "./commands/groupModeration.js";
+import { muteCommand, unmuteCommand, grouplinkCommand, groupinfoCommand } from "./commands/groupSettings.js";
+import { tagallCommand, hidetagCommand, delCommand } from "./commands/groupAnnounce.js";
+import { welcomeCommand, goodbyeCommand } from "./commands/groupWelcome.js";
+import warnCommand from "./commands/warn.js";
 import traceCommand from "./commands/trace.js";
 import menuCommand from "./commands/menu.js";
 import aiCommand from "./commands/ai.js";
@@ -84,7 +89,7 @@ const commandsMap = new Map<string, BotCommand>();
 // recharger, échouait en prod (Node ne parse pas les .ts) et affichait
 // « ⚠️ Commande non chargée : voiceMode.ts » à chaque démarrage alors que
 // .on/.off fonctionnaient parfaitement (31 commandes enregistrées).
-const BUILTIN_SOURCE_FILE_EXCEPTIONS = new Set(["novabox", "watch", "voicemode"]);
+const BUILTIN_SOURCE_FILE_EXCEPTIONS = new Set(["novabox", "watch", "voicemode", "groupModeration", "groupSettings", "groupAnnounce", "groupWelcome"]);
 
 /** Commands loaded from disk (name -> module), kept in memory between reloads. */
 const diskCommandCache = new Map<string, BotCommand>();
@@ -133,6 +138,19 @@ function getBuiltinCommands(): BotCommand[] {
     takeCommand,
     viewonceCommand,
     dlCommand,
+    kickCommand,
+    promoteCommand,
+    demoteCommand,
+    muteCommand,
+    unmuteCommand,
+    grouplinkCommand,
+    groupinfoCommand,
+    tagallCommand,
+    hidetagCommand,
+    delCommand,
+    welcomeCommand,
+    goodbyeCommand,
+    warnCommand,
   ];
 }
 

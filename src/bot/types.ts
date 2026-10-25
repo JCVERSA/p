@@ -46,6 +46,17 @@ export interface BotCommand {
    * tokens URL sont préservés (cap dédié 500 chars).
    */
   acceptsUrlArgs?: boolean;
+  /**
+   * 9.18mmmm — capability tags pris en charge par le RoleGuard (accessControl) :
+   * ownerOnly (owner Nebula), adminOnly (admins du groupe + owner),
+   * groupOnly / privateOnly (type de chat — vérifiés AUSSI au runtime par
+   * chaque commande : défense en profondeur, le RoleGuard ne connaît pas le
+   * type de chat au moment de l'appel).
+   */
+  ownerOnly?: boolean;
+  adminOnly?: boolean;
+  groupOnly?: boolean;
+  privateOnly?: boolean;
   execute: (sock: any, msg: any, context: BotCommandContext) => Promise<void> | void;
 }
 

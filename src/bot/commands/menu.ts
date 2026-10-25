@@ -67,6 +67,25 @@ export const MENU_SECTIONS: MenuSection[] = [
     ],
   },
   {
+    emoji: "👥",
+    title: "GROUPE (ADMIN)",
+    entries: [
+      ["kick", "Expulser un membre (reply ou @mention)"],
+      ["promote", "Promouvoir admin"],
+      ["demote", "Retirer le rôle admin"],
+      ["warn", "Avertir (3e = expulsion auto)"],
+      ["mute", "Réserver le groupe aux admins"],
+      ["unmute", "Réouvrir le groupe à tous"],
+      ["tagall", "Mentionner tous les membres"],
+      ["hidetag", "Annonce à mentions invisibles"],
+      ["del", "Supprimer un message (reply)"],
+      ["grouplink", "Lien d’invitation (reset = owner)"],
+      ["groupinfo", "Fiche du groupe"],
+      ["welcome", "Message d’accueil automatique"],
+      ["goodbye", "Message de départ automatique"],
+    ],
+  },
+  {
     emoji: "🔧",
     title: "TOOLS & UTILITY",
     entries: [
