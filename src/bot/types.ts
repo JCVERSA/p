@@ -40,6 +40,11 @@ export interface BotCommand {
   usage?: string;
   aliases?: string[];
   /**
+   * 9.18oooo (quick win) — exemples concrets pour la carte `.help <cmd>`
+   * (chaque entrée est tapable telle quelle, préfixe compris).
+   */
+  examples?: string[];
+  /**
    * 9.3b — la commande attend des URLs dans ses arguments (ytv, sweb,
    * fetch, tiktok, instagram…). Le guardrail d'args de l'agent (8.99)
    * supprime les URLs par défaut ; si cette propriété est vraie, les

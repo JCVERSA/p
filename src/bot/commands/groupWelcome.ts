@@ -39,6 +39,9 @@ function welcomeCommandFactory(kind: "welcome" | "goodbye"): BotCommand {
     groupOnly: true,
     description: isWelcome ? "Message automatique d'accueil des nouveaux membres (admin)." : "Message automatique de départ des membres (admin).",
     usage: isWelcome ? ".welcome on|off|<texte>" : ".goodbye on|off|<texte>",
+    examples: isWelcome
+      ? [".welcome on", ".welcome off", ".welcome Salut {user} dans {groupe} !"]
+      : [".goodbye on", ".goodbye off", ".goodbye {user} nous quitte…"],
     execute: async (_sock, msg, context) => {
       const gid = groupJidOf(msg);
       if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));

@@ -6,6 +6,7 @@ import { fetchMediaToTempFile } from "../services/mediaLinkDelivery.js";
 import { registerTempDownload, getLinkTtlMinutes } from "../tempDownloadManager.js";
 import { createProgressReporter, type ProgressSendFn } from "../services/progressMessenger.js";
 import { WHATSAPP_DOC_SAFE_MB } from "../services/mediaToolkit.js";
+import { rememberLastTrack } from "../services/lastTrackStore.js";
 
 /**
  * 9.18llll — `.dl` : téléchargeur GÉNÉRIQUE de réseaux sociaux.
@@ -73,6 +74,7 @@ const dlCommand: BotCommand = {
   acceptsUrlArgs: true, // le guardrail agent préserve les URLs ici
   description: "Télécharge un média depuis Facebook, X/Twitter, Pinterest, Reddit… (yt-dlp, 1000+ sites).",
   usage: ".dl <lien>",
+  examples: [".dl https://www.facebook.com/watch/?v=123…", ".dl https://www.pinterest.com/pin/…"],
   execute: async (sock, msg, context) => {
     let anchorKey: unknown = null;
     try {
@@ -182,4 +184,143 @@ const dlCommand: BotCommand = {
   },
 };
 
+// ── 9.18oooo (quick win) — .dla : piste AUDIO seule d'un lien ───────────────
+// Même socle éprouvé que .dl (yt-dlp + fetchMediaToTempFile + lien /d/), mais
+// le sélecteur de format ne prend QUE la meilleure piste audio (ba) : idéal
+// pour SoundCloud, Mixcloud, YouTube… Livré en MUSIQUE lisible dans WhatsApp
+// (≤ 60 Mo, règle audio maison), au-delà par lien /d/. Le titre livré alimente
+// le couplage .lyrics (dernière piste du chat).
+
+const AUDIO_FORMAT = "ba/bestaudio/best";
+const MAX_AUDIO_DELIVERY_MB = 60;
+
+const AUDIO_MIME: Record<string, string> = {
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  mp4: "audio/mp4",
+  aac: "audio/aac",
+  ogg: "audio/ogg; codecs=opus",
+  opus: "audio/ogg; codecs=opus",
+  webm: "audio/webm",
+  wav: "audio/wav",
+  flac: "audio/flac",
+};
+
+const dlaCommand: BotCommand = {
+  name: "dla",
+  category: "Média",
+  acceptsUrlArgs: true, // le guardrail agent préserve les URLs ici
+  description: "Piste audio seule d'un lien (SoundCloud, Mixcloud, YouTube…) — livrée en musique lisible.",
+  usage: ".dla <lien>",
+  examples: [".dla https://soundcloud.com/artiste/morceau", ".dla https://www.youtube.com/watch?v=…"],
+  execute: async (sock, msg, context) => {
+    let anchorKey: unknown = null;
+    let localPath: string | null = null;
+    try {
+      const argText = (context.args || []).join(" ");
+      const rawUrl = (argText.match(URL_RE) || [])[0];
+      if (!rawUrl) {
+        await context.reply(
+          "🎧 *Extraction audio*\n\n`.dla <lien>` — SoundCloud, Mixcloud, YouTube, Bandcamp…\n\nEx : `.dla https://soundcloud.com/artiste/morceau`\n_(≤ 60 Mo en musique lisible, au-delà par lien)._",
+        );
+        return;
+      }
+      if (!(await isSafeDownloadUrl(rawUrl))) {
+        await context.reply("❌ Ce lien n'est pas autorisé (adresse privée ou invalide).");
+        return;
+      }
+
+      const anchor = await context.reply(`🎧 *Extraction de la piste audio…*\n${rawUrl.slice(0, 120)}`);
+      anchorKey = (anchor as any)?.key ?? null;
+
+      const meta = await runYtDlp(
+        ["-J", "--no-playlist", "--no-warnings", "-f", AUDIO_FORMAT, rawUrl],
+        90000,
+        300000,
+      );
+      const info = meta.ok ? parseDlJson(meta.stdout) : null;
+      if (!info) {
+        await sock.sendMessage(
+          msg.key.remoteJid!,
+          { text: "❌ *Aucune piste audio extractible pour ce lien.*\n_Vérifie qu'il pointe vers un contenu public avec audio._" },
+          { quoted: msg },
+        );
+        return;
+      }
+
+      const sendProgress: ProgressSendFn = async (text: string, editKey?: unknown) => {
+        const target = sock;
+        if (!target) throw new Error("no socket");
+        return await target.sendMessage(
+          msg.key.remoteJid!,
+          editKey ? { text, edit: editKey as any } : { text },
+          { quoted: msg },
+        );
+      };
+      const progress = createProgressReporter({
+        send: sendProgress,
+        anchorKey,
+        title: `🎧 ${info.title} (${info.extractor})`,
+        initialPhaseLabel: "Extraction audio",
+      });
+
+      localPath = await fetchMediaToTempFile(info.url, (received, total) => {
+        progress.update({
+          percent: total > 0 ? (received / total) * 100 : null,
+          bytesDone: received,
+        });
+      });
+      if (!localPath) {
+        await progress.finish(
+          `*🎧 ${info.title}*\n⚠️ Téléchargement interrompu ou fichier trop volumineux — réessaie.`,
+        );
+        return;
+      }
+
+      const filename = sanitizeFilename(info.title, info.ext);
+      const sizeBytes = await (async () => {
+        try {
+          const fs = await import("fs");
+          return fs.statSync(localPath!).size;
+        } catch {
+          return 0;
+        }
+      })();
+      const sizeMB = sizeBytes / 1e6;
+      const rec = registerTempDownload(localPath, filename, {
+        mimeType: AUDIO_MIME[info.ext] || "audio/mpeg",
+      });
+
+      const audioMime = AUDIO_MIME[info.ext];
+      if (audioMime && sizeMB <= MAX_AUDIO_DELIVERY_MB) {
+        // Musique lisible directement dans WhatsApp (comme .ytm).
+        await sock.sendMessage(
+          msg.key.remoteJid!,
+          { audio: { url: localPath }, mimetype: audioMime, ptt: false, fileName: filename },
+          { quoted: msg },
+        );
+      }
+      // 9.18nnnn : .lyrics sans argument reprend cette piste.
+      rememberLastTrack(String(msg.key.remoteJid || ""), info.title);
+      await progress.finish(
+        `*🎧 ${info.title}*\n✅ Audio prêt (${sizeMB.toFixed(1).replace(".", ",")} Mo) — ${
+          audioMime && sizeMB <= MAX_AUDIO_DELIVERY_MB
+            ? "musique envoyée ci-dessus"
+            : `trop lourd pour l'envoi direct — lien valable ${getLinkTtlMinutes()} min : ${rec ? rec.downloadUrl : "indisponible"}`
+        }`,
+      );
+    } catch {
+      const fallback = "⚠️ Extraction audio interrompue — réessaie.";
+      try {
+        if (anchorKey && sock?.sendMessage) {
+          await sock.sendMessage(msg.key.remoteJid!, { text: fallback, edit: anchorKey as any }, { quoted: msg });
+        } else {
+          await context.reply(fallback);
+        }
+      } catch {}
+    }
+  },
+};
+
 export default dlCommand;
+export { dlaCommand };

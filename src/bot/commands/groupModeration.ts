@@ -32,6 +32,7 @@ const kickCommand: BotCommand = {
   groupOnly: true,
   description: "Expulser un membre du groupe (admin).",
   usage: ".kick @membre (ou en reply, plusieurs possibles)",
+  examples: [".kick @membre", ".kick 237600000000", ".kick (en reply du message)"],
   execute: async (sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));
@@ -88,6 +89,7 @@ const promoteCommand: BotCommand = {
   groupOnly: true,
   description: "Promouvoir un membre admin du groupe (admin).",
   usage: ".promote @membre (ou en reply)",
+  examples: [".promote @membre", ".promote (en reply)"],
   execute: async (sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));
@@ -124,6 +126,7 @@ const demoteCommand: BotCommand = {
   groupOnly: true,
   description: "Retirer le rôle admin d'un membre (admin).",
   usage: ".demote @membre (ou en reply)",
+  examples: [".demote @admin"],
   execute: async (sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));

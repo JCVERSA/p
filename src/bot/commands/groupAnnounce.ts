@@ -31,6 +31,7 @@ const tagallCommand: BotCommand = {
   groupOnly: true,
   description: "Mentionner tous les membres avec un message (admin).",
   usage: ".tagall [message]",
+  examples: [".tagall Réunion ce soir", ".tagall"],
   execute: async (sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));
@@ -58,6 +59,7 @@ const hidetagCommand: BotCommand = {
   groupOnly: true,
   description: "Annonce avec mentions invisibles — notifie tout le monde sans mur de @ (admin).",
   usage: ".hidetag <message>",
+  examples: [".hidetag Nouvel épisode dispo !"],
   execute: async (sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));
@@ -86,6 +88,7 @@ const delCommand: BotCommand = {
   groupOnly: true,
   description: "Supprimer un message du groupe (reply au message, admin).",
   usage: ".del (réponds au message à supprimer)",
+  examples: [".del (en reply du message)"],
   execute: async (sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));

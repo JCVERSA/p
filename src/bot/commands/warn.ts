@@ -31,6 +31,7 @@ const warnCommand: BotCommand = {
   groupOnly: true,
   description: "Avertir un membre (3e = expulsion auto) — `list` / `reset`.",
   usage: ".warn @membre <raison> · .warn · .warn reset @membre",
+  examples: [".warn @membre spam", ".warn (en reply) insultes", ".warn reset @membre"],
   execute: async (sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));

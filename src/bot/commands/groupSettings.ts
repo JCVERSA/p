@@ -20,6 +20,7 @@ const muteCommand: BotCommand = {
   groupOnly: true,
   description: "Réserver le groupe aux admins seuls (admin).",
   usage: ".mute",
+  examples: [".mute"],
   execute: async (sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));
@@ -41,6 +42,7 @@ const unmuteCommand: BotCommand = {
   groupOnly: true,
   description: "Réautoriser tous les membres à écrire (admin).",
   usage: ".unmute",
+  examples: [".unmute"],
   execute: async (sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));
@@ -63,6 +65,7 @@ const grouplinkCommand: BotCommand = {
   groupOnly: true,
   description: "Lien d'invitation du groupe (admin) — `reset` régénère (owner).",
   usage: ".grouplink [reset]",
+  examples: [".grouplink", ".grouplink reset"],
   execute: async (sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));
@@ -94,6 +97,7 @@ const groupinfoCommand: BotCommand = {
   groupOnly: true,
   description: "Fiche du groupe : nom, description, membres, admins.",
   usage: ".groupinfo",
+  examples: [".groupinfo"],
   execute: async (_sock, msg, context) => {
     const gid = groupJidOf(msg);
     if (!gid) return void (await context.reply("👥 Cette commande ne fonctionne que dans un *groupe*."));

@@ -23,6 +23,7 @@ const pollCommand: BotCommand = {
   category: "General",
   description: "Sondage natif WhatsApp : .poll Question | choix 1 | choix 2 (-m = choix multiples).",
   usage: ".poll <question> | <choix 1> | <choix 2>  (2 à 12 choix)",
+  examples: [".poll Épisode ce soir ? | Oui | Non | Plus tard", ".poll -m Tes animes ? | Naruto | One Piece | Bleach"],
   execute: async (sock, msg, context) => {
     const chatId = String(msg.key.remoteJid || "");
     let raw = (context.args || []).join(" ").trim();

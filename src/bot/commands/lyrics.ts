@@ -23,6 +23,7 @@ const lyricsCommand: BotCommand = {
   category: "Media",
   description: "Paroles d'une chanson (LRCLIB) — seul juste après .ytm, ou .lyrics <titre>.",
   usage: ".lyrics <titre> [artiste] · ou .lyrics seul après .ytm",
+  examples: [".lyrics Bohemian Rhapsody Queen", ".lyrics (seul, juste après .ytm)"],
   execute: async (sock, msg, context) => {
     const chatId = String(msg.key.remoteJid || "");
     const args = (context.args || []).join(" ").trim();

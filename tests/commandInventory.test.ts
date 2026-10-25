@@ -86,6 +86,8 @@ const EXPECTED_INVENTORY: Array<{ name: string; aliases: string[] }> = [
   // + sondage natif WhatsApp.
   { name: "lyrics", aliases: ["paroles"] },
   { name: "poll", aliases: ["sondage", "vote"] },
+  // 9.18oooo : quick wins R&D — .dla (audio seul d'un lien).
+  { name: "dla", aliases: [] },
 ];
 
 describe("inventaire définitif des commandes (8.59)", () => {
