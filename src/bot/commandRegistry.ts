@@ -19,6 +19,10 @@ import getppCommand from "./commands/getpp.js";
 import whoisCommand from "./commands/whois.js";
 import purgeCommand from "./commands/purge.js";
 import agentCommand from "./commands/agent.js";
+import stickerCommand from "./commands/sticker.js";
+import takeCommand from "./commands/take.js";
+import viewonceCommand from "./commands/viewonce.js";
+import dlCommand from "./commands/dl.js";
 import traceCommand from "./commands/trace.js";
 import menuCommand from "./commands/menu.js";
 import aiCommand from "./commands/ai.js";
@@ -125,6 +129,10 @@ function getBuiltinCommands(): BotCommand[] {
     traceCommand,
     purgeCommand,
     agentCommand,
+    stickerCommand,
+    takeCommand,
+    viewonceCommand,
+    dlCommand,
   ];
 }
 

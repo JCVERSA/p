@@ -53,6 +53,7 @@ export const MENU_SECTIONS: MenuSection[] = [
       ["yts", "Recherche YouTube (liens)"],
       ["tiktok", "TikTok sans watermark"],
       ["instagram", "Instagram photo / vidéo / reel"],
+      ["dl", "Facebook / X / Pinterest / Reddit… (générique)"],
     ],
   },
   {
@@ -71,6 +72,9 @@ export const MENU_SECTIONS: MenuSection[] = [
     entries: [
       ["sweb", "Capture d'écran d'un site web"],
       ["up", "Lien temporaire (2 h) pour un fichier (ou en reply)"],
+      ["s", "Image / vidéo → sticker WhatsApp"],
+      ["take", "Reprends un sticker reçu (pack Nebula)"],
+      ["vv", "Révèle un média à consultation unique (reply)"],
       ["qr", "Génère un QR code"],
       ["base64", "Encode / décode (Base64, hex, binaire…)"],
       ["getpp", "Photo de profil"],

@@ -5,7 +5,10 @@ import path from "path";
 import { initRegistry, getCommands, getCommand, suggestClosestCommand } from "../src/bot/commandRegistry.js";
 
 /**
- * Inventaire DÉFINITIF des commandes (curation owner, 8.59 ; .image retirée en 8.73).
+ * Inventaire DÉFINITIF des commandes (curation owner, 8.59 ; .image retirée en 8.73 ;
+ * 9.18llll : + sticker/take/viewonce/dl — décision owner 23/10 « analyse
+ * KnightBot-Mini et ajoute ce qui vaut le coup », écrits from scratch en
+ * patterns maison, PAS un retour du corpus legacy 8.59).
  *
  * La liste ci-dessous est LA vérité absolue décidée par le owner :
  *   .define .sweb .ping .menu .help .qr .base64 .getpp .whois
@@ -56,6 +59,12 @@ const EXPECTED_INVENTORY: Array<{ name: string; aliases: string[] }> = [
   // 9.18ii : mode vocal de l'agent (P6b — .on/.off, par chat, voix Henri)
   { name: "on", aliases: [] },
   { name: "off", aliases: [] },
+  // 9.18llll : reprise concurrent KnightBot-Mini (décision owner 23/10) —
+  // implémentations NEUVES (ffmpeg maison + EXIF webpmux, yt-dlp générique).
+  { name: "sticker", aliases: ["s", "stiker", "st"] },
+  { name: "take", aliases: ["steal", "repack"] },
+  { name: "viewonce", aliases: ["vv", "readvo", "readviewonce"] },
+  { name: "dl", aliases: ["download", "gdl"] },
 ];
 
 describe("inventaire définitif des commandes (8.59)", () => {
@@ -78,8 +87,10 @@ describe("inventaire définitif des commandes (8.59)", () => {
 
   it("les commandes supprimées en 8.59 ne réapparaissent pas", async () => {
     await initRegistry();
+    // 9.18llll : sticker/s/download/dl SORTIS de la liste bannie — décision
+    // owner 23/10 (nouvelles implémentations, pas le retour du legacy 8.59).
     const banned = [
-      "media", "m", "s", "sticker", "download", "dl", "translate",
+      "media", "m", "translate",
       "owner", "kick", "promote", "demote", "members", "hidetag",
       "antilink", "antitag", "antibot", "access"
     ];
