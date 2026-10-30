@@ -150,9 +150,33 @@ export async function filmSearch(query: string): Promise<FilmSearchResult[]> {
  * jour) et retourne les joueurs par langue. Jamais d'exception réseau —
  * l'appelant affiche un message honnête.
  */
+/**
+ * Durée de la fiche (« Horreur, Thriller - 1h46 ») en secondes (pur — testé).
+ * 9.18aaaa (terrain 31/10) : la durée de repli plate (110 min) sous-estimait
+ * les longs films (Across the Spider-Verse : 140 min) — la fiche porte la
+ * VRAIE durée, l'estimation de taille devient honnête PAR film. Le « h » est
+ * volontairement en minuscule (H264/H265 des releases ne doivent pas matcher).
+ */
+export function parseFilmDurationSec(html: string): number | null {
+  if (!html) return null;
+  const hm = html.match(/\b(\d{1,2})\s*h\s*(\d{2})\b/);
+  if (hm) {
+    const sec = parseInt(hm[1], 10) * 3600 + parseInt(hm[2], 10) * 60;
+    return sec >= 300 ? sec : null; // < 5 min : artefact de page, pas un film
+  }
+  const mm = html.match(/\b(\d{1,3})\s?min\b/);
+  if (mm) {
+    const sec = parseInt(mm[1], 10) * 60;
+    return sec >= 300 ? sec : null;
+  }
+  return null;
+}
+
 export async function getFilmDetail(
   filmUrl: string
-): Promise<{ kind: "film"; players: FilmPlayer[] } | { kind: "series" } | { kind: "error"; reason: string }> {
+): Promise<
+  { kind: "film"; players: FilmPlayer[]; durationSec?: number } | { kind: "series" } | { kind: "error"; reason: string }
+> {
   const origin = filmStreamOrigin();
   if (!filmUrl.startsWith(origin)) return { kind: "error", reason: "url-externe" };
 
@@ -183,7 +207,7 @@ export async function getFilmDetail(
   if (apiRes.status !== 200) return { kind: "error", reason: `api-http-${apiRes.status}` };
   const players = parseFilmPlayersApi(apiRes.data);
   if (players.length === 0) return { kind: "error", reason: "aucun-joueur" };
-  return { kind: "film", players };
+  return { kind: "film", players, durationSec: parseFilmDurationSec(pageRes.data) ?? undefined };
 }
 
 /** Hosts relais des players films (redirigent vers le vrai embed). */

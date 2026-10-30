@@ -439,7 +439,7 @@ describe("9.18zzzz — durée de repli film (estimation de taille honnête)", ()
   it("novafilm passe la durée film au moteur (écran + repli) et le plafond dur au HLS", () => {
     const src = fs.readFileSync("src/bot/commands/novafilm.ts", "utf-8");
     expect(src).toContain("FILM_DURATION_FALLBACK_SEC = 6600");
-    expect(src).toContain("fallbackDurationSec: FILM_DURATION_FALLBACK_SEC");
+    expect(src).toContain("fallbackDurationSec: session.durationSec || FILM_DURATION_FALLBACK_SEC");
     // plafond dur HLS (un téléchargement ne tue jamais le bot)
     expect(src).toContain("downloadHlsAppLevel(v.url, localPath, v.headers, 600000, undefined, filmMaxMB() * 1024 * 1024)");
     // repli miroir : mêmes gardes que le chemin principal
@@ -466,6 +466,43 @@ describe("9.18zzzz — durée de repli film (estimation de taille honnête)", ()
     expect(k).toContain("décision execute");
     expect(k).toContain("JAMAIS la commande en texte");
     expect(k.length).toBeLessThan(4500);
+  });
+});
+
+// ─── 9.18aaaa — durée RÉELLE de la fiche + unités cohérentes (terrain 31/10 00:37) ──
+// Trois nombres pour le même fichier : 1101 MB (écran), 1666.5 MB (livré,
+// décimal), 1589 Mo (slim, binaire). + estimation à -34 % : durée de repli
+// plate 110 min pour un film de 140 min. La fiche porte « - 1h46 ».
+
+describe("9.18aaaa — durée de la fiche (estimation honnête par film)", () => {
+  it("parseFilmDurationSec : formats réels de fiches (« 1h46 », « 2h 20 », « 46min ») ; leurres rejetés", async () => {
+    const { parseFilmDurationSec } = await import("../src/bot/services/filmStreamClient.js");
+    expect(parseFilmDurationSec("Horreur, Thriller - 1h46")).toBe(6360);
+    expect(parseFilmDurationSec("<span>Genres</span> Animation - 2h 20")).toBe(8400);
+    expect(parseFilmDurationSec("Documentaire - 46min")).toBe(2760);
+    // Leurres : releases (« x264 », « H264 » majuscule), durées absurdes
+    expect(parseFilmDurationSec("WEB-DL.1080p.MULTi.x264-FS 1.92 GB")).toBeNull();
+    expect(parseFilmDurationSec("MULTi.TRUEFRENCH.2160p.H264-Slay3R")).toBeNull();
+    expect(parseFilmDurationSec("bande-annonce 0h02")).toBeNull(); // < 5 min
+    expect(parseFilmDurationSec("")).toBeNull();
+  });
+
+  it("getFilmDetail remonte la durée de la fiche (fixture Insidious « - 1h46 »)", async () => {
+    mGet.mockResolvedValueOnce({
+      status: 200,
+      data: '<html><head><title>Insidious</title></head><body><div class="quals">Horreur, Thriller - 1h46</div></body></html>',
+    });
+    mGet.mockResolvedValueOnce({ status: 200, data: PLAYERS_API });
+    const out = await getFilmDetail("https://french-stream.net/15135028-insidious-l-invasion-du-lointain.html");
+    expect(out.kind).toBe("film");
+    if (out.kind === "film") expect(out.durationSec).toBe(6360);
+  });
+
+  it("novafilm : durée de la fiche en priorité, repli 110 min ; taille livrée en Mo binaires", () => {
+    const src = fs.readFileSync("src/bot/commands/novafilm.ts", "utf-8");
+    expect(src).toContain("session.durationSec || FILM_DURATION_FALLBACK_SEC");
+    expect(src).toContain("session.durationSec = detail.durationSec");
+    expect(src).toContain("stats.size / 1048576"); // même unité que l'écran qualité et .slim
   });
 });
 
