@@ -506,6 +506,76 @@ describe("9.18aaaa — durée de la fiche (estimation honnête par film)", () =>
   });
 });
 
+// ─── 9.18cccc — audit complet : SSRF relais, bornes durée, anti-playlist ─────
+
+describe("9.18cccc (audit) — garde SSRF sur la résolution des relais", () => {
+  it("redirection vers une IP PRIVÉE (link-local/loopback/range privé) → relais conservé, jamais suivi", async () => {
+    mGet.mockResolvedValueOnce({
+      status: 200,
+      data: "",
+      request: { res: { responseUrl: "http://192.168.1.5/e/prive" } },
+    });
+    expect(await resolveFilmPlayerUrl("https://kokoflix.lol/tokyo_go.php?id=x")).toBe(
+      "https://kokoflix.lol/tokyo_go.php?id=x"
+    );
+    mGet.mockResolvedValueOnce({
+      status: 200,
+      data: "",
+      request: { res: { responseUrl: "http://127.0.0.1:8080/admin" } },
+    });
+    expect(await resolveFilmPlayerUrl("https://kokoflix.lol/osaka_go.php?id=y")).toBe(
+      "https://kokoflix.lol/osaka_go.php?id=y"
+    );
+  });
+
+  it("lien JS vers une IP privée → rejeté aussi ; hôte de confiance toujours suivi", async () => {
+    mGet.mockResolvedValueOnce({ status: 200, data: `<script>window.location='http://10.0.0.7/x'</script>` });
+    expect(await resolveFilmPlayerUrl("https://kokoflix.lol/x_go.php?id=a")).toBe("https://kokoflix.lol/x_go.php?id=a");
+    mGet.mockResolvedValueOnce({ status: 200, data: `<script>window.location='https://doods.pro/e/ok'</script>` });
+    expect(await resolveFilmPlayerUrl("https://kokoflix.lol/x_go.php?id=b")).toBe("https://doods.pro/e/ok");
+  });
+});
+
+describe("9.18cccc (audit) — bornes de durée (20 min – 4 h 30)", () => {
+  it("durées hors bornes rejetées : « 24h24 » horaire, « 0h02 », « 5h00 », « 18min »", async () => {
+    const { parseFilmDurationSec } = await import("../src/bot/services/filmStreamClient.js");
+    expect(parseFilmDurationSec("ouvert 24h24")).toBeNull();
+    expect(parseFilmDurationSec("bande-annonce 0h02")).toBeNull();
+    expect(parseFilmDurationSec("marathon 5h00")).toBeNull();
+    expect(parseFilmDurationSec("compilation 18min")).toBeNull();
+    // valeurs aux bornes exactes : 20 min et 4 h 30
+    expect(parseFilmDurationSec("Court-métrage long - 0h20")).toBe(1200);
+    expect(parseFilmDurationSec("Long film - 4h30")).toBe(16200);
+    expect(parseFilmDurationSec("Film standard - 1h46")).toBe(6360);
+  });
+});
+
+describe("9.18cccc (audit) — garde finale : une PLAYLIST n'est pas un film", () => {
+  it("fichier > 1 Mo commençant par #EXTM3U → rejeté (media playlist longue)", async () => {
+    const os = await import("os");
+    const pathMod = await import("path");
+    const { looksLikeRealMediaFile } = await import("../src/bot/commands/novafilm.js");
+    const tmp = pathMod.join(os.tmpdir(), `novafilm-audit-${process.pid}.mp4`);
+    const lines = ["#EXTM3U", "#EXT-X-VERSION:3"];
+    for (let i = 0; i < 40000; i++) lines.push("#EXTINF:6.006,", `segment_${i}.ts`);
+    require("fs").writeFileSync(tmp, lines.join("\n"));
+    expect(looksLikeRealMediaFile(tmp)).toBe(false);
+    require("fs").unlinkSync(tmp);
+  });
+});
+
+describe("9.18cccc (audit) — caps anti-DoS sur les blobs XUpload", () => {
+  it("blob géant (> 4 Ko) ignoré ; au plus 8 blobs examinés", async () => {
+    const { extractXUploadStreamUrls } = await import("../src/bot/services/animeStreamExtractor.js");
+    const giant = "A".repeat(5000);
+    const html = `<html><script>if(el.offsetWidth){sources:[{src:(function(s){return s})("${giant}")}]}</script></html>`;
+    expect(extractXUploadStreamUrls(html, "vidzy.cc")).toEqual([]);
+    const src = require("fs").readFileSync("src/bot/services/animeStreamExtractor.ts", "utf-8");
+    expect(src).toContain("m[1].length > 4096");
+    expect(src).toContain("blobs.length >= 8");
+  });
+});
+
 describe("9.18wwww — commande .novafilm (registre + source)", () => {
   it("enregistrée avec ses alias (f, film, films)", async () => {
     await initRegistry();

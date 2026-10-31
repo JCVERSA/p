@@ -1,6 +1,7 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { animeProxyOptions } from "./scrapingProxy.js";
+import { isSafeDownloadUrl } from "../urlSafety.js";
 
 /**
  * 9.18wwww — Novaboxb : client du catalogue FILMS (décision owner 25/10).
@@ -159,15 +160,20 @@ export async function filmSearch(query: string): Promise<FilmSearchResult[]> {
  */
 export function parseFilmDurationSec(html: string): number | null {
   if (!html) return null;
+  // 9.18cccc (audit) : bornes raisonnables d'un FILM (20 min – 4 h 30) —
+  // sans elles, un « 24h24 » horaire ou un compte à rebours de fiche
+  // produisait une estimation de taille absurde (24 h de bande passante).
+  const MIN_FILM_SEC = 1200;
+  const MAX_FILM_SEC = 16200;
   const hm = html.match(/\b(\d{1,2})\s*h\s*(\d{2})\b/);
   if (hm) {
     const sec = parseInt(hm[1], 10) * 3600 + parseInt(hm[2], 10) * 60;
-    return sec >= 300 ? sec : null; // < 5 min : artefact de page, pas un film
+    return sec >= MIN_FILM_SEC && sec <= MAX_FILM_SEC ? sec : null;
   }
   const mm = html.match(/\b(\d{1,3})\s?min\b/);
   if (mm) {
     const sec = parseInt(mm[1], 10) * 60;
-    return sec >= 300 ? sec : null;
+    return sec >= MIN_FILM_SEC && sec <= MAX_FILM_SEC ? sec : null;
   }
   return null;
 }
@@ -244,8 +250,18 @@ export async function resolveFilmPlayerUrl(url: string): Promise<string> {
     });
     if (res.status !== 200 || typeof res.data !== "string") return url;
     // 1. Redirection HTTP déjà suivie par axios → l'URL finale est le player.
+    //    9.18cccc (audit) : garde SSRF — un relais ne doit JAMAIS pouvoir
+    //    pointer le bot vers une URL privée (localhost, link-local, cloud
+    //    metadata). URL non publique = relais laissé tel quel (skippé en aval
+    //    par la garde anti-relais, jamais d'échec visible).
     const finalUrl: unknown = (res.request as any)?.res?.responseUrl;
-    if (typeof finalUrl === "string" && /^https?:\/\//i.test(finalUrl) && finalUrl !== url && !isFilmRelayUrl(finalUrl)) {
+    if (
+      typeof finalUrl === "string" &&
+      /^https?:\/\//i.test(finalUrl) &&
+      finalUrl !== url &&
+      !isFilmRelayUrl(finalUrl) &&
+      (await isSafeDownloadUrl(finalUrl))
+    ) {
       return finalUrl;
     }
     // 2. Redirection JS / meta refresh / iframe vers le vrai embed.
@@ -257,7 +273,10 @@ export async function resolveFilmPlayerUrl(url: string): Promise<string> {
     ];
     for (const re of patterns) {
       const m = html.match(re);
-      if (m?.[1] && /^https?:\/\//i.test(m[1]) && !isFilmRelayUrl(m[1])) return m[1];
+      // 9.18cccc (audit) : même garde SSRF pour les liens extraits de la page.
+      if (m?.[1] && /^https?:\/\//i.test(m[1]) && !isFilmRelayUrl(m[1]) && (await isSafeDownloadUrl(m[1]))) {
+        return m[1];
+      }
     }
     return url;
   } catch {

@@ -223,6 +223,9 @@ export function looksLikeRealMediaFile(filePath: string): boolean {
       const read = fs.readSync(fd, buf, 0, 256, 0);
       const head = buf.subarray(0, read).toString("latin1");
       if (/<(!doctype|html|head|body|\?xml)/i.test(head)) return false;
+      // 9.18cccc (audit) : une PLAYLIST sauvegardée en .mp4 n'est pas un
+      // film non plus (une media playlist longue peut dépasser 1 Mo).
+      if (head.trimStart().startsWith("#EXTM3U")) return false;
       return true;
     } finally {
       fs.closeSync(fd);
