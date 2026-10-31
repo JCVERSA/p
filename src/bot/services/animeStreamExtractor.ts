@@ -1,20 +1,24 @@
 import axios from "axios";
+import { safeAxiosGet } from "../urlSafety.js";
 import { spawn } from "child_process";
+import { trackSpawn } from "./spawnRegistry.js";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import crypto from "crypto";
-import ffmpegPath from "ffmpeg-static";
-import { execSync } from "child_process";
-import { downloadHlsAppLevel, robustFetchText, robustFetchBuffer, resolveAbsoluteUrl, resolveMediaPlaylistUrl } from "./hlsDownloader.js";
+import {
+  downloadHlsAppLevel,
+  robustFetchText,
+  robustFetchBuffer,
+  resolveAbsoluteUrl,
+  resolveMediaPlaylistUrl,
+  resolveVidmolyUrlset,
+  markDeadFileSlug,
+  isDeadFileSlug
+} from "./hlsDownloader.js";
+import { animeProxyOptions } from "./scrapingProxy.js";
 
-let resolvedFfmpegPath = "ffmpeg";
-try {
-  execSync("ffmpeg -version", { stdio: "ignore" });
-  resolvedFfmpegPath = "ffmpeg";
-} catch {
-  resolvedFfmpegPath = ffmpegPath || "ffmpeg";
-}
+import { resolvedFfmpegPath } from "../ffmpeg.js";
 
 export interface StreamQualityTrack {
   resolution: string; // "360P", "480P", "720P", "1080P", "Original"
@@ -113,7 +117,7 @@ export function decodeJsArrayLiteral(literal: string): string[] {
 export function unpackDeanEdwards(html: string): string {
   if (!html) return "";
   let result = html;
-  const packedRegex = /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?return\s+p;?\}\((?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")\.split\(['"]\|['"]\)\)/gi;
+  const packedRegex = /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?return\s+p;?\}\((?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")\.split\(['"]\|['"]\)(?:\s*,\s*[^)]*)?\)/gi;
   let match: RegExpExecArray | null;
   while ((match = packedRegex.exec(html)) !== null) {
     try {
@@ -138,63 +142,801 @@ export function unpackDeanEdwards(html: string): string {
   return result;
 }
 
+// embed4me / Lplayer — encrypted JSON API player used as "Lecteur 1" on
+// anime-sama since ~2025. The video source is served by
+// GET {origin}/api/v1/video?id=<id> as hex-encoded AES-128-CBC JSON.
+const EMBED4ME_AES_KEY = Buffer.from("kiemtienmua911ca", "utf8");
+const EMBED4ME_AES_IV = Buffer.from("1234567890oiuytr", "utf8");
+
+/**
+ * Decrypts an embed4me/Lplayer API response (hex AES-128-CBC JSON) and
+ * returns the video source URL (cfNative / cf / hls / source / url / file).
+ */
+export function decryptEmbed4MeResponse(hexBody: string): string | null {
+  try {
+    let hex = (hexBody || "").trim();
+    if (hex.startsWith('"') && hex.endsWith('"')) hex = hex.slice(1, -1);
+    if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 32 !== 0) return null;
+    const decipher = crypto.createDecipheriv("aes-128-cbc", EMBED4ME_AES_KEY, EMBED4ME_AES_IV);
+    const decrypted = Buffer.concat([decipher.update(Buffer.from(hex, "hex")), decipher.final()]).toString("utf8");
+    const data = JSON.parse(decrypted);
+    const source = data?.cfNative || data?.cf || data?.hls || data?.source || data?.url || data?.file;
+    return typeof source === "string" && source.length > 0 ? source : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mirror reliability order for the CURRENT anime-sama player ecosystem
+ * (2026-08): ansembed (plain m3u8) > embed4me (API + AES) > sibnet (direct
+ * mp4) > sendvid > vidmoly/vmpx > smoothpre legacy > anything else.
+ */
+export function hostPriority(url: string): number {
+  const l = (url || "").toLowerCase();
+  // VidMoly first: stable two-quality HLS manifests (480P/1080P) with honest
+  // sizes — the quality reference. Everything else is a fallback (audit 8.4).
+  if (l.includes("vidmoly") || l.includes("vmpx") || l.includes("topembed")) return 1;
+  if (l.includes("voembed")) return 2; // voiranime VF player host (audit 8.9)
+  if (l.includes("ansembed")) return 3;
+  if (l.includes("embed4me") || l.includes("lpayer")) return 4;
+  if (l.includes("sibnet")) return 5;
+  if (l.includes("sendvid")) return 6;
+  if (l.includes("smoothpre") || l.includes("dramiyos") || l.includes("movearnpre") || l.includes("ovaltinecdn")) return 6;
+  if (l.includes("uqload") || l.includes("vidzy") || l.includes("luluvdo") || l.includes("lulustream")) return 7;
+  if (l.includes("oneupload") || l.includes("filemoon") || l.includes("bysesukior") || l.includes("mivalyo") || l.includes("dingtezuni")) return 8;
+  if (l.includes("doods") || l.includes("veev") || l.includes("kinoger") || l.includes("poophq")) return 7;
+  if (l.includes("voe")) return 9;
+  return 10;
+}
+
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+// ============================================================================
+// nakanime.tv mirror player ecosystem (2026-08, audit §8)
+// ============================================================================
+// nakanime re-serves the anime-sama catalog with a WIDER player set than
+// anime-sama itself. Hosts beyond the legacy recipes above:
+//   movearnpre.com / ovaltinecdn.com  packed page, HLS under /stream/...
+//   uqload.is                         embed-<code>.html, plain or packed m3u8
+//   vidzy.live / vidzy.org            packed page + XOR(base64, var k=[..])
+//   luluvdo.com / lulustream.com      plain or packed m3u8
+//   oneupload.net / .to               jwplayer file:"https://...m3u8"
+//   filemoon / bysesukior.com         /api/videos/<code> AES-GCM JSON payload
+//   voe (rotating domains, /e/<code>) rot13+base64 JSON payload in the page
+//   mivalyo.com / dingtezuni.com      generic packed / m3u8 probe
+// Recipes ported from the reference nakanime downloader (SertraFurr).
+
+/** Player hosts handled by the generic page probe (packed / m3u8 / mp4 scan). */
+export const NAKANIME_GENERIC_PLAYER_HINTS = [
+  "movearnpre", "ovaltinecdn", "uqload", "vidzy", "luluvdo", "lulustream",
+  "oneupload", "mivalyo", "dingtezuni", "smoothpre", "dramiyos"
+];
+
+/** Base64 (url-safe tolerant, padding tolerant) decode. */
+export function b64UrlSafeDecode(s: string): Buffer {
+  let t = (s || "").replace(/-/g, "+").replace(/_/g, "/");
+  const r = t.length % 4;
+  if (r) t += "=".repeat(4 - r);
+  return Buffer.from(t, "base64");
+}
+
+function rot13(s: string): string {
+  let out = "";
+  for (const c of s) {
+    const o = c.charCodeAt(0);
+    if (o >= 65 && o <= 90) out += String.fromCharCode(((o - 65 + 13) % 26) + 65);
+    else if (o >= 97 && o <= 122) out += String.fromCharCode(((o - 97 + 13) % 26) + 97);
+    else out += c;
+  }
+  return out;
+}
+
+/**
+ * voe embedded payload decoder:
+ * rot13 -> strip noise ops -> base64 -> (ord-3) -> reverse -> base64 -> JSON
+ */
+export function decodeVoePayload(payload: string): any | null {
+  try {
+    if (!payload) return null;
+    let s = rot13(payload);
+    for (const op of ["@$", "^^", "~@", "%?", "*~", "!!", "#&"]) {
+      s = s.split(op).join("");
+    }
+    s = b64UrlSafeDecode(s).toString("utf8");
+    s = Array.from(s, (c) => String.fromCharCode(c.charCodeAt(0) - 3)).join("");
+    s = s.split("").reverse().join("");
+    s = b64UrlSafeDecode(s).toString("utf8");
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
+// 9.18yyyy — famille XUpload (vidzy, fsvid, uqload, lulu…) : decodage + anti-leurre
+// ============================================================================
+// Terrain 30/10 : `.f 1` sur vidzy livrait un fichier de 0.4 MB — la playlist
+// LEURRE du lecteur, que le scan generique gobait. Le lecteur cache la VRAIE
+// source dans un blob `})("<base64>")` decode en navigateur :
+//   base64 -> octets INVERSES -> XOR (0x3D + i*89 + seed_hote + BC) & 255
+// ou seed = somme des codes du hostname SERT (apres redirections) et BC une
+// mesure CSS ("1in + Npx" -> (96+N)/2). Une mauvaise cle ne casse pas la
+// page : le joueur retombe sur le leurre — d'ou la VALIDATION de vie de chaque
+// candidat avant de le proposer. Porte du plugin ResolveURL Vidzy (2026) +
+// extracteur XUpload AutoFlix-CLI (BC brute-force 0..255).
+
+/** Somme des codes du hostname servi, & 255 (graine du XOR XUpload). */
+export function xuploadHostSeed(hostname: string): number {
+  let seed = 0;
+  for (const ch of hostname || "") seed = (seed + ch.charCodeAt(0)) & 255;
+  return seed;
+}
+
+/** Decode un blob XUpload (base64 -> reverse -> XOR) ; null si UTF-8 casse. */
+export function decodeXUploadBlob(b64: string, seed: number, bc: number): string | null {
+  try {
+    const raw = b64UrlSafeDecode(b64);
+    const out = Buffer.alloc(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+      out[i] = raw[raw.length - 1 - i] ^ ((0x3d + i * 89 + seed + bc) & 255);
+    }
+    const decoded = out.toString("utf8");
+    // Node ne rejette jamais l'UTF-8 : il remplace par U+FFFD (Python leve).
+    // Le marqueur de remplacement => cle invalide pour ce blob.
+    return decoded.includes("\uFFFD") ? null : decoded;
+  } catch {
+    return null;
+  }
+}
+
+const XUPLOAD_URL_RE = /^https?:\/\/[^\s"'\\]+$/;
+
+/**
+ * Tous les candidats de lecture d'une page XUpload, blobs decodes D'ABORD
+ * (source autoritaire sur vidzy), puis sources en clair (uqload/jwplayer).
+ * Pure : testable sans reseau.
+ */
+export function extractXUploadStreamUrls(html: string, hostname: string, unpacked?: string): string[] {
+  if (!html) return [];
+  const texts = [html];
+  const up = unpacked !== undefined ? unpacked : unpackDeanEdwards(html);
+  if (up && up !== html) texts.push(up);
+
+  const urls: string[] = [];
+  const push = (u: string | null | undefined) => {
+    if (u && XUPLOAD_URL_RE.test(u) && !urls.includes(u)) urls.push(u);
+  };
+
+  // 1. Blobs XOR : BC mesure navigateur si presente, puis brute-force 0..255.
+  const seed = xuploadHostSeed(hostname);
+  const combined = texts.join("\n");
+  // 9.18cccc (audit) : caps anti-DoS — une page malveillante ne doit pas
+  // pouvoir imposer un décodage massif (blob géant × 256 clés de brute-force).
+  const blobs: string[] = [];
+  for (const text of texts) {
+    for (const m of text.matchAll(/\}\)\(\s*["']([^"']{50,})["']\s*\)/g)) {
+      if (m[1].length > 4096) continue; // une URL de flux ne fait jamais 4 Ko
+      if (!blobs.includes(m[1])) blobs.push(m[1]);
+      if (blobs.length >= 8) break;
+    }
+    if (blobs.length >= 8) break;
+  }
+  if (blobs.length > 0) {
+    const bcValues: number[] = [];
+    const width = combined.match(/1in\s*\+\s*(\d+)px/);
+    if (width) bcValues.push(Math.floor((96 + parseInt(width[1], 10)) / 2));
+    const hasBrowserCheck = /offsetWidth|\+BC/.test(combined);
+    for (let bc = 0; bc < 256; bc++) if (!bcValues.includes(bc)) bcValues.push(bc);
+    for (const blob of blobs) {
+      for (const bc of bcValues) {
+        const url = decodeXUploadBlob(blob, seed, bc);
+        if (url && XUPLOAD_URL_RE.test(url)) {
+          push(url);
+          break; // premiere cle valide pour ce blob
+        }
+        if (!hasBrowserCheck) break; // gabarit ancien : la graine suffit
+      }
+    }
+  }
+
+  // 2. Sources en clair (jwplayer sources:[{src|file:"..."}] — uqload).
+  for (const text of texts) {
+    for (const m of text.matchAll(/sources\s*:\s*\[\s*\{\s*(?:src|file)\s*:\s*["']([^"']+)["']/gi)) {
+      push(m[1]);
+    }
+  }
+
+  return urls;
+}
+
+/** Marqueur « embed restreint a certains domaines » (famille uqload/EarnVids). */
+const EMBED_RESTRICTED_MARKER = "Video embed restricted";
+
+/** Referer de secours universel quand ni le catalogue ni l'origine ne passent. */
+const XUPLOAD_FALLBACK_REFERERS = ["https://lecteurvideo.com/"];
+
+/** Options de resolution passees en cascade par l'appelant (catalogue films…). */
+export interface MirrorResolveOptions {
+  /** Referer du catalogue appelant — essaye en PREMIER (french-stream pour .f). */
+  refererHint?: string;
+  /**
+   * 9.18zzzz — durée de repli (secondes) quand la playlist variante est
+   * illisible : le 1440 par défaut (24 min, heuristique ANIME) sous-estimait
+   * 6× la taille d'un film (terrain 31/10 : 240 MB affichés, 1666 réels).
+   * Les films passent ~6600 (110 min).
+   */
+  fallbackDurationSec?: number;
+}
+
+interface StreamCandidateVerdict {
+  ok: boolean;
+  totalBytes?: number;
+}
+
+/**
+ * Validation anti-leurre d'un candidat : il doit repondre VRAIMENT (200/206),
+ * sans etre une page HTML ; une playlist doit contenir #EXTM3U ; un fichier
+ * direct doit peser au moins 1 Mo (un film n'est jamais un mini-mp4 de pub).
+ */
+export async function probeStreamCandidate(url: string, headers: Record<string, string>): Promise<StreamCandidateVerdict> {
+  try {
+    const looksHls = /\.m3u8/i.test(url) || /\.txt(?:$|\?)/i.test(url);
+    const resp = await axios.get(url, {
+      headers: { ...headers, ...(looksHls ? {} : { Range: "bytes=0-2047" }) },
+      timeout: 8000,
+      validateStatus: () => true,
+      maxRedirects: 5,
+      // playlist = petit texte ; fichier direct = FLUX (jamais bufferisé —
+      // un serveur qui ignore le Range ne doit pas charger 300 Mo en RAM).
+      responseType: looksHls ? "text" : "stream",
+      maxContentLength: looksHls ? 1024 * 1024 : undefined,
+      ...animeProxyOptions(),
+    });
+    const closeStream = () => {
+      const data = resp.data as any;
+      if (data && typeof data.destroy === "function") {
+        try {
+          data.destroy();
+        } catch {}
+      }
+    };
+    if (resp.status !== 200 && resp.status !== 206) {
+      closeStream();
+      return { ok: false };
+    }
+    const contentType = String(resp.headers?.["content-type"] || "").toLowerCase();
+    if (contentType.includes("text/html")) {
+      closeStream();
+      return { ok: false };
+    }
+    if (looksHls) {
+      const body = typeof resp.data === "string" ? resp.data : "";
+      return { ok: body.includes("#EXTM3U") };
+    }
+    // Taille totale : content-range (206) sinon content-length (200).
+    let totalBytes = 0;
+    const cr = String(resp.headers?.["content-range"] || "");
+    const crMatch = cr.match(/\/(\d+)\s*$/);
+    if (crMatch) totalBytes = parseInt(crMatch[1], 10);
+    if (!totalBytes) totalBytes = parseInt(String(resp.headers?.["content-length"] || "0"), 10) || 0;
+    closeStream();
+    if (totalBytes > 0 && totalBytes < 1024 * 1024) return { ok: false };
+    return { ok: true, totalBytes: totalBytes || undefined };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * Resolveur famille XUpload : page re-téléchargee avec Referer de secours si
+ * 403/restreinte, candidats (blobs XOR + sources claires) VALIDES vivants.
+ * Retourne null si rien ne survit — l'appelant essayera le miroir suivant.
+ */
+export async function extractXUploadFamilyStream(
+  playerUrl: string,
+  options: MirrorResolveOptions = {}
+): Promise<ExtractedStreamResult | null> {
+  try {
+    const originMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
+    if (!originMatch) return null;
+    const playerOrigin = originMatch[1];
+    let hostname = "";
+    try {
+      hostname = new URL(playerUrl).hostname;
+    } catch {
+      return null;
+    }
+
+    const refererCandidates: string[] = [];
+    for (const r of [options.refererHint, `${playerOrigin}/`, ...XUPLOAD_FALLBACK_REFERERS]) {
+      if (r && !refererCandidates.includes(r)) refererCandidates.push(r);
+    }
+
+    let html = "";
+    let servedHost = hostname;
+    for (const referer of refererCandidates) {
+      const resp = await axios.get(playerUrl, {
+        headers: {
+          "User-Agent": DEFAULT_USER_AGENT,
+          Referer: referer,
+          "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.6",
+        },
+        timeout: 8000,
+        validateStatus: () => true,
+        maxRedirects: 5,
+        ...animeProxyOptions(),
+      });
+      if (resp.status !== 200) continue;
+      const body = typeof resp.data === "string" ? resp.data : "";
+      if (!body || body.includes(EMBED_RESTRICTED_MARKER)) continue;
+      html = body;
+      const finalUrl: string = (resp.request as any)?.res?.responseUrl || playerUrl;
+      try {
+        servedHost = new URL(finalUrl).hostname;
+      } catch {
+        servedHost = hostname;
+      }
+      break;
+    }
+    if (!html) return null;
+
+    const candidates = extractXUploadStreamUrls(html, servedHost || hostname);
+    if (candidates.length === 0) return null;
+
+    const headers = {
+      "User-Agent": DEFAULT_USER_AGENT,
+      Referer: `${playerOrigin}/`,
+      Origin: playerOrigin,
+    };
+    for (const candidate of candidates) {
+      const isHls = /\.m3u8/i.test(candidate);
+      const verdict = await probeStreamCandidate(candidate, headers);
+      if (!verdict.ok) continue;
+      let tracks: StreamQualityTrack[] = [];
+      if (isHls) {
+        try {
+          tracks = await fetchHlsTracksAndSizes(candidate, `${playerOrigin}/`, playerOrigin, options.fallbackDurationSec ?? 1440);
+        } catch {
+          // tracks optionnels — l'URL nue reste utilisable
+        }
+      }
+      return {
+        hostName: hostname.replace(/^www\./, ""),
+        url: candidate,
+        type: isHls ? "hls" : "direct_mp4",
+        headers,
+        availableTracks: tracks,
+        estimatedSizeMB: !isHls && verdict.totalBytes ? Math.round(verdict.totalBytes / (1024 * 1024)) : undefined,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** vidzy fallback: base64 body XOR'd with the byte list from `var k = [..]`. */
+export function vidzyXorDecode(encodedB64: string, keyBytes: number[]): string {
+  const raw = b64UrlSafeDecode(encodedB64);
+  const key = Buffer.from(keyBytes.filter((n) => Number.isFinite(n) && n >= 0 && n <= 255));
+  const out = Buffer.allocUnsafe(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    out[i] = raw[i] ^ key[i % key.length];
+  }
+  return out.toString("utf8");
+}
+
+/**
+ * filemoon /api/videos/<code> payload: AES-GCM. Key is reassembled from
+ * key_parts[version] + key_parts[31 - version] (1-based), payload's last 16
+ * bytes are the auth tag.
+ */
+export function decryptFilemoonPayload(
+  versionStr: string,
+  keyParts: unknown,
+  ivB64: unknown,
+  payloadB64: unknown
+): any | null {
+  try {
+    if (!versionStr || !Array.isArray(keyParts) || !ivB64 || !payloadB64) return null;
+    const version = parseInt(versionStr, 10);
+    if (isNaN(version)) return null;
+    const aIdx = version;
+    const iIdx = 31 - version;
+    if (aIdx < 1 || aIdx > keyParts.length || iIdx < 1 || iIdx > keyParts.length) return null;
+    const key = Buffer.concat([
+      b64UrlSafeDecode(String(keyParts[aIdx - 1])),
+      b64UrlSafeDecode(String(keyParts[iIdx - 1]))
+    ]);
+    const iv = b64UrlSafeDecode(String(ivB64));
+    const payload = b64UrlSafeDecode(String(payloadB64));
+    if (payload.length < 16 || iv.length < 8) return null;
+    const tag = payload.subarray(payload.length - 16);
+    const ciphertext = payload.subarray(0, payload.length - 16);
+    const algo = key.length === 32 ? "aes-256-gcm" : key.length === 16 ? "aes-128-gcm" : key.length === 24 ? "aes-192-gcm" : null;
+    if (!algo) return null;
+    const decipher = crypto.createDecipheriv(algo, key, iv, { authTagLength: 16 });
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+    return JSON.parse(decrypted);
+  } catch {
+    return null;
+  }
+}
+
+/** True when a URL smells like a voe embed (voe rotates its domains). */
+export function isVoeStyleUrl(url: string): boolean {
+  const l = (url || "").toLowerCase();
+  if (!l) return false;
+  if (l.includes("voe")) return true;
+  if (/^https?:\/\/[^\/]+\/e\/[a-z0-9]+/.test(l)) {
+    const knownOthers = [
+      "sibnet", "vidmoly", "lulustream", "luluvdo", "vidzy", "filemoon", "bysesukior",
+      "uqload", "ansembed", "embed4me", "sendvid", "oneupload", "movearnpre"
+    ];
+    return !knownOthers.some((p) => l.includes(p));
+  }
+  return false;
+}
+
+export interface PlayerHtmlScanResult {
+  url: string;
+  type: "hls" | "direct_mp4";
+}
+
+/**
+ * Pure scanner shared by all generic player probes: unpacks Dean-Edwards
+ * packers and looks for a playable stream, in reliability order:
+ *   1. absolute .m3u8/.txt (master.m3u8 preferred)
+ *   2. relative /...m3u8 resolved against the player origin (movearnpre)
+ *   3. vidzy XOR-encoded body (var k = [..] + })("base64"))
+ *   4. absolute .mp4 direct file (oneupload / jwplayer)
+ */
+export function scanPlayerHtmlForStreams(html: string, playerOrigin: string): PlayerHtmlScanResult | null {
+  if (!html) return null;
+  const combined = html + "\n" + unpackDeanEdwards(html);
+
+  // 1. Absolute HLS
+  const absMatches = combined.match(/https?:\/\/[^\s"'<>|]+\.(?:m3u8|txt)(?:[^\s"'<>|]*)/gi) || [];
+  const firstAbs = absMatches[0];
+  if (firstAbs) {
+    const master = absMatches.find((u) => u.toLowerCase().includes("master.m3u8")) || firstAbs;
+    return { url: master, type: "hls" };
+  }
+
+  // 2. Relative HLS (e.g. "/stream/<id>/master.m3u8.txt")
+  const rel = combined.match(/["'\s=(](\/[^\s"'<>|]+\.(?:m3u8|txt)(?:\?[^\s"'<>|]*)?)/i);
+  if (rel && rel[1] && playerOrigin) {
+    return { url: playerOrigin.replace(/\/$/, "") + rel[1], type: "hls" };
+  }
+
+  // 3. vidzy XOR body
+  const kMatch = combined.match(/var\s+k\s*=\s*\[([\d\s,]+)\]/);
+  const sMatch = combined.match(/\}\)\(["']([A-Za-z0-9+/=]+)["']\)/);
+  if (kMatch && sMatch) {
+    try {
+      const keyBytes = kMatch[1].split(",").map((x) => parseInt(x.trim(), 10));
+      const decoded = vidzyXorDecode(sMatch[1], keyBytes);
+      const abs = decoded.match(/https?:\/\/[^\s"'|]+\.(?:m3u8|mp4)[^\s"'|]*/i);
+      if (abs) {
+        return { url: abs[0], type: abs[0].includes(".m3u8") ? "hls" : "direct_mp4" };
+      }
+      const relX = decoded.match(/[^\s"']*\/[^\s"']*\.(?:m3u8|mp4)[^\s"']*/i);
+      if (relX && relX[0].startsWith("/") && playerOrigin) {
+        return { url: playerOrigin.replace(/\/$/, "") + relX[0], type: relX[0].includes(".m3u8") ? "hls" : "direct_mp4" };
+      }
+    } catch {
+      // ignore malformed XOR bodies
+    }
+  }
+
+  // 4. Direct MP4
+  const mp4 = combined.match(/https?:\/\/[^\s"'<>|]+\.mp4(?:[^\s"'<>|]*)/i);
+  if (mp4) {
+    return { url: mp4[0], type: "direct_mp4" };
+  }
+
+  return null;
+}
+
+/**
+ * Generic player-page probe: fetches the embed page, scans raw + unpacked
+ * HTML for a playable stream, resolves real HLS tracks when possible.
+ * Used for the packed-player family AND as a last-resort for unknown hosts.
+ */
+export async function probeGenericPlayerPage(playerUrl: string, hostLabel?: string): Promise<ExtractedStreamResult | null> {
+  try {
+    const originMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
+    if (!originMatch) return null;
+    const playerOrigin = originMatch[1];
+
+    const resp = await safeAxiosGet(playerUrl, {
+      headers: {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": `${playerOrigin}/`
+      },
+      timeout: 8000,
+      validateStatus: () => true,
+      ...animeProxyOptions()
+    });
+    if (resp.status !== 200) return null;
+    const rawHtml = typeof resp.data === "string" ? resp.data : "";
+    if (!rawHtml) return null;
+
+    const scan = scanPlayerHtmlForStreams(rawHtml, playerOrigin);
+    if (!scan) return null;
+
+    const headers = {
+      "User-Agent": DEFAULT_USER_AGENT,
+      "Referer": `${playerOrigin}/`,
+      "Origin": playerOrigin
+    };
+
+    let tracks: StreamQualityTrack[] = [];
+    if (scan.type === "hls") {
+      try {
+        tracks = await fetchHlsTracksAndSizes(scan.url, `${playerOrigin}/`, playerOrigin);
+      } catch {
+        // tracks are optional — the bare URL is still usable
+      }
+    }
+
+    let host = hostLabel || "";
+    if (!host) {
+      try {
+        host = new URL(playerUrl).hostname.replace(/^www\./, "");
+      } catch {
+        host = "Packed Player";
+      }
+    }
+
+    return {
+      hostName: host,
+      url: scan.url,
+      type: scan.type,
+      headers,
+      availableTracks: tracks
+    };
+  } catch (err: any) {
+    if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] generic probe error (${playerUrl}):`, err.message);
+    return null;
+  }
+}
+
+/**
+ * voe embed resolver: follows in-page window.location hops, decodes the
+ * application/json payload chain, falls back to a plain m3u8 scan.
+ * Returns a direct stream URL (usually mp4) or null.
+ */
+async function extractVoeStream(voeUrl: string, depth = 0): Promise<string | null> {
+  try {
+    const resp = await safeAxiosGet(voeUrl, {
+      headers: {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": "https://nakanime.tv/"
+      },
+      timeout: 8000,
+      validateStatus: () => true,
+      ...animeProxyOptions()
+    });
+    if (resp.status !== 200) return null;
+    const html = typeof resp.data === "string" ? resp.data : "";
+
+    // In-page redirect hop (voe chains landing pages)
+    const loc = html.match(/window\.location\.href\s*=\s*["']([^"']+)["']/);
+    if (loc && loc[1] && loc[1] !== voeUrl && depth < 3) {
+      let next = loc[1];
+      if (!next.startsWith("http")) {
+        try {
+          next = new URL(next, voeUrl).href;
+        } catch {
+          next = "";
+        }
+      }
+      if (next) {
+        const nested = await extractVoeStream(next, depth + 1);
+        if (nested) return nested;
+      }
+    }
+
+    // Encrypted JSON payload
+    const jsonMatch = html.match(/<script type="application\/json">\s*(\[[\s\S]*?\])\s*<\/script>/);
+    if (jsonMatch) {
+      try {
+        const arr = JSON.parse(jsonMatch[1]);
+        if (Array.isArray(arr) && arr.length > 0 && typeof arr[0] === "string") {
+          const data = decodeVoePayload(arr[0]);
+          const src = data?.source || data?.direct_access_url;
+          if (typeof src === "string" && src && !/bigbuckbunny|sample/i.test(src)) {
+            return src;
+          }
+        }
+      } catch {
+        // try the plain scan below
+      }
+    }
+
+    // Plain m3u8 in page (skip known dummy streams)
+    for (const m of html.matchAll(/["'](https?:\/\/[^\s"']+\.m3u8[^\s"']*)["']/gi)) {
+      if (!/bigbuckbunny|sample/i.test(m[1])) return m[1];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Extract direct streams from streaming player mirrors (Smoothpre, Sibnet, Sendvid, VidMoly, Ansembed)
  */
-export async function extractMultiHostStream(playerUrl: string): Promise<ExtractedStreamResult | null> {
+export async function extractMultiHostStream(
+  playerUrl: string,
+  options: MirrorResolveOptions = {}
+): Promise<ExtractedStreamResult | null> {
   try {
     if (!playerUrl) return null;
     const lowerUrl = playerUrl.toLowerCase();
 
-    // 1. Smoothpre & generic Dean-Edwards packed players (Priority 1: Multi-quality HLS streams)
-    if (lowerUrl.includes("smoothpre") || lowerUrl.includes("dramiyos") || lowerUrl.includes("embed") || lowerUrl.includes("player")) {
+    // 0. embed4me / Lplayer — encrypted JSON API player (current "Lecteur 1")
+    if (lowerUrl.includes("embed4me") || lowerUrl.includes("lpayer")) {
       try {
-        const resp = await axios.get(playerUrl, {
-          headers: {
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Referer": "https://anime-sama.to/"
-          },
-          timeout: 7000,
-          validateStatus: () => true
-        });
-
-        if (resp.status === 200) {
-          const rawHtml = typeof resp.data === "string" ? resp.data : "";
-          const unpackedHtml = unpackDeanEdwards(rawHtml);
-
-          const m3u8Matches =
-            unpackedHtml.match(/https?:\/\/[^"\x27\s<>]+\.(?:m3u8|txt)[^"\x27\s<>]*/gi) ||
-            rawHtml.match(/https?:\/\/[^"\x27\s<>]+\.(?:m3u8|txt)[^"\x27\s<>]*/gi);
-
-          if (m3u8Matches && m3u8Matches.length > 0) {
-            // Pick master.m3u8 or the first valid HLS URL
-            const masterUrl = m3u8Matches.find(u => u.includes("master.m3u8")) || m3u8Matches[0];
-            const originMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
-            const playerOrigin = originMatch ? originMatch[1] : "https://Smoothpre.com";
-
-            const streamHeaders = {
-              "User-Agent": DEFAULT_USER_AGENT,
-              "Referer": `${playerOrigin}/`,
-              "Origin": playerOrigin
-            };
-
-            const parsedTracks = await fetchHlsTracksAndSizes(masterUrl, `${playerOrigin}/`, playerOrigin);
-
-            return {
-              hostName: "Smoothpre",
-              url: masterUrl,
-              type: "hls",
-              headers: streamHeaders,
-              availableTracks: parsedTracks
-            };
+        const idMatch = playerUrl.match(/#([a-zA-Z0-9]+)/) || playerUrl.match(/[?&]id=([a-zA-Z0-9]+)/);
+        const originMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
+        const origin = originMatch ? originMatch[1] : "https://lpayer.embed4me.com";
+        if (idMatch && idMatch[1]) {
+          const apiUrl = `${origin}/api/v1/video?id=${idMatch[1]}&w=1920&h=1080&r=${origin}/`;
+          const resp = await axios.get(apiUrl, {
+            headers: { "User-Agent": DEFAULT_USER_AGENT, Referer: `${origin}/` },
+            timeout: 8000,
+            validateStatus: () => true,
+            ...animeProxyOptions()
+          });
+          if (resp.status === 200 && typeof resp.data === "string") {
+            const rawSource = decryptEmbed4MeResponse(resp.data);
+            if (rawSource) {
+              const streamUrl = rawSource.startsWith("/") ? origin + rawSource : rawSource;
+              const streamHeaders = { "User-Agent": DEFAULT_USER_AGENT, Referer: `${origin}/`, Origin: origin };
+              const parsedTracks = await fetchHlsTracksAndSizes(streamUrl, `${origin}/`, origin);
+              return {
+                hostName: "Embed4me",
+                url: streamUrl,
+                type: streamUrl.split("?")[0].endsWith(".mp4") ? "direct_mp4" : "hls",
+                headers: streamHeaders,
+                availableTracks: parsedTracks
+              };
+            }
           }
         }
       } catch (err: any) {
-        if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] Smoothpre probe error:`, err.message);
+        if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] Embed4me probe error:`, err.message);
       }
+    }
+
+    // 0b. Filemoon — /api/videos/<code> returns an AES-GCM encrypted sources
+    // payload (key reassembled from key_parts, see decryptFilemoonPayload).
+    if (lowerUrl.includes("filemoon") || lowerUrl.includes("bysesukior")) {
+      try {
+        const codeMatch = playerUrl.match(/\/(?:e|d|download|play|v)\/([a-zA-Z0-9]+)/i);
+        let code = codeMatch ? codeMatch[1] : "";
+        if (!code) {
+          const parts = playerUrl.split("?")[0].split("/").filter(Boolean);
+          code = parts[parts.length - 1] || "";
+        }
+        const fmOriginMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
+        const fmOrigin = fmOriginMatch ? fmOriginMatch[1] : "https://bysesukior.com";
+        if (code) {
+          const resp = await axios.get(`${fmOrigin}/api/videos/${code}`, {
+            headers: {
+              "User-Agent": DEFAULT_USER_AGENT,
+              "Referer": "https://nakanime.tv/",
+              "Accept": "application/json, text/plain, */*"
+            },
+            timeout: 8000,
+            validateStatus: () => true,
+            ...animeProxyOptions()
+          });
+          if (resp.status === 200 && resp.data) {
+            const playback = resp.data?.playback || resp.data;
+            const decrypted = decryptFilemoonPayload(
+              String(playback?.version ?? ""),
+              playback?.key_parts,
+              playback?.iv,
+              playback?.payload
+            );
+            const sources = Array.isArray(decrypted?.sources) ? decrypted.sources : [];
+            const first = sources.find((s: any) => typeof s?.url === "string" && s.url.length > 0);
+            if (first) {
+              const isHls = /\.m3u8/i.test(first.url);
+              let fmTracks: StreamQualityTrack[] = [];
+              if (isHls) {
+                try {
+                  fmTracks = await fetchHlsTracksAndSizes(first.url, `${fmOrigin}/`, fmOrigin);
+                } catch {}
+              }
+              return {
+                hostName: "Filemoon",
+                url: first.url,
+                type: isHls ? "hls" : "direct_mp4",
+                headers: {
+                  "User-Agent": DEFAULT_USER_AGENT,
+                  "Referer": `${fmOrigin}/`,
+                  "Origin": fmOrigin
+                },
+                availableTracks: fmTracks
+              };
+            }
+          }
+        }
+      } catch (err: any) {
+        if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] Filemoon probe error:`, err.message);
+      }
+      // Fallback: plain page scan (some mirrors expose m3u8 directly)
+      const fmPage = await probeGenericPlayerPage(playerUrl, "Filemoon");
+      if (fmPage) return fmPage;
+    }
+
+    // 0b-bis. 9.18wwww — famille veev/doods (players du catalogue films) :
+    // tokens LZW dans la page + player_api (voir extractVeevFamilyStream).
+    if (/(?:veev|kinoger|poophq|doods)\.(?:to|pw|com)/i.test(playerUrl)) {
+      const veevStream = await extractVeevFamilyStream(playerUrl);
+      if (veevStream) return veevStream;
+    }
+
+    // 0c. voe / voembed — rotating domains, payload hidden in an
+    // application/json script tag (rot13 + double base64 chain, see
+    // decodeVoePayload). The manifest's REAL variants are parsed so quality
+    // labels and sizes are honest — without this, the quick flow labelled the
+    // 480p voembed file "720P" from a synthesized fallback track (audit 8.11).
+    if (isVoeStyleUrl(playerUrl)) {
+      const voeStream = await extractVoeStream(playerUrl);
+      if (voeStream) {
+        const isHls = /\.m3u8/i.test(voeStream);
+        const voeOriginMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
+        const voeOrigin = voeOriginMatch ? voeOriginMatch[1] : "https://voembed.net";
+        let voeTracks: StreamQualityTrack[] = [];
+        if (isHls) {
+          try {
+            voeTracks = await fetchHlsTracksAndSizes(voeStream, `${voeOrigin}/`, voeOrigin);
+          } catch {
+            // tracks are optional — the bare master URL stays usable
+          }
+        }
+        return {
+          hostName: "Voe",
+          url: voeStream,
+          type: isHls ? "hls" : "direct_mp4",
+          headers: {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Referer": `${voeOrigin}/`,
+            "Origin": voeOrigin
+          },
+          availableTracks: voeTracks
+        };
+      }
+    }
+
+    // 0a. 9.18yyyy — famille XUpload (vidzy, fsvid, uqload, lulu) : blobs XOR
+    // (base64 -> reverse -> XOR hote+BC) + sources en clair, VALIDES vivants.
+    // Le scan generique seul gobait la playlist LEURRE du lecteur (terrain
+    // 30/10 : `.f 1` -> fichier de 0.4 MB). En cas d'echec, on retombe sur
+    // les branches existantes — aucun retour en arriere.
+    if (/(?:vidzy|fsvid|uqload|luluvdo|lulustream)/i.test(playerUrl)) {
+      const xuStream = await extractXUploadFamilyStream(playerUrl, options);
+      if (xuStream) return xuStream;
+    }
+
+    // 1. Packed / generic player family (Smoothpre, Movearnpre, Uqload,
+    // Vidzy, LuluStream, OneUpload, Mivalyo, Dingtezuni, *embed*, *player*)
+    if (
+      NAKANIME_GENERIC_PLAYER_HINTS.some((h) => lowerUrl.includes(h)) ||
+      lowerUrl.includes("embed") ||
+      lowerUrl.includes("player")
+    ) {
+      const legacyLabel = lowerUrl.includes("smoothpre") || lowerUrl.includes("dramiyos") ? "Smoothpre" : undefined;
+      const generic = await probeGenericPlayerPage(playerUrl, legacyLabel);
+      if (generic) return generic;
     }
 
     // 2. Sibnet (Fast, direct MP4 delivery)
@@ -206,38 +948,48 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
             "Referer": "https://video.sibnet.ru/"
           },
           timeout: 6000,
-          validateStatus: () => true
+          validateStatus: () => true,
+    ...animeProxyOptions()
         });
         if (resp.status === 200) {
           const html = typeof resp.data === "string" ? resp.data : "";
           const match = html.match(/player\.src\(\[\{src:\s*["']([^"']+)["']/i) || html.match(/src:\s*["'](\/v\/[^"']+)["']/i);
           if (match && match[1]) {
             let streamPath = match[1];
-            if (streamPath.startsWith("/")) {
+            if (streamPath.startsWith("//")) {
+              streamPath = "https:" + streamPath;
+            } else if (streamPath.startsWith("/")) {
               streamPath = "https://video.sibnet.ru" + streamPath;
             }
+            // ONE honest track: sibnet serves a single mp4 whose real
+            // resolution is unknown without ffprobe — label it "Original" and
+            // surface the REAL byte size via HEAD. The previous fabricated
+            // 480P/360P pair made `.a ... r2` download a 299 MB 1080p file
+            // labelled "360P" (audit 8.4).
+            let sibnetSize = 0;
+            try {
+              const head = await axios.head(streamPath, {
+                headers: { "User-Agent": DEFAULT_USER_AGENT, Referer: playerUrl },
+                timeout: 5000,
+                validateStatus: () => true,
+                ...animeProxyOptions()
+              });
+              const len = parseInt(String(head.headers?.["content-length"] || "0"), 10);
+              if (!isNaN(len) && len > 0) sibnetSize = len;
+            } catch {}
+            const sibnetHeaders = { "User-Agent": DEFAULT_USER_AGENT, "Referer": playerUrl };
             return {
               hostName: "Sibnet",
               url: streamPath,
               type: "direct_mp4",
-              headers: {
-                "User-Agent": DEFAULT_USER_AGENT,
-                "Referer": playerUrl
-              },
+              headers: sibnetHeaders,
               availableTracks: [
                 {
-                  resolution: "480P",
+                  resolution: "Original",
                   url: streamPath,
-                  fileSizeBytes: 85 * 1024 * 1024,
+                  fileSizeBytes: sibnetSize || undefined,
                   type: "direct_mp4",
-                  headers: { "User-Agent": DEFAULT_USER_AGENT, "Referer": playerUrl }
-                },
-                {
-                  resolution: "360P",
-                  url: streamPath,
-                  fileSizeBytes: 55 * 1024 * 1024,
-                  type: "direct_mp4",
-                  headers: { "User-Agent": DEFAULT_USER_AGENT, "Referer": playerUrl }
+                  headers: sibnetHeaders
                 }
               ]
             };
@@ -257,7 +1009,8 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
             "Referer": "https://anime-sama.to/"
           },
           timeout: 6000,
-          validateStatus: () => true
+          validateStatus: () => true,
+    ...animeProxyOptions()
         });
         if (resp.status === 200) {
           const html = typeof resp.data === "string" ? resp.data : "";
@@ -305,7 +1058,8 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
             "Referer": "https://anime-sama.to/"
           },
           timeout: 6000,
-          validateStatus: () => true
+          validateStatus: () => true,
+    ...animeProxyOptions()
         });
         if (resp.status === 200) {
           const html = typeof resp.data === "string" ? resp.data : "";
@@ -331,22 +1085,48 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
           if (fileUrl) {
             const originMatch = playerUrl.match(/^(https?:\/\/[^/]+)/i);
             const playerOrigin = originMatch ? originMatch[1] : "https://vidmoly.to";
-            const parsedTracks = await fetchHlsTracksAndSizes(fileUrl, playerUrl, playerOrigin);
+            let streamUrl = fileUrl;
+            let streamHeaders: Record<string, string> = {
+              "User-Agent": DEFAULT_USER_AGENT,
+              "Referer": playerUrl,
+              "Origin": playerOrigin
+            };
+            // Multi-quality urlset masters 403 on some CDN nodes while their
+            // variant paths answer fine — resolve to a working media playlist
+            // HERE and propagate the winning referer to every download engine
+            // (audit 8.43; production case: Vinland Saga S02E05 on vmbox.space).
+            if (fileUrl.includes(".urlset/")) {
+              try {
+                const resolvedUrlset = await resolveVidmolyUrlset(fileUrl, streamHeaders);
+                if (resolvedUrlset) {
+                  streamUrl = resolvedUrlset.mediaPlaylistUrl;
+                  streamHeaders = { ...streamHeaders, ...resolvedUrlset.headers };
+                }
+              } catch {}
+            }
+            const parsedTracks = await fetchHlsTracksAndSizes(streamUrl, streamHeaders.Referer, streamHeaders.Origin);
             return {
               hostName: "VidMoly",
-              url: fileUrl,
+              url: streamUrl,
               type: "hls",
-              headers: {
-                "User-Agent": DEFAULT_USER_AGENT,
-                "Referer": playerUrl,
-                "Origin": playerOrigin
-              },
+              headers: streamHeaders,
               availableTracks: parsedTracks
             };
           }
         }
       } catch (err: any) {
         if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] VidMoly probe error:`, err.message);
+      }
+    }
+
+    // 5. Last-resort generic probe for ANY other host — one page fetch +
+    // m3u8/mp4/packed scan. Keeps the pipeline alive when a mirror swaps to
+    // a host nobody knows yet (the exact failure mode of audit §8 / R8).
+    {
+      const lastResort = await probeGenericPlayerPage(playerUrl);
+      if (lastResort) {
+        if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] last-resort generic probe HIT for ${playerUrl}`);
+        return lastResort;
       }
     }
   } catch (err: any) {
@@ -358,12 +1138,40 @@ export async function extractMultiHostStream(playerUrl: string): Promise<Extract
 }
 
 /**
+ * Sums #EXTINF segment durations of a variant playlist (null when the
+ * playlist cannot be read — master playlists return null too).
+ */
+async function resolvePlaylistDurationSeconds(
+  playlistUrl: string,
+  headers: Record<string, string>
+): Promise<number | null> {
+  try {
+    const resp = await axios.get(playlistUrl, {
+      headers,
+      timeout: 6000,
+      validateStatus: (st) => st === 200,
+      ...animeProxyOptions()
+    });
+    const body = typeof resp.data === "string" ? resp.data : "";
+    if (!body.includes("#EXTINF")) return null;
+    let total = 0;
+    for (const m of body.matchAll(/#EXTINF:([\d.]+)/g)) {
+      total += parseFloat(m[1]);
+    }
+    return total > 0 ? total : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Parses HLS playlist to detect available bandwidths, sub-variant URLs, and estimate episode sizes
  */
 export async function fetchHlsTracksAndSizes(
   masterUrl: string,
   refererUrl: string,
-  originUrl?: string
+  originUrl?: string,
+  fallbackDurationSec: number = 1440
 ): Promise<StreamQualityTrack[]> {
   const tracks: StreamQualityTrack[] = [];
   const reqHeaders: Record<string, string> = {
@@ -377,7 +1185,8 @@ export async function fetchHlsTracksAndSizes(
   try {
     const resp = await axios.get(masterUrl, {
       headers: reqHeaders,
-      timeout: 8000
+      timeout: 8000,
+      ...animeProxyOptions()
     });
     const manifest = typeof resp.data === "string" ? resp.data : "";
     const lines = manifest.split("\n");
@@ -394,8 +1203,10 @@ export async function fetchHlsTracksAndSizes(
           const height = resMatch ? parseInt(resMatch[1], 10) : 0;
           const bandwidth = bwMatch ? parseInt(bwMatch[1], 10) : 800000;
 
-          // Estimate 24 minute anime episode size in bytes: (bandwidth bps * 1440 sec) / 8
-          const durationSeconds = 1440;
+          // Real size estimate: fetch this variant's playlist, sum its segment
+          // durations (#EXTINF) and compute bandwidth * duration / 8. Falls
+          // back to the 24-minute anime heuristic when the CDN refuses us.
+          const durationSeconds = (await resolvePlaylistDurationSeconds(streamUrl, reqHeaders)) ?? fallbackDurationSec;
           const fileSizeBytes = Math.round((bandwidth * durationSeconds) / 8);
 
           let label = "480P";
@@ -424,30 +1235,9 @@ export async function fetchHlsTracksAndSizes(
     }
   }
 
-  // Ensure standard options exist
-  const has360 = tracks.some(t => t.resolution === "360P");
-  const lowestTrack = tracks.length > 0 ? tracks[0] : null;
-
-  if (tracks.length > 0) {
-    if (!has360 && lowestTrack) {
-      tracks.push({
-        resolution: "360P",
-        url: lowestTrack.url,
-        bandwidth: Math.round((lowestTrack.bandwidth || 600000) * 0.65),
-        fileSizeBytes: Math.round((lowestTrack.fileSizeBytes || 90 * 1024 * 1024) * 0.65),
-        type: "hls",
-        headers: reqHeaders
-      });
-    }
-  } else {
-    // Fallback defaults if master parsing returns empty
-    tracks.push(
-      { resolution: "480P", url: masterUrl, bandwidth: 700000, fileSizeBytes: 80 * 1024 * 1024, type: "hls", headers: reqHeaders },
-      { resolution: "360P", url: masterUrl, bandwidth: 400000, fileSizeBytes: 50 * 1024 * 1024, type: "hls", headers: reqHeaders },
-      { resolution: "720P", url: masterUrl, bandwidth: 1400000, fileSizeBytes: 180 * 1024 * 1024, type: "hls", headers: reqHeaders },
-      { resolution: "1080P", url: masterUrl, bandwidth: 2600000, fileSizeBytes: 350 * 1024 * 1024, type: "hls", headers: reqHeaders }
-    );
-  }
+  // No fabricated fallback: if the master could not be parsed we return an
+  // empty list so the UI says "qualité adaptative" instead of offering
+  // resolutions that cannot actually be downloaded (audit finding R8).
 
   // Sort: 480P, 360P, 720P, 1080P
   const orderMap: Record<string, number> = { "480P": 1, "360P": 2, "720P": 3, "1080P": 4, "ORIGINAL": 5 };
@@ -459,47 +1249,90 @@ export async function fetchHlsTracksAndSizes(
 /**
  * Resolves best mirror stream among all player URLs for an episode
  */
-export async function resolveBestMirrorStream(mirrorUrls: string[], preferredRes: string = "480P"): Promise<ExtractedStreamResult> {
-  const sortedMirrors = [...mirrorUrls].sort((a, b) => {
-    // Prefer Smoothpre (clean HLS) > Sibnet > Sendvid > VidMoly for reliable direct downloads
-    const priority = (url: string) => {
-      const l = url.toLowerCase();
-      if (l.includes("smoothpre")) return 1;
-      if (l.includes("sibnet")) return 2;
-      if (l.includes("sendvid")) return 3;
-      if (l.includes("ansembed") || l.includes("vidmoly")) return 4;
-      return 5;
-    };
-    return priority(a) - priority(b);
-  });
+export async function resolveBestMirrorStream(
+  mirrorUrls: string[],
+  preferredRes: string = "480P",
+  options: MirrorResolveOptions = {}
+): Promise<ExtractedStreamResult> {
+  const sortedMirrors = [...mirrorUrls].sort((a, b) => hostPriority(a) - hostPriority(b));
 
   for (const mirror of sortedMirrors) {
-    const extracted = await extractMultiHostStream(mirror);
+    const extracted = await extractMultiHostStream(mirror, options);
     if (extracted && extracted.url) {
       return extracted;
     }
   }
 
-  // Fallback
+  // 9.18yyyy — repli HONNETE : plus rien n'a ete extrait. L'ancien repli
+  // renvoyait le PREMIER miroir comme pseudo-hls : la page embed etait alors
+  // telechargee et servie comme « film » (0.4 MB de HTML, terrain 30/10).
+  // URL vide => l'appelant affiche son erreur adaptee (no-mirror).
   return {
-    hostName: "Direct Stream",
-    url: mirrorUrls[0] || "",
+    hostName: "",
+    url: "",
     type: "hls",
-    headers: { "Referer": "https://anime-sama.to/" }
+    headers: {}
   };
 }
 
 /**
  * Selects optimal stream based on user's priority for 480p/360p fast downloads
  */
+function trackHeight(res: string | undefined): number {
+  const m = (res || "").match(/(\d{3,4})/);
+  return m ? parseInt(m[1], 10) : 720;
+}
+
+// Fast lanes (r1=480P, r2=360P) exist to deliver WhatsApp-friendly files.
+// Some CDN encodes carry a "480P" label at ~2.3 Mbps (403 MB for 24 min,
+// audit 8.13) — an exact-label match on those is worse than a lighter
+// variant. When the exact fast-lane track exceeds this ceiling, the lightest
+// <=480p alternative wins.
+const FAST_LANE_MAX_BYTES = 200 * 1024 * 1024;
+
+function fastLaneDowngrade(tracks: StreamQualityTrack[], match: StreamQualityTrack): StreamQualityTrack | null {
+  const candidates = tracks.filter((t) => t.url && trackHeight(t.resolution) <= 480);
+  if (candidates.length === 0) return null;
+  const sizeKey = (t: StreamQualityTrack) => t.fileSizeBytes ?? Number.MAX_SAFE_INTEGER;
+  const sorted = [...candidates].sort((a, b) => sizeKey(a) - sizeKey(b));
+  const lightest = sorted[0];
+  if (!lightest || sizeKey(lightest) === Number.MAX_SAFE_INTEGER || lightest === match) return null;
+  return lightest;
+}
+
 export function pickOptimalStream(tracks: StreamQualityTrack[], requestedRes?: string): StreamQualityTrack {
   if (!tracks || tracks.length === 0) {
     return { resolution: "480P", url: "", type: "hls" };
   }
 
   if (requestedRes) {
-    const match = tracks.find(t => t.resolution.toUpperCase() === requestedRes.toUpperCase());
-    if (match) return match;
+    const wanted = requestedRes.toUpperCase();
+    const match = tracks.find(t => (t.resolution || "").toUpperCase() === wanted);
+    if (match) {
+      if (
+        (wanted === "480P" || wanted === "360P") &&
+        match.fileSizeBytes &&
+        match.fileSizeBytes > FAST_LANE_MAX_BYTES
+      ) {
+        const alt = fastLaneDowngrade(tracks, match);
+        if (alt) {
+          console.warn(
+            `[STREAM_EXTRACTOR] Fast-lane "${wanted}" track is ${(match.fileSizeBytes / 1048576).toFixed(0)} MB (>200 MB) - using lighter ${(alt.resolution || "").toUpperCase()} variant (${((alt.fileSizeBytes || 0) / 1048576).toFixed(0)} MB)`
+          );
+          return alt;
+        }
+      }
+      return match;
+    }
+
+    // Requested quality missing on this mirror: prefer the tallest track that
+    // is NOT taller than the request (fast lanes stay fast); if everything is
+    // taller, take the smallest available (audit §8.3 — `.a … r2` used to
+    // silently land on 1080P when a mirror only exposed 720P/1080P).
+    const byHeight = [...tracks].sort((a, b) => trackHeight(a.resolution) - trackHeight(b.resolution));
+    const under = byHeight.filter(t => trackHeight(t.resolution) <= trackHeight(wanted));
+    if (under.length > 0) return under[under.length - 1];
+    return byHeight[0];
   }
 
   // Priority order: 480p > 360p > 720p > 1080p
@@ -526,6 +1359,95 @@ export async function downloadStreamToDisk(stream: ExtractedStreamResult, output
 export { robustFetchText, robustFetchBuffer, resolveAbsoluteUrl };
 
 /**
+ * Quick-mode quality resolver: probes mirrors in reliability order (VidMoly
+ * first) and lets the FIRST mirror that yields usable tracks decide — exact
+ * canonical quality when present, else pickOptimalStream's nearest. This
+ * early-exit keeps `.a ... rN` at one probe in the common case instead of
+ * walking every mirror of the episode (audit 8.5).
+ */
+export type MirrorProbeFn = (url: string) => Promise<ExtractedStreamResult | null>;
+
+export interface CanonicalQualityMatch {
+  url: string;
+  headers?: Record<string, string>;
+  label: string;
+  exact: boolean;
+  mirror: string;
+}
+
+export async function resolveCanonicalQualityTrack(
+  mirrorUrls: string[],
+  canonical: string,
+  probe: MirrorProbeFn = extractMultiHostStream
+): Promise<CanonicalQualityMatch | null> {
+  if (!mirrorUrls || mirrorUrls.length === 0) return null;
+  const sorted = [...mirrorUrls].sort((a, b) => hostPriority(a) - hostPriority(b));
+  for (const mirror of sorted) {
+    let extracted: ExtractedStreamResult | null = null;
+    try {
+      extracted = await probe(mirror);
+    } catch {
+      extracted = null;
+    }
+    if (!extracted || !extracted.url) continue;
+
+    const tracks: StreamQualityTrack[] =
+      extracted.availableTracks && extracted.availableTracks.length > 0
+        ? extracted.availableTracks
+        : [
+            {
+              resolution: extracted.type === "direct_mp4" ? "Original" : "720P",
+              url: extracted.url,
+              headers: extracted.headers,
+              type: extracted.type
+            }
+          ];
+
+    const exact = tracks.find((t) => t.url && (t.resolution || "").toUpperCase() === canonical.toUpperCase());
+    if (exact) {
+      if (
+        (canonical.toUpperCase() === "480P" || canonical.toUpperCase() === "360P") &&
+        exact.fileSizeBytes &&
+        exact.fileSizeBytes > FAST_LANE_MAX_BYTES
+      ) {
+        const alt = fastLaneDowngrade(tracks, exact);
+        if (alt && alt.url) {
+          console.warn(
+            `[STREAM_EXTRACTOR] Quick "${canonical}" exact match is ${(exact.fileSizeBytes / 1048576).toFixed(0)} MB (>200 MB) - using lighter ${(alt.resolution || "").toUpperCase()} variant`
+          );
+          return {
+            url: alt.url,
+            headers: alt.headers || extracted.headers,
+            label: (alt.resolution || canonical).toUpperCase(),
+            exact: false,
+            mirror
+          };
+        }
+      }
+      return {
+        url: exact.url,
+        headers: exact.headers || extracted.headers,
+        label: (exact.resolution || canonical).toUpperCase(),
+        exact: true,
+        mirror
+      };
+    }
+    const alt = pickOptimalStream(tracks, canonical);
+    if (alt && alt.url) {
+      return {
+        url: alt.url,
+        headers: alt.headers || extracted.headers,
+        label: (alt.resolution || canonical).toUpperCase(),
+        exact: false,
+        mirror
+      };
+    }
+    // Mirror yielded a stream but no usable track — try the next mirror.
+  }
+  return null;
+}
+
+/**
  * Iterates through all available mirrors for an episode and executes the download,
  * guaranteeing seamless fallback if any host encounters a 403 Forbidden or network failure.
  */
@@ -533,27 +1455,22 @@ export async function downloadWithAllMirrorsFallback(
   mirrorUrls: string[],
   preferredRes: string,
   outputPath: string,
-  timeoutMs: number = 240000
+  timeoutMs: number = 240000,
+  onProgress?: (percent: number, bytesDone?: number) => void
 ): Promise<{ success: boolean; hostName: string; usedUrl: string }> {
   if (!mirrorUrls || mirrorUrls.length === 0) {
     return { success: false, hostName: "None", usedUrl: "" };
   }
 
-  // Sort mirrors by reliability: Smoothpre > Sibnet > Sendvid > VidMoly > other
-  const sortedMirrors = [...mirrorUrls].sort((a, b) => {
-    const priority = (url: string) => {
-      const l = url.toLowerCase();
-      if (l.includes("smoothpre")) return 1;
-      if (l.includes("sibnet")) return 2;
-      if (l.includes("sendvid")) return 3;
-      if (l.includes("ansembed") || l.includes("vidmoly")) return 4;
-      return 5;
-    };
-    return priority(a) - priority(b);
-  });
+  // Sort mirrors by current reliability order (see hostPriority)
+  const sortedMirrors = [...mirrorUrls].sort((a, b) => hostPriority(a) - hostPriority(b));
 
   for (let i = 0; i < sortedMirrors.length; i++) {
     const mirrorUrl = sortedMirrors[i];
+    if (isDeadFileSlug(mirrorUrl)) {
+      console.warn(`[MIRROR_FALLBACK] Skipping mirror ${i + 1}/${sortedMirrors.length} (file known dead from a recent attempt)`);
+      continue;
+    }
     try {
       console.log(`[MIRROR_FALLBACK] Probing mirror ${i + 1}/${sortedMirrors.length}: ${mirrorUrl}`);
       const extracted = await extractMultiHostStream(mirrorUrl);
@@ -577,7 +1494,7 @@ export async function downloadWithAllMirrorsFallback(
       }
 
       console.log(`[MIRROR_FALLBACK] Attempting download with host "${targetStream.hostName}" on URL: ${targetStream.url}`);
-      const dlSuccess = await executeDirectOrFfmpegDownload(targetStream, outputPath, timeoutMs);
+      const dlSuccess = await executeDirectOrFfmpegDownload(targetStream, outputPath, timeoutMs, onProgress);
 
       if (dlSuccess && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
         console.log(`[MIRROR_FALLBACK] Mirror ${targetStream.hostName} succeeded! Size: ${fs.statSync(outputPath).size} bytes`);
@@ -585,8 +1502,10 @@ export async function downloadWithAllMirrorsFallback(
       }
 
       console.warn(`[MIRROR_FALLBACK] Mirror ${targetStream.hostName} download failed or produced empty file. Trying next mirror...`);
+      markDeadFileSlug(mirrorUrl);
     } catch (err: any) {
       console.warn(`[MIRROR_FALLBACK] Error on mirror ${mirrorUrl}: ${err.message}. Trying next mirror...`);
+      markDeadFileSlug(mirrorUrl);
     }
   }
 
@@ -667,15 +1586,54 @@ export async function prepareLocalHlsPlaylist(
 }
 
 /**
+ * 9.18aaaa : whitelist de protocoles du ffmpeg réseau HLS. Le demuxer HLS
+ * applique une whitelist par défaut « file,crypto,data » quand l'entrée est
+ * une playlist LOCALE (auth_playlist_*.m3u8) — TOUS les segments https
+ * distants sont alors refusés (« Protocol 'https' not on whitelist »).
+ * Terrain 18/10 : le fallback ffmpeg d'un épisode a échoué sur 72 segments
+ * consécutifs pour cette seule raison — le fallback était un code mort qui
+ * ne pouvait JAMAIS télécharger. https/http/tcp/tls sont ajoutés pour les
+ * segments, clés et playlists distantes.
+ */
+export const HLS_FFMPEG_PROTOCOL_WHITELIST = "file,crypto,data,https,http,tcp,tls";
+
+/**
  * Executes direct stream download or ffmpeg compilation with custom headers
  */
 export async function executeDirectOrFfmpegDownload(
   stream: { url: string; type?: string; headers?: Record<string, string> },
   outputPath: string,
-  timeoutMs: number = 40000
+  timeoutMs: number = 40000,
+  onProgress?: (percent: number, bytesDone?: number) => void
 ): Promise<boolean> {
   try {
     if (!stream.url) return false;
+
+    // Dead-file memory (audit 8.47): skip files whose every path×referer
+    // recently failed — a fresh mirror of the SAME file only burns minutes.
+    if (isDeadFileSlug(stream.url)) {
+      console.warn(`[STREAM_EXTRACTOR] Skipping known-dead file: ${stream.url.split("?")[0]}`);
+      return false;
+    }
+
+    // Funnel-level urlset guard (audit 8.45): EVERY extraction branch
+    // converges here — including the generic last-resort probe, which is the
+    // branch that actually extracts vidmoly embeds in production (hostName
+    // "vidmoly.biz"; the dedicated vidmoly branch gets its embed fetch 403'd
+    // by the referer it uses). Multi-quality urlset masters 403 on some CDN
+    // nodes while variant paths answer — resolve once, for everyone.
+    if (stream.url.includes(".urlset/")) {
+      try {
+        const resolvedUrlset = await resolveVidmolyUrlset(stream.url, stream.headers || {});
+        if (resolvedUrlset) {
+          stream = {
+            ...stream,
+            url: resolvedUrlset.mediaPlaylistUrl,
+            headers: { ...stream.headers, ...resolvedUrlset.headers }
+          };
+        }
+      } catch {}
+    }
 
     // Direct HTTP download for clean MP4 sources
     if (stream.type === "direct_mp4" || stream.url.endsWith(".mp4")) {
@@ -687,7 +1645,8 @@ export async function executeDirectOrFfmpegDownload(
         headers: stream.headers || {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         },
-        timeout: timeoutMs
+        timeout: timeoutMs,
+        ...animeProxyOptions()
       });
 
       response.data.pipe(writer);
@@ -708,7 +1667,9 @@ export async function executeDirectOrFfmpegDownload(
     try {
       console.log(`[STREAM_EXTRACTOR] Launching primary Cat-Catch style HLS downloader for: ${stream.url}`);
       // Give the application-level downloader a comfortable timeout (e.g. 4 minutes)
-      const catCatchSuccess = await downloadHlsAppLevel(stream.url, outputPath, headers, 240000);
+      const catCatchSuccess = await downloadHlsAppLevel(stream.url, outputPath, headers, 240000, (pct, detail) => {
+        if (onProgress) onProgress(pct, detail?.bytesDone);
+      });
       if (catCatchSuccess && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
         console.log(`[STREAM_EXTRACTOR] Primary Cat-Catch HLS download succeeded! Output size: ${fs.statSync(outputPath).size} bytes`);
         return true;
@@ -736,6 +1697,9 @@ export async function executeDirectOrFfmpegDownload(
     return new Promise((resolve) => {
       const args = [
         "-y",
+        // 9.18aaaa : sans whitelist explicite, le demuxer HLS bloque les
+        // segments https d'une playlist locale (défaut file,crypto,data).
+        "-protocol_whitelist", HLS_FFMPEG_PROTOCOL_WHITELIST,
         "-user_agent", userAgent,
         "-headers", headerStr,
         "-reconnect", "1",
@@ -753,6 +1717,7 @@ export async function executeDirectOrFfmpegDownload(
       ];
 
       const proc = spawn(resolvedFfmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
+      trackSpawn(proc); // 9.18ggg — orphelins tués à l'arrêt du moteur (audit §6)
       
       let stderrLog = "";
       proc.stderr?.on("data", (chunk) => {
@@ -791,5 +1756,132 @@ export async function executeDirectOrFfmpegDownload(
   } catch (err: any) {
     console.warn("[STREAM_EXTRACTOR] Download error:", err.message);
     return false;
+  }
+}
+
+// ============================================================================
+// 9.18wwww — famille veev/doods (players FILMS du catalogue Novaboxb).
+// ============================================================================
+// Portage fidèle de l'extracteur de référence (cloudstream Coflix → AutoFlix,
+// licence ouverte) : les pages veev/doods embarquent des tokens LZW-compressés
+// (fc / _vvto), un appel player_api rend le code chiffré (file.dv[0].s) que
+// l'on décode par le même LZW puis une chaîne de règles issue du token.
+// Particularité héritée de la référence : l'id média est partagé entre les
+// domaines de la famille — la page et l'API sont toujours interrogées sur
+// veev.to, quel que soit le domaine d'origine du lien.
+
+/** Décode un token LZW de la famille veev (pur — testé). */
+export function veevLzwDecode(etext: string): string {
+  const lut = new Map<number, string>();
+  for (let i = 0; i < 256; i++) lut.set(i, String.fromCharCode(i));
+  let n = 256;
+  if (!etext) return "";
+  let c = etext[0];
+  const result: string[] = [c];
+  for (const char of etext.slice(1)) {
+    const code = char.charCodeAt(0);
+    const entry = lut.has(code) ? lut.get(code)! : c + c[0];
+    result.push(entry);
+    lut.set(n, c + entry[0]);
+    n++;
+    c = entry;
+  }
+  return result.join("");
+}
+
+/** Extrait la rangée de règles du token décompressé (pur — testé). */
+export function veevParseRules(ch: string): number[] {
+  const chars = (ch || "").split("");
+  let i = 0;
+  const nextInt = (): number => {
+    if (i >= chars.length) return 0;
+    const t = chars[i++];
+    return /\d/.test(t) ? parseInt(t, 10) : 0;
+  };
+  const count = nextInt();
+  if (count === 0) return [];
+  const row: number[] = [];
+  for (let k = 0; k < count; k++) row.push(nextInt());
+  return row.reverse();
+}
+
+/** Applique les règles (reverse + hex) au code final (pur — testé). */
+export function veevDecodeFinal(encoded: string, rules: number[]): string {
+  let text = encoded;
+  for (const r of rules) {
+    if (r === 1) text = text.split("").reverse().join("");
+    if (/^[0-9a-fA-F]+$/.test(text) && text.length % 2 === 0) {
+      // Fidèle à la référence : un hex non décodable en UTF-8 reste tel quel.
+      const buf = Buffer.from(text, "hex");
+      const dec = buf.toString("utf8");
+      if (Buffer.from(dec, "utf8").equals(buf)) text = dec;
+    }
+    text = text.replace(/dXRmOA==/g, "");
+  }
+  return text;
+}
+
+/** URL d'API player_api de la famille veev (pur — testé). */
+export function buildVeevApiUrl(mediaId: string, ch: string): string {
+  return `https://veev.to/dl?op=player_api&cmd=gi&file_code=${mediaId}&r=https://veev.to&ch=${encodeURIComponent(ch)}&ie=1`;
+}
+
+/** Résout un player veev/doods en flux direct (HLS ou MP4). */
+export async function extractVeevFamilyStream(playerUrl: string): Promise<ExtractedStreamResult | null> {
+  try {
+    const idMatch = (playerUrl || "").match(/(?:(?:\/\/|\.)|(?:^https?:\/\/))(?:veev|kinoger|poophq|doods)\.(?:to|pw|com)\/[ed]\/([0-9A-Za-z]+)/i);
+    if (!idMatch) return null;
+    const mediaId = idMatch[1];
+
+    const pageResp = await axios.get(`https://veev.to/e/${mediaId}`, {
+      headers: { "User-Agent": DEFAULT_USER_AGENT, Referer: "https://veev.to/" },
+      timeout: 10000,
+      validateStatus: () => true,
+      ...animeProxyOptions(),
+    });
+    if (pageResp.status !== 200 || typeof pageResp.data !== "string") return null;
+    const html: string = pageResp.data;
+
+    const tokenRe = /[.\s'](?:fc|_vvto\[[^\]]*)(?:['\]]*)?\s*[:=]\s*['"]([^'"]+)/g;
+    const found: string[] = [...html.matchAll(tokenRe)].map((m) => m[1]);
+    if (found.length === 0) return null;
+
+    for (const f of [...found].reverse()) {
+      const ch = veevLzwDecode(f);
+      if (ch === f) continue; // le décodage n'a rien changé : pas un token
+
+      const apiResp = await axios.get(buildVeevApiUrl(mediaId, ch), {
+        headers: { "User-Agent": DEFAULT_USER_AGENT, Referer: "https://veev.to/" },
+        timeout: 10000,
+        validateStatus: () => true,
+        ...animeProxyOptions(),
+      });
+      const file = apiResp.data?.file;
+      if (!file || file.file_status !== "OK" || !Array.isArray(file.dv) || file.dv.length === 0) continue;
+      const dvString = file.dv[0]?.s;
+      if (typeof dvString !== "string" || !dvString) continue;
+
+      const finalLink = veevDecodeFinal(veevLzwDecode(dvString), veevParseRules(ch));
+      if (!/^https?:\/\//i.test(finalLink)) continue;
+
+      const isHls = /\.m3u8/i.test(finalLink);
+      let tracks: StreamQualityTrack[] = [];
+      if (isHls) {
+        try {
+          tracks = await fetchHlsTracksAndSizes(finalLink, "https://veev.to/", "https://veev.to");
+        } catch {}
+      }
+      return {
+        hostName: "Dood",
+        url: finalLink,
+        type: isHls ? "hls" : "direct_mp4",
+        headers: { "User-Agent": DEFAULT_USER_AGENT, Referer: "https://veev.to/" },
+        availableTracks: tracks,
+      };
+    }
+    return null;
+  } catch (err: any) {
+    if (process.env.DEBUG_MEDIA) console.debug(`[STREAM_EXTRACTOR] veev/doods probe error (${playerUrl}):`, err.message);
+    return null;
   }
 }

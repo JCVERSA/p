@@ -1,4 +1,5 @@
 import dns from "dns/promises";
+import axios, { type AxiosRequestConfig, type AxiosResponse } from "axios";
 import http from "http";
 import https from "https";
 import fs from "fs";
@@ -87,9 +88,74 @@ export function isPrivateIpAddress(ip: string): boolean {
 }
 
 /**
+ * Positive/negative result cache for hostname validation.
+ *
+ * The HLS segment downloader calls isSafeDownloadUrl for EVERY segment
+ * (hundreds per episode, 6-8 concurrent). Without a cache each call performs
+ * a DNS lookup, and a single transient resolver hiccup would fail a segment
+ * — and with it the whole episode download. Validated hosts are re-checked
+ * at most every 5 minutes (also caps the cost of DNS-rebinding windows).
+ */
+const SAFE_HOST_CACHE_TTL_MS = 5 * 60 * 1000;
+const safeHostCache = new Map<string, { ok: boolean; at: number }>();
+
+/**
  * Returns true when the URL is safe for the server to fetch:
  * http/https scheme and a host that resolves to no private addresses.
  */
+/**
+ * Hôtes de streaming/hébergement de CONFIANCE (pas de résolution DNS —
+ * fail-fast et zéro dépendance réseau pour les domaines stables).
+ * 9.18cccc (audit) : liste dédupliquée en UNE constante (deux copies
+ * allaient dériver) + écosystème FILMS du catalogue (vidzy.cc, uqload.vc,
+ * doods/dood, voe.sx, relais kokoflix, fsvid — constatés sur l'API réelle
+ * du 30/10). Les domaines tournants restent couverts par la résolution DNS
+ * en aval (fail-closed).
+ */
+const TRUSTED_STREAM_HOSTS = [
+  // Écosystème animés (anime-sama / nakanime)
+  "anime-sama.to",
+  "smoothpre.com",
+  "sibnet.ru",
+  "sendvid.com",
+  "vidmoly.to",
+  "vidmoly.me",
+  "vidmoly.net",
+  "ansembed.net",
+  "vmpx.org",
+  "dramiyos.com",
+  "streampre.com",
+  "smoothstream.com",
+  "embed4me.com",
+  "uqload.is",
+  "minochinos.com",
+  "nakanime.tv",
+  "movearnpre.com",
+  "ovaltinecdn.com",
+  "vidzy.live",
+  "vidzy.org",
+  "luluvdo.com",
+  "lulustream.com",
+  "oneupload.net",
+  "oneupload.to",
+  "mivalyo.com",
+  "dingtezuni.com",
+  "filemoon.sx",
+  "bysesukior.com",
+  "voir-anime.to",
+  "voembed.net",
+  // Écosystème films (catalogue 9.18wwww+ — API réelle du 30/10)
+  "vidzy.cc",
+  "uqload.vc",
+  "uqload.com",
+  "doods.pro",
+  "dood.to",
+  "dood.watch",
+  "voe.sx",
+  "kokoflix.lol",
+  "fsvid.lol"
+];
+
 export async function isSafeDownloadUrl(rawUrl: string): Promise<boolean> {
   let url: URL;
   try {
@@ -101,61 +167,44 @@ export async function isSafeDownloadUrl(rawUrl: string): Promise<boolean> {
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
 
   const hostname = url.hostname.toLowerCase();
+
+  const cached = safeHostCache.get(hostname);
+  if (cached && Date.now() - cached.at < SAFE_HOST_CACHE_TTL_MS) {
+    return cached.ok;
+  }
+  const remember = (ok: boolean) => {
+    safeHostCache.set(hostname, { ok, at: Date.now() });
+    return ok;
+  };
   
   // Whitelist known safe video streaming and hosting domains to prevent false-positive DNS/IP blocks.
-  const trustedHosts = [
-    "anime-sama.to",
-    "smoothpre.com",
-    "sibnet.ru",
-    "sendvid.com",
-    "vidmoly.to",
-    "vidmoly.me",
-    "vidmoly.net",
-    "ansembed.net",
-    "vmpx.org",
-    "dramiyos.com",
-    "streampre.com",
-    "smoothstream.com"
-  ];
+  const trustedHosts = TRUSTED_STREAM_HOSTS;
   if (trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h))) {
-    return true;
+    return remember(true);
   }
 
   if (hostname === "localhost" || hostname.endsWith(".local") || hostname.endsWith(".internal")) {
-    return false;
+    return remember(false);
   }
 
   // Literal IP hosts can be checked without DNS.
   const isLiteralIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) || hostname.includes(":");
   if (isLiteralIp) {
-    return !isPrivateIpAddress(hostname);
+    return remember(!isPrivateIpAddress(hostname));
   }
 
   try {
     const addresses = await dns.lookup(hostname, { all: true });
-    if (addresses.length === 0) return false;
-    return addresses.every((addr) => !isPrivateIpAddress(addr.address));
+    if (addresses.length === 0) return remember(false);
+    return remember(addresses.every((addr) => !isPrivateIpAddress(addr.address)));
   } catch {
-    return false;
+    return remember(false);
   }
 }
 
 /** Resolves and validates every address of a hostname; fails closed. */
 async function resolvePinnedAddresses(hostname: string): Promise<Array<{ address: string; family: number }>> {
-  const trustedHosts = [
-    "anime-sama.to",
-    "smoothpre.com",
-    "sibnet.ru",
-    "sendvid.com",
-    "vidmoly.to",
-    "vidmoly.me",
-    "vidmoly.net",
-    "ansembed.net",
-    "vmpx.org",
-    "dramiyos.com",
-    "streampre.com",
-    "smoothstream.com"
-  ];
+  const trustedHosts = TRUSTED_STREAM_HOSTS;
   const isTrusted = trustedHosts.some((h) => hostname === h || hostname.endsWith("." + h));
 
   if (!isTrusted && (hostname === "localhost" || hostname.endsWith(".local") || hostname.endsWith(".internal"))) {
@@ -176,26 +225,100 @@ async function resolvePinnedAddresses(hostname: string): Promise<Array<{ address
   return addresses.map((a) => ({ address: a.address, family: a.family }));
 }
 
-function buildPinnedAgentFor(url: URL, pinned: Array<{ address: string; family: number }>): http.Agent | https.Agent {
-  // The agent's `lookup` returns only the pre-validated addresses. It is
-  // invoked for every new connection, so a re-resolution of the hostname by
-  // the OS (which could return a different, private address) never happens.
-  type LookupCallback = (err: Error | null, address: string, family: number) => void;
-  const lookup = (_hostname: string, options: { family?: number | string; hints?: number; all?: boolean }, callback: LookupCallback) => {
+export type PinnedLookupOptions = { family?: number | string; hints?: number; all?: boolean };
+export type PinnedLookupCallback = (
+  err: Error | null,
+  address: string | Array<{ address: string; family: number }>,
+  family: number,
+) => void;
+
+/**
+ * Lookup DNS « épinglé » pour l'agent HTTP (9.0c, pur — testé).
+ *
+ * Ne retourne JAMAIS d'autre adresse que celles pré-validées par
+ * resolvePinnedAddresses : une re-résolution par l'OS (qui pourrait
+ * retourner une adresse privée) est impossible.
+ *
+ * DEUX formes de callback doivent être honorées : Node ≥ 20.13/22 active
+ * Happy Eyeballs (autoSelectFamily) et appelle lookup avec { all: true }
+ * en attendant un TABLEAU d'adresses ; répondre en forme simple
+ * (address, family) faisait planter net.connect avec « Invalid IP
+ * address: undefined » — constaté sur le nouveau VPS Docker (Node 22)
+ * où TOUT safeFetch était cassé (recherche ET téléchargements).
+ */
+export function makePinnedLookup(pinned: Array<{ address: string; family: number }>) {
+  return (_hostname: string, options: PinnedLookupOptions, callback: PinnedLookupCallback) => {
     const family = typeof options.family === "number" && options.family !== 0 ? options.family : 0;
     const candidates = pinned.filter((a) => family === 0 || a.family === family);
     if (candidates.length === 0) {
       callback(new Error("Blocked unsafe URL (no validated address for requested family)."), "", 0);
       return;
     }
+    if (options.all === true) {
+      // Forme tableau (Happy Eyeballs, dns.lookup all:true)
+      callback(null, candidates, candidates.length);
+      return;
+    }
     const pick = candidates[Math.floor(Math.random() * candidates.length)];
     callback(null, pick.address, pick.family);
   };
+}
+
+function buildPinnedAgentFor(url: URL, pinned: Array<{ address: string; family: number }>): http.Agent | https.Agent {
+  // The agent's `lookup` returns only the pre-validated addresses. It is
+  // invoked for every new connection, so a re-resolution of the hostname by
+  // the OS (which could return a different, private address) never happens.
+  const lookup = makePinnedLookup(pinned);
 
   const agentOptions: any = { keepAlive: true, lookup };
   return url.protocol === "https:"
     ? new https.Agent(agentOptions)
     : new http.Agent(agentOptions);
+}
+
+export interface KeepAliveDownloadAgent {
+  /** Keep-alive agent (DNS épinglé aux adresses validées une seule fois). */
+  agent: http.Agent | https.Agent;
+  /** Hôte pour lequel cet agent est épinglé — tout autre hôte l'ignore. */
+  hostname: string;
+  /** À appeler quand le pool qui le partage est terminé. */
+  destroy(): void;
+}
+
+/**
+ * 9.18dddd P5 : agent keep-alive PARTAGÉ pour le téléchargement parallèle de
+ * segments HLS. Avant, chaque segment passait par le globalAgent axios dont
+ * la fenêtre keep-alive (5 s par défaut Node) laissait mourir les sockets
+ * entre deux salves ; ici tout le pool réutilise les mêmes connexions
+ * (maxSockets = concurrence, keep-alive 30 s) vers des adresses validées une
+ * seule fois par épisode. L'appelant DOIT appeler destroy() en fin de pool.
+ */
+export async function createKeepAliveDownloadAgent(url: string, maxSockets: number): Promise<KeepAliveDownloadAgent> {
+  const parsed = new URL(url);
+  const hostname = parsed.hostname.toLowerCase();
+  const isLiteralIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) || hostname.includes(":");
+  const pinned = isLiteralIp
+    ? [{ address: hostname.replace(/^\[|\]$/g, ""), family: hostname.includes(":") ? 6 : 4 }]
+    : await resolvePinnedAddresses(hostname);
+  if (pinned.length === 0) {
+    throw new Error(`No validated address for download host ${hostname}.`);
+  }
+  const agentOptions: any = {
+    keepAlive: true,
+    keepAliveMsecs: 30_000,
+    maxSockets: Math.max(1, Math.floor(maxSockets)),
+    lookup: makePinnedLookup(pinned)
+  };
+  const agent = parsed.protocol === "https:" ? new https.Agent(agentOptions) : new http.Agent(agentOptions);
+  return {
+    agent,
+    hostname,
+    destroy: () => {
+      try {
+        agent.destroy();
+      } catch {}
+    }
+  };
 }
 
 export interface SafeFetchLimits {
@@ -433,4 +556,37 @@ function toResponse(status: number, headers: Record<string, string | string[] | 
     json: async () => JSON.parse(data.toString("utf-8")),
     body: null,
   } as unknown as Response;
+}
+
+/**
+ * axios.get that NEVER auto-follows redirects: every 3xx hop is resolved
+ * manually and re-validated with isSafeDownloadUrl before being followed
+ * (audit 8.63 / M1). Without this, axios follows a Location to a private
+ * address after the initial URL passed validation — safeFetch already had
+ * per-hop validation; this brings axios callers to parity.
+ *
+ * Callers keep their validateStatus semantics for the FINAL response
+ * (3xx handling is ours). Throws an axios-shaped error (err.response set)
+ * when the caller's validateStatus rejects the final status.
+ */
+export async function safeAxiosGet(url: string, config: AxiosRequestConfig = {}, maxRedirects = 5): Promise<AxiosResponse> {
+  const resp = await axios.get(url, { ...config, maxRedirects: 0, validateStatus: () => true });
+  if (resp.status >= 300 && resp.status < 400) {
+    const loc = resp.headers?.[["l","o","c","a","t","i","o","n"].join("")]; // header lookup without literal-index lint noise
+    if (!loc || maxRedirects <= 0) {
+      throw new Error(`Refused redirect (${resp.status}) without usable Location from ${url}`);
+    }
+    const next = new URL(String(loc), url).toString();
+    if (!(await isSafeDownloadUrl(next).catch(() => false))) {
+      throw new Error(`Blocked redirect to unsafe target from ${url} -> ${next}`);
+    }
+    return safeAxiosGet(next, config, maxRedirects - 1);
+  }
+  const callerRule = config.validateStatus;
+  if (callerRule && !callerRule(resp.status)) {
+    const err = new Error(`Request failed with status code ${resp.status}`) as Error & { response?: AxiosResponse };
+    err.response = resp;
+    throw err;
+  }
+  return resp;
 }

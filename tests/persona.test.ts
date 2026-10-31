@@ -1,0 +1,120 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import fs from "fs";
+import { getPersonaPrompt } from "../src/bot/persona.js";
+
+/**
+ * Nebula AI persona (audit 8.37): sober/professional voice, mirrors the
+ * user's language (FR default), WhatsApp-specific delivery rules, original
+ * content. Applied to chat surfaces (.ai + DM); NEBULA_AI_PERSONALITY can
+ * replace the whole persona without a deploy.
+ */
+
+beforeEach(() => {
+  delete process.env.NEBULA_AI_PERSONALITY;
+});
+
+describe("persona — base prompt", () => {
+  it("carries the identity, voice, language, WhatsApp-formatting and boundary sections", () => {
+    const p = getPersonaPrompt("command", "Nebula");
+    for (const expected of [
+      "# Identity",
+      "# Origin",
+      "no personal names, no nationality",
+      "You are NOVA, the AI assistant",
+      "Never invent facts",
+      "default to French",
+      "Do NOT use markdown headers, tables or double asterisks",
+      "under ~120 words",
+      "Never claim to be human"
+    ]) {
+      expect(p).toContain(expected);
+    }
+  });
+
+  it("the bot name fills {{BOT}} — the agent stays NOVA (distinct names, 9.18g)", () => {
+    const p = getPersonaPrompt("command", "DarkStar");
+    expect(p).toContain("inside the DarkStar WhatsApp bot");
+    expect(p).not.toContain("{{BOT}}");
+    expect(p).toContain("You are NOVA"); // le nom de l'agent ne change pas avec le bot
+    expect(p).not.toContain("You are DarkStar");
+  });
+
+  it("9.18g — asked for its name, the agent answers NOVA (never the bot's name)", () => {
+    const p = getPersonaPrompt("dm", "Nebula Bot");
+    expect(p).toContain("Your name is NOVA");
+    expect(p).toContain("you are NOVA, the AI assistant of"); // le crédit d'origine aussi (neutre 9.18hhh)
+  });
+
+  it("9.18g — user-facing surfaces say NOVA (reply header, memory, dashboard)", () => {
+    const ai = fs.readFileSync("src/bot/commands/ai.ts", "utf-8");
+    expect(ai).toContain("🌌 *NOVA*");
+    expect(ai).not.toContain("Nebula AI Assistant");
+    const mem = fs.readFileSync("src/bot/services/aiMemory.ts", "utf-8");
+    expect(mem).toContain('"User" : "NOVA"');
+    const app = fs.readFileSync("src/App.tsx", "utf-8");
+    expect(app).toContain("🧬 NOVA is synthesizing");
+    expect(app).toContain("NOVA Engine");
+  });
+
+  it("adapts the context suffix to the surface (command vs dm)", () => {
+    const command = getPersonaPrompt("command");
+    const dm = getPersonaPrompt("dm");
+    expect(command).toContain(".ai command");
+    expect(dm).toContain("1-on-1 private WhatsApp conversation");
+    expect(command).not.toBe(dm);
+  });
+
+  it("8.98b : le crédit du partenaire IA suit le moteur actif (honnêteté §38)", () => {
+    const saved = process.env.NEBULA_AI_PRIMARY;
+    try {
+      // Moteur NVIDIA NIM (déploiement owner) → NVIDIA, jamais Google/Gemini.
+      process.env.NEBULA_AI_PRIMARY = "nim";
+      const nim = getPersonaPrompt("dm");
+      expect(nim).toContain("from NVIDIA");
+      expect(nim).toContain("NIM (Nemotron)");
+      expect(nim).not.toContain("Google");
+      expect(nim).not.toContain("Gemini");
+      // Moteur Gemini (défaut) → wording d'origine.
+      delete process.env.NEBULA_AI_PRIMARY;
+      const gem = getPersonaPrompt("dm");
+      expect(gem).toContain("from Google");
+      expect(gem).toContain("Gemini");
+      expect(gem).not.toContain("NVIDIA");
+    } finally {
+      if (saved === undefined) delete process.env.NEBULA_AI_PRIMARY;
+      else process.env.NEBULA_AI_PRIMARY = saved;
+    }
+  });
+
+  it("stays compact enough for a system prompt (< 10000 chars, commande IA incluse)", () => {
+    // 8.79 : le bloc de connaissance des commandes (fiche .a + inventaire)
+    // est ajouté au persona — ~7k chars au total restent négligeables pour
+    // un prompt système Gemini/NIM.
+    expect(getPersonaPrompt("dm").length).toBeLessThan(10000);
+  });
+});
+
+describe("persona — operator override", () => {
+  it("NEBULA_AI_PERSONALITY remplace la voix mais PAS la connaissance des commandes (8.79)", () => {
+    process.env.NEBULA_AI_PERSONALITY = "Tu es VEGA, une IA test. Réponds en une phrase.";
+    const p = getPersonaPrompt("dm");
+    expect(p.startsWith("Tu es VEGA, une IA test. Réponds en une phrase.")).toBe(true);
+    expect(p).toContain("# Tes commandes");
+    expect(p).not.toContain("# Identity");
+  });
+
+  it("a whitespace-only override is ignored (falls back to the base)", () => {
+    process.env.NEBULA_AI_PERSONALITY = "   ";
+    expect(getPersonaPrompt("command")).toContain("# Identity");
+  });
+});
+
+describe("persona — wiring of the chat surfaces", () => {
+  it(".ai and both DM call sites use getPersonaPrompt", () => {
+    const ai = fs.readFileSync("src/bot/commands/ai.ts", "utf-8");
+    const engine = fs.readFileSync("src/bot/botEngine.ts", "utf-8");
+    expect(ai).toContain('getPersonaPrompt("command"');
+    // two DM surfaces: the direct-chat handler and the simulator path
+    expect(engine.match(/getPersonaPrompt\("dm"/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+});

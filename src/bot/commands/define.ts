@@ -10,17 +10,19 @@ const defineCommand: BotCommand = {
     const args = context.args || [];
 
     if (!args.length) {
-      return context.reply("❌ Usage: \`.define <word>\`\n\nExample: \`.define ephemeral\` or \`.define serendipity\`");
+      return context.reply("❌ Usage : \`.define <mot>\`\n\nExemple : \`.define ephemeral\` (dictionnaire anglais)");
     }
 
     const word = args.join(" ").trim().toLowerCase();
 
     try {
       const url = `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`;
-      const res = await fetch(url);
+      // 8.84 (audit commandes C4) : timeout dur — avant, un API qui traîne
+      // laissait la commande suspendue plusieurs minutes sans réponse.
+      const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
 
       if (res.status === 404) {
-        return context.reply(`❌ No definition found for *"${word}"*.\nPlease verify spelling (English words only).`);
+        return context.reply(`❌ *Aucune définition trouvée pour « ${word} ».*\nVérifie l\u2019orthographe (dictionnaire anglais).`);
       }
 
       if (!res.ok) {
@@ -56,7 +58,7 @@ const defineCommand: BotCommand = {
       await context.reply(text);
     } catch (error: any) {
       console.error("[DEFINE] Error:", error.message || error);
-      await context.reply("❌ Error trying to retrieve dictionary definition. Please try again later.");
+      await context.reply("❌ *Le dictionnaire est momentanément indisponible.*\n🔄 Réessaie plus tard.");
     }
   }
 };

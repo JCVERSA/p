@@ -23,7 +23,7 @@ export function formatMessageLine(line: string): string {
   // Italic replacements
   formatted = formatted.replace(/_(.*?)_/g, "<em>$1</em>");
   // Monospace replacements
-  formatted = formatted.replace(/`(.*?)`/g, "<code class='bg-black/40 text-amber-300 border border-white/10 px-1 py-0.5 rounded text-[10px] font-mono'>$1</code>");
+  formatted = formatted.replace(/`(.*?)`/g, "<code class='bg-black/40 text-amber-300 border border-white/10 px-1 py-0.5 rounded text-[11px] font-mono'>$1</code>");
   return formatted;
 }
 
@@ -81,20 +81,6 @@ export function parseUsageAndParams(usage: string, cmdName: string, prefix: stri
     example = `${prefix}roast @user`;
   } else if (cmdName === "rps") {
     example = `${prefix}rps rock`;
-  } else if (cmdName === "trivia") {
-    example = `${prefix}trivia`;
-  } else if (cmdName === "truth") {
-    example = `${prefix}truth`;
-  } else if (cmdName === "dare") {
-    example = `${prefix}dare`;
-  } else if (cmdName === "waifu") {
-    example = `${prefix}waifu`;
-  } else if (cmdName === "hidetag") {
-    example = `${prefix}hidetag Hello everyone!`;
-  } else if (cmdName === "antilink") {
-    example = `${prefix}antilink on`;
-  } else if (cmdName === "antitag") {
-    example = `${prefix}antitag on`;
   } else if (cmdName === "help") {
     example = `${prefix}help download`;
   } else {

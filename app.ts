@@ -1,17 +1,20 @@
 import express, { NextFunction, Request, Response } from "express";
 import path from "path";
 import fs from "fs";
-import crypto from "crypto";
 import QRCode from "qrcode";
 import AdmZip from "adm-zip";
 
 import { getConfig, updateConfig } from "./src/bot/config.js";
 import { getCommandsDir, getCommands, getCommand } from "./src/bot/commandRegistry.js";
-import { getBotState, startLiveBot, stopLiveBot, retryLiveConnection, clearSessionAuth, requestPairingCode, addLog, simulateMessage, clearLogs } from "./src/bot/botEngine.js";
+import { getBotState, startLiveBot, stopLiveBot, retryLiveConnection, clearSessionAuth, requestPairingCode, addLog, simulateMessage, clearLogs, runAsOwnerCommand } from "./src/bot/botEngine.js";
+import { getLiveSocket } from "./src/bot/liveSocket.js";
+import { getWelcome, setWelcome, getGoodbye, setGoodbye, listConfiguredGroups } from "./src/bot/services/groupSettingsStore.js";
+import { CARD_PRESETS, isCardPreset, cardAssetPath, renderCard } from "./src/bot/services/cardRenderer.js";
 
 import { getCommandStats } from "./src/bot/commandStats.js";
+import { getAgentHealth, getAgentMetricsTimeline } from "./src/bot/services/agentMetrics.js";
 import { getAIClient, generateTextWithFallback } from "./src/bot/geminiClient.js";
-import { savePanelCommand, getPanelCommandSource } from "./src/bot/panelCommands.js";
+import { savePanelCommand, getPanelCommandSource, exportAllPanelCommands } from "./src/bot/panelCommands.js";
 import { replaceAllPanelCommands } from "./src/bot/panelCommands.js";
 import { replaceStats as replaceCommandStats } from "./src/bot/commandStats.js";
 import { replaceAllPolicies } from "./src/bot/groupAccessStore.js";
@@ -25,13 +28,43 @@ import {
   deleteSecret,
   maskSecret,
 } from "./src/bot/secrets.js";
-import { createPanelAuth } from "./src/bot/panelAuth.js";
-import { getTempDownload, updateServerBaseUrl, cleanupExpiredZipFiles, getTempStorageStats } from "./src/bot/tempDownloadManager.js";
+import { isAIConfigured as isAIEngineConfigured } from "./src/bot/geminiClient.js";
+import {
+  securityHeaders,
+  hostHeaderGuard,
+  createRateLimiter,
+  setupPanelAuth,
+  registerAuthRoutes,
+  protectApiRoutes,
+  registerProjectArchiveRoute,
+} from "./src/panel/httpMiddleware.js";
+import { getTempDownload, touchTempDownload, updateServerBaseUrl, cleanupExpiredZipFiles, getTempStorageStats, getServerBaseUrl } from "./src/bot/tempDownloadManager.js";
 import { getGroupPolicy, setGroupPolicy, listGroupPolicies } from "./src/bot/groupAccessStore.js";
 import { DEFAULT_GROUP_POLICY } from "./src/bot/accessControl.js";
 import { getAuditEvents, clearAudit, recordAudit } from "./src/bot/auditTrail.js";
-import { getBridgeLoadSummary } from "./src/bot/importedBridge.js";
-import { getAIUsageSummary } from "./src/bot/aiQuota.js";
+import { getAIUsageSummary, resetAIQuota, getAIQuotaUsage, setAIQuotaOverrideGetter } from "./src/bot/aiQuota.js";
+import { resetWebQuota, getWebQuotaUsage } from "./src/bot/webQuota.js";
+import { getAsrUsage, resetAsrBudget } from "./src/bot/services/voiceTranscribe.js";
+import {
+  isBannedUser,
+  listGroups,
+  listUsers,
+  setUserAILimit,
+  setUserBanned,
+  setUserMuted,
+  setUserNoAnnounce,
+  setUserNote,
+  getUserAILimit,
+} from "./src/bot/userDirectory.js";
+import { isKnownOwnerLid } from "./src/bot/ownerIdentity.js";
+import {
+  draftAnnouncement,
+  getAnnouncementHistory,
+  getAnnouncementStatus,
+  sendDirectMessage,
+  startAnnouncement,
+} from "./src/bot/services/announcementService.js";
+import { loadSubscriptions, saveSubscriptions, sanitizeWatchSubscriptions } from "./src/bot/services/episodeWatchService.js";
 import {
   getAllBatchJobs,
   getBatchJob,
@@ -50,83 +83,21 @@ import {
 export function createApp(): express.Express {
   const app = express();
   app.set("trust proxy", true);
+
+  // 9.18 (M) — limite IA quotidienne personnalisée par utilisateur : le
+  // répertoire est la source, aiQuota la consomme via résolveur injecté
+  // (aucune dépendance circulaire, défaut = limite globale inchangée).
+  setAIQuotaOverrideGetter((jid) => getUserAILimit(jid));
   app.use(express.json({ limit: "32mb" }));
 
   // ---------------------------------------------------------------------------
-  // Panel authentication
+  // Panel authentication + security headers + Host-header guard (M3).
+  // 8.78: ces blocs sont partagés avec l'app panneau multi-bots
+  // (src/panel/httpMiddleware.ts) — une seule source de vérité.
   // ---------------------------------------------------------------------------
-  // PANEL_TOKEN is the admin access key: it is never exposed to the browser.
-  // The operator logs in once through /api/auth/login; the server issues a
-  // random HttpOnly session cookie. Bearer token remains for API tooling.
-  const configuredToken = process.env.PANEL_TOKEN?.trim() || "";
-  const panelToken = configuredToken || crypto.randomBytes(24).toString("hex");
-  const tokenIsAutoGenerated = !configuredToken;
-
-  // ---------------------------------------------------------------------------
-  // Security headers (M13). No X-Frame-Options/frame-ancestors: the panel is
-  // intentionally embeddable (host platforms iframe it); the CSP still seals
-  // script/style/connect origins. Dev keeps 'unsafe-inline' for Vite's
-  // React-refresh preamble.
-  // ---------------------------------------------------------------------------
-  app.use((_req: Request, res: Response, next: NextFunction) => {
-    const isProd = process.env.NODE_ENV === "production";
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
-    res.setHeader(
-      "Content-Security-Policy",
-      [
-        "default-src 'self'",
-        isProd ? "script-src 'self'" : "script-src 'self' 'unsafe-inline'",
-        "style-src 'self' 'unsafe-inline'",
-        "img-src 'self' data: blob: https:",
-        "media-src 'self' blob: https:",
-        "font-src 'self' data:",
-        "connect-src 'self' ws: wss:",
-        "object-src 'none'",
-        "base-uri 'self'",
-        "form-action 'self'",
-      ].join("; ")
-    );
-    if (_req.secure || String(_req.headers["x-forwarded-proto"] || "") === "https") {
-      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-    }
-    next();
-  });
-
-  const panelAuth = createPanelAuth({
-    configuredToken: panelToken,
-    autoGenerated: tokenIsAutoGenerated,
-    appUrl: process.env.APP_URL,
-  });
-
-  // M3: Host-header validation. When APP_URL is configured, requests with a
-  // Host header that does not match it (or a local/dev proxy address) are
-  // rejected before anything is recorded or served. This blocks Host-header
-  // poisoning of the absolute temp-download URLs and rebinding-style confusion.
-  const allowedHostname = (() => {
-    try {
-      const u = new URL(process.env.APP_URL || "");
-      return u.hostname.toLowerCase();
-    } catch {
-      return "";
-    }
-  })();
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    if (allowedHostname) {
-      const hostHeader = req.get("host") || "";
-      const hostName = hostHeader.split(":")[0].replace(/^\[|\]$/g, "").toLowerCase();
-      // Only the configured public hostname (or loopback for local health
-      // checks / reverse proxies that preserve the public Host) is accepted.
-      const trusted =
-        hostName === allowedHostname || hostName === "localhost" || hostName === "127.0.0.1" || hostName === "::1";
-      if (!trusted) {
-        console.warn(`[Panel] Rejected request with foreign Host header: "${hostHeader}" (allowed: ${allowedHostname})`);
-        return res.status(400).json({ error: "Invalid Host header." });
-      }
-    }
-    next();
-  });
+  const { panelAuth } = setupPanelAuth();
+  app.use(securityHeaders());
+  app.use(hostHeaderGuard());
 
   // Record host for generating valid absolute temporary download URLs.
   app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -152,78 +123,20 @@ export function createApp(): express.Express {
   // Protect all API routes (except the public media links and the auth
   // endpoints themselves) plus the project archive. The SPA shell, static
   // assets and the login page stay public.
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    const isApi = req.path.startsWith("/api/");
-    const isArchive = req.path === "/nebula-bot-latest.zip";
-    if (!isApi && !isArchive) {
-      return next();
-    }
-    if (req.path.startsWith("/api/media/download/") || req.path.startsWith("/d/")) {
-      return next();
-    }
-    if (req.path.startsWith("/api/auth/")) {
-      return next();
-    }
-    panelAuth.requireApiAuth(req, res, next);
-  });
-
-  if (tokenIsAutoGenerated) {
-    console.log(`🔑 Panel access key (auto-generated): ${panelToken}`);
-    console.log("   Use it in the panel login screen, or set PANEL_TOKEN to choose your own.");
-  }
-
-  // Sweep expired sessions periodically so the map cannot grow unbounded.
-  const sessionSweepTimer = setInterval(() => panelAuth.sweep(), 10 * 60 * 1000);
-  sessionSweepTimer.unref();
-
+  protectApiRoutes(app, panelAuth);
 
   // ---------------------------------------------------------------------------
-  // Rate limiting (in-memory fixed window with memory safety ceiling)
+  // Rate limiting (in-memory fixed window with memory safety ceiling) —
+  // implémentation partagée (httpMiddleware.ts).
   // ---------------------------------------------------------------------------
-  const MAX_RATE_LIMIT_KEYS = 5000;
-  const buckets = new Map<string, { count: number; resetAt: number }>();
-
-  function rateLimit(max: number, windowMs: number) {
-    return (req: Request, res: Response, next: NextFunction) => {
-      // Key on the socket peer address (not req.ip): with `trust proxy`,
-      // req.ip trusts the client-supplied X-Forwarded-For chain, which lets
-      // a direct caller rotate identities and bypass the limiter.
-      const peer = req.socket.remoteAddress || "unknown";
-      const key = `${req.path}|${peer}`;
-      const now = Date.now();
-      const bucket = buckets.get(key);
-      if (!bucket || bucket.resetAt < now) {
-        if (buckets.size >= MAX_RATE_LIMIT_KEYS) {
-          // Prune expired buckets first
-          for (const [k, b] of buckets) {
-            if (b.resetAt < now) buckets.delete(k);
-          }
-          // If still over capacity, drop oldest entries to prevent memory exhaustion
-          if (buckets.size >= MAX_RATE_LIMIT_KEYS) {
-            let pruned = 0;
-            for (const k of buckets.keys()) {
-              buckets.delete(k);
-              if (++pruned > 200) break;
-            }
-          }
-        }
-        buckets.set(key, { count: 1, resetAt: now + windowMs });
-        return next();
-      }
-      bucket.count++;
-      if (bucket.count > max) {
-        return res.status(429).json({ error: "Too many requests. Please slow down and try again shortly." });
-      }
-      next();
-    };
-  }
-
-  const generalLimiter = rateLimit(300, 60_000);
-  app.use("/api", generalLimiter);
+  const { rateLimit } = createRateLimiter();
+  app.use("/api", rateLimit(300, 60_000));
 
   // Stricter limits for expensive / abuse-prone routes
   app.post("/api/auth/login", rateLimit(8, 60_000));
   app.post("/api/bot/simulate", rateLimit(30, 60_000));
+  // 9.18xx — télécommande Nova : exécution RÉELLE → plafond horaire dédié.
+  app.post("/api/bot/run", rateLimit(30, 3_600_000));
   app.post("/api/bot/commands/save", rateLimit(10, 60_000));
   app.post("/api/bot/commands/generate", rateLimit(10, 60_000));
   app.get("/api/bot/download-zip", rateLimit(5, 60_000));
@@ -233,15 +146,6 @@ export function createApp(): express.Express {
   app.get("/api/bot/access", rateLimit(30, 60_000));
   app.post("/api/bot/access/:groupJid", rateLimit(20, 60_000));
   app.delete("/api/bot/secrets", rateLimit(10, 60_000));
-
-  // Periodically drop expired buckets so the map cannot grow unbounded.
-  const sweepTimer = setInterval(() => {
-    const now = Date.now();
-    for (const [key, bucket] of buckets) {
-      if (bucket.resetAt < now) buckets.delete(key);
-    }
-  }, 10 * 60 * 1000);
-  sweepTimer.unref();
 
   // ---------------------------------------------------------------------------
   // Configuration helpers
@@ -261,6 +165,23 @@ export function createApp(): express.Express {
     }
     if (typeof input?.ownerNumber === "string") {
       out.ownerNumber = input.ownerNumber.replace(/[^0-9+]/g, "").slice(0, 16);
+    }
+    // 9.18jjj : identité owner du menu, réglable depuis le dashboard. Vide = efface.
+    if (typeof input?.ownerName === "string") {
+      out.ownerName = input.ownerName.trim().slice(0, 40);
+    }
+    if (typeof input?.ownerTelegram === "string") {
+      out.ownerTelegram = input.ownerTelegram.trim().replace(/^@/, "").slice(0, 30);
+    }
+    if (typeof input?.timezone === "string") {
+      const tz = input.timezone.trim();
+      if (!tz) {
+        out.timezone = "UTC";
+      } else if (tz === "UTC" || /^[A-Za-z]+\/[A-Za-z0-9_+-]+$/.test(tz)) {
+        out.timezone = tz.slice(0, 50);
+      } else {
+        throw new Error("Invalid timezone (IANA format expected, e.g. Europe/Paris).");
+      }
     }
     if (typeof input?.botImage === "string" && /^https?:\/\//.test(input.botImage)) {
       out.botImage = input.botImage.slice(0, 500);
@@ -288,32 +209,9 @@ export function createApp(): express.Express {
   }
 
   // ---------------------------------------------------------------------------
-  // API: Panel session management (login / logout / status)
+  // API: Panel session management (login / logout / status) — partagé.
   // ---------------------------------------------------------------------------
-  // Explicitly retired: the old /auth/token endpoint leaked the panel key.
-  // Return 404 instead of letting the SPA fallback answer with the shell.
-  app.get("/auth/token", (_req, res) => {
-    res.status(404).json({ error: "Not found." });
-  });
-
-  app.post("/api/auth/login", (req, res) => {
-    const { token } = req.body ?? {};
-    const result = panelAuth.login(token);
-    if (!result.success || !result.sessionId) {
-      return res.status(401).json({ error: result.error || "Login failed." });
-    }
-    panelAuth.setCookie(res, result.sessionId);
-    res.json({ success: true });
-  });
-
-  app.post("/api/auth/logout", (req, res) => {
-    panelAuth.logout(req, res);
-    res.json({ success: true });
-  });
-
-  app.get("/api/auth/me", (req, res) => {
-    res.json({ authenticated: panelAuth.isAuthenticated(req) });
-  });
+  registerAuthRoutes(app, panelAuth);
 
   // ---------------------------------------------------------------------------
   // API: Get and Update Configuration
@@ -380,19 +278,33 @@ export function createApp(): express.Express {
   // Auth is enforced by the global middleware above; the SPA fetches it with
   // the session cookie, so it still works inside the preview proxy.
   // ---------------------------------------------------------------------------
-  app.get("/nebula-bot-latest.zip", (req, res) => {
-    const zipPath = path.join(process.cwd(), "nebula-bot-latest.zip");
-    if (!fs.existsSync(zipPath)) {
-      return res.status(404).json({ error: "Project archive not available on this deployment." });
-    }
-    res.download(zipPath, "nebula-bot-latest.zip");
-  });
+  registerProjectArchiveRoute(app);
 
   // ---------------------------------------------------------------------------
   // API: Get Connection State & QR Code
   // ---------------------------------------------------------------------------
   app.get("/api/bot/status", (req, res) => {
     res.json(getBotState());
+  });
+
+  // 8.99 — santé de l'agent IA (agrégat 24 h : décisions, dégradations,
+  // latence). Aucun contenu de message. Proxifié par le panneau parent.
+  app.get("/api/bot/agent-health", rateLimit(30, 60_000), (_req, res) => {
+    try {
+      res.json(getAgentHealth(24));
+    } catch {
+      res.status(500).json({ error: "Agent health unavailable." });
+    }
+  });
+
+  // 9.18y (P3) — page Agent du panneau : agrégat 24 h + timeline hornaire
+  // 48 h (compteurs uniquement, aucun contenu de message).
+  app.get("/api/bot/agent-metrics", rateLimit(30, 60_000), (_req, res) => {
+    try {
+      res.json({ health: getAgentHealth(24), timeline: getAgentMetricsTimeline(48) });
+    } catch {
+      res.status(500).json({ error: "Agent metrics unavailable." });
+    }
   });
 
   app.get("/api/bot/qr", async (req, res) => {
@@ -520,6 +432,22 @@ export function createApp(): express.Express {
   });
 
   // ---------------------------------------------------------------------------
+  // API: Télécommande Nova (9.18xx) — exécution RÉELLE comme owner.
+  // Les réponses partent dans le chat WhatsApp de l'owner (canal naturel).
+  // ---------------------------------------------------------------------------
+  app.post("/api/bot/run", async (req, res) => {
+    const { text } = req.body;
+    if (typeof text !== "string" || !text.trim()) {
+      return res.status(400).json({ error: "Message text is required." });
+    }
+    if (text.length > 500) {
+      return res.status(400).json({ error: "Message text is too long (max 500 characters)." });
+    }
+    const result = await runAsOwnerCommand(text);
+    res.status(result.ok ? 200 : 422).json(result);
+  });
+
+  // ---------------------------------------------------------------------------
   // API: List Commands (deduplicated by the registry)
   // ---------------------------------------------------------------------------
   app.get("/api/bot/commands", (req, res) => {
@@ -565,6 +493,84 @@ export function createApp(): express.Express {
   });
 
   // ---------------------------------------------------------------------------
+  // API: Welcome/Goodbye cards par groupe (9.18pppp — owner, dashboard)
+  // ---------------------------------------------------------------------------
+  // NB : la route /preview doit être déclarée AVANT /:groupJid, sinon Express
+  // matcherait "preview" comme un identifiant de groupe.
+  app.get("/api/bot/group-cards/preview/:preset/:kind", rateLimit(30, 60_000), async (req, res) => {
+    const preset = String(req.params.preset || "");
+    const kind = String(req.params.kind || "") === "goodbye" ? "goodbye" : "welcome";
+    if (!isCardPreset(preset)) return res.status(404).json({ error: "Unknown preset." });
+    const asset = cardAssetPath(preset, kind);
+    if (asset) return res.sendFile(asset);
+    const group = String(req.query.group || "Ton Groupe").slice(0, 40);
+    const user = String(req.query.user || "Membre Test").slice(0, 40);
+    const buf = await renderCard({ kind, preset, userName: user, userNumber: "237600000000", groupName: group, memberCount: 42 });
+    if (!buf) return res.status(503).json({ error: "Card renderer unavailable on this host." });
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "no-cache");
+    res.send(buf);
+  });
+
+  app.get("/api/bot/group-cards", rateLimit(30, 60_000), async (_req, res) => {
+    const groups = new Map<string, string>();
+    try {
+      const live = getLiveSocket();
+      const all = live && typeof live.groupFetchAllParticipating === "function" ? await live.groupFetchAllParticipating() : null;
+      if (all && typeof all === "object") {
+        for (const [jid, meta] of Object.entries(all as Record<string, any>)) {
+          groups.set(jid, String((meta as any)?.subject || jid));
+        }
+      }
+    } catch {
+      /* socket absent / méthode indisponible — liste de repli ci-dessous */
+    }
+    for (const gid of listConfiguredGroups()) if (!groups.has(gid)) groups.set(gid, gid);
+    const configs: Record<string, { welcome: unknown; goodbye: unknown }> = {};
+    for (const gid of groups.keys()) configs[gid] = { welcome: getWelcome(gid), goodbye: getGoodbye(gid) };
+    res.json({
+      presets: CARD_PRESETS,
+      groups: [...groups.entries()].map(([jid, name]) => ({ jid, name })),
+      configs,
+    });
+  });
+
+  app.get("/api/bot/group-cards/:groupJid", rateLimit(30, 60_000), (req, res) => {
+    res.json({ groupJid: req.params.groupJid, welcome: getWelcome(req.params.groupJid), goodbye: getGoodbye(req.params.groupJid) });
+  });
+
+  app.put("/api/bot/group-cards/:groupJid", rateLimit(20, 60_000), (req, res) => {
+    try {
+      const body = req.body || {};
+      const apply = (which: "welcome" | "goodbye"): Record<string, unknown> | null => {
+        const b = body[which];
+        if (!b || typeof b !== "object") return null;
+        const patch: Record<string, unknown> = {};
+        if (typeof b.enabled === "boolean") patch.enabled = b.enabled;
+        if (typeof b.text === "string") patch.text = b.text.slice(0, 400);
+        if (b.card && typeof b.card === "object") {
+          const card: Record<string, unknown> = {};
+          if (typeof b.card.enabled === "boolean") card.enabled = b.card.enabled;
+          if (typeof b.card.preset === "string") {
+            if (!isCardPreset(b.card.preset)) throw new Error(`Preset inconnu : ${b.card.preset}`);
+            card.preset = b.card.preset;
+          }
+          patch.card = card;
+        }
+        return Object.keys(patch).length > 0 ? patch : null;
+      };
+      const w = apply("welcome");
+      if (w) setWelcome(req.params.groupJid, w as any);
+      const g = apply("goodbye");
+      if (g) setGoodbye(req.params.groupJid, g as any);
+      addLog(`🖼️ [Group Cards] Config updated for ${req.params.groupJid}`);
+      res.json({ groupJid: req.params.groupJid, welcome: getWelcome(req.params.groupJid), goodbye: getGoodbye(req.params.groupJid) });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || "Invalid card config." });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
   // API: Security audit trail (bounded ring, append-only to server)
   // ---------------------------------------------------------------------------
   app.get("/api/bot/audit", rateLimit(30, 60_000), (req, res) => {
@@ -590,6 +596,14 @@ export function createApp(): express.Express {
       exportedAt: new Date().toISOString(),
       config: cfg,
       aiUsage: getAIUsageSummary(),
+      // B1 fix (2026-09-01): the export used to omit every section the
+      // restore could apply — backups were near-useless. Now lossless for:
+      groups: database.getAllGroups(),
+      warnings: database.getAllWarnings(),
+      stats: getCommandStats(),
+      accessPolicies: listGroupPolicies(),
+      panelCommands: exportAllPanelCommands(),
+      watchSubscriptions: loadSubscriptions()
     });
   });
 
@@ -619,6 +633,11 @@ export function createApp(): express.Express {
       if (body.accessPolicies && typeof body.accessPolicies === "object") {
         applied.push(`policies:${replaceAllPolicies(body.accessPolicies)}`);
       }
+      if (Array.isArray(body.watchSubscriptions)) {
+        const clean = sanitizeWatchSubscriptions(body.watchSubscriptions);
+        saveSubscriptions(clean);
+        applied.push(`watch:${clean.length}`);
+      }
       if (Array.isArray(body.panelCommands)) {
         const result = replaceAllPanelCommands(body.panelCommands);
         applied.push(`commands:${result.count}`);
@@ -639,6 +658,365 @@ export function createApp(): express.Express {
   // ---------------------------------------------------------------------------
   app.get("/api/bot/analytics", (req, res) => {
     res.json({ stats: getCommandStats(), aiUsage: getAIUsageSummary() });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 9.16 — Répertoire utilisateurs + annonces (gestionnaire users, sélection
+  // DM/groupes, envoi progressif anti-ban, brouillon IA, historique).
+  // ---------------------------------------------------------------------------
+  app.get("/api/bot/users", rateLimit(30, 60_000), (req, res) => {
+    // 9.16b — flag isOwner par fiche : digits OWNER_NUMBER (multi-candidats),
+    // LID owner reconnu ce cycle de vie, ou NEBULA_OWNER_LID (froid).
+    const ownerCandidates = String(process.env.OWNER_NUMBER || getConfig().ownerNumber || "")
+      .split(/[^0-9]+/)
+      .filter(Boolean);
+    const lidOwners = String(process.env.NEBULA_OWNER_LID || "").split(/[^0-9]+/).filter(Boolean);
+    const isOwnerJid = (jid: string): boolean => {
+      const d = jid.split("@")[0].replace(/[^0-9]/g, "");
+      return (ownerCandidates.length > 0 || lidOwners.length > 0) && (ownerCandidates.includes(d) || lidOwners.includes(d) || isKnownOwnerLid(jid));
+    };
+    // Auto-guérison : un owner banni (test terrain 9.16b) est réhabilité —
+    // le gate moteur l'ignorait de toute façon, l'état affiché était un mensonge.
+    for (const u of listUsers()) {
+      if (u.banned && isOwnerJid(u.jid)) {
+        setUserBanned(u.jid, false);
+        recordAudit("panel", "user.auto-unban-owner", u.jid, "le propriétaire ne peut pas être banni — état auto-corrigé");
+      }
+    }
+    // 9.17 (audit J-3) — pagination + recherche + segment CÔTÉ SERVEUR :
+    // renoyer tout le répertoire à chaque polling ne passe pas à l'échelle.
+    // 9.18 — isBannedUser() applique l'expiration paresseuse des bans temporaires.
+    const all = listUsers().map((u) => {
+      isBannedUser(u.jid);
+      return { ...u, isOwner: isOwnerJid(u.jid) };
+    });
+    const weekAgo = Date.now() - 7 * 86400_000;
+    const monthAgo = Date.now() - 30 * 86400_000;
+    const counts = {
+      all: all.length,
+      active7d: all.filter((u) => u.lastSeen >= weekAgo && !u.banned).length,
+      new30d: all.filter((u) => u.firstSeen >= monthAgo && !u.banned).length,
+      banned: all.filter((u) => u.banned).length,
+    };
+    const segment = String(req.query.segment || "all");
+    const q = String(req.query.q || "").trim().toLowerCase();
+    let filtered = all;
+    if (segment === "active7d") filtered = filtered.filter((u) => u.lastSeen >= weekAgo && !u.banned);
+    else if (segment === "new30d") filtered = filtered.filter((u) => u.firstSeen >= monthAgo && !u.banned);
+    else if (segment === "banned") filtered = filtered.filter((u) => u.banned);
+    else filtered = filtered.filter((u) => !u.banned); // « Tous » = non bannis
+    if (q) {
+      filtered = filtered.filter(
+        (u) => u.jid.toLowerCase().includes(q) || (u.name || "").toLowerCase().includes(q)
+      );
+    }
+    // 9.18 (G) — tri côté serveur (activité par défaut).
+    const SORTS: Record<string, (x: typeof all[number], y: typeof all[number]) => number> = {
+      lastSeen: (x, y) => y.lastSeen - x.lastSeen,
+      firstSeen: (x, y) => y.firstSeen - x.firstSeen,
+      messageCount: (x, y) => y.messageCount - x.messageCount,
+      commandCount: (x, y) => y.commandCount - x.commandCount,
+      name: (x, y) => String(x.name || "").localeCompare(String(y.name || "")),
+    };
+    const sortField = String(req.query.sort || "lastSeen");
+    const sortDir = String(req.query.sortDir || "desc") === "asc" ? "asc" : "desc";
+    const cmp = SORTS[sortField] || SORTS.lastSeen;
+    const sorted = [...filtered].sort(cmp);
+    if (sortDir === "asc") sorted.reverse();
+
+    const total = filtered.length;
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    // 9.18 (B) — usage des quotas du jour, joint par fiche.
+    const page = sorted.slice(offset, offset + limit).map((u) => ({
+      ...u,
+      quota: { ai: getAIQuotaUsage(u.jid), web: getWebQuotaUsage(u.jid), asr: getAsrUsage(u.jid) },
+    }));
+    res.json({
+      users: page,
+      groups: listGroups().slice(0, 500),
+      total,
+      counts,
+      limit,
+      offset,
+    });
+  });
+
+  app.post("/api/bot/users/action", rateLimit(20, 60_000), async (req, res) => {
+    const jid = String(req.body?.jid || "").trim();
+    const action = String(req.body?.action || "").trim();
+    if (!jid || !/^[0-9a-zA-Z@.:_-]+$/.test(jid)) {
+      res.status(400).json({ error: "jid invalide" });
+      return;
+    }
+    // Garde propriétaire : OWNER_NUMBER ne peut jamais être banni (par jid
+    // téléphone — la porte moteur bypass en plus tout ban pour l'owner).
+    // 9.16b : la garde couvre AUSSI le LID de l'owner (masquage du numéro) —
+    // reconnu via la mémoire du moteur ou NEBULA_OWNER_LID.
+    const ownerDigits = String(process.env.OWNER_NUMBER || getConfig().ownerNumber || "").replace(/[^0-9]/g, "");
+    const jidDigits = jid.split("@")[0].replace(/[^0-9]/g, "");
+    const ownerLidDigits = String(process.env.NEBULA_OWNER_LID || "").replace(/[^0-9]/g, "");
+    if ((ownerDigits && ownerDigits === jidDigits) || (ownerLidDigits && ownerLidDigits === jidDigits) || isKnownOwnerLid(jid)) {
+      if (action === "ban" || action === "mute") {
+        res.status(400).json({ error: "le propriétaire ne peut pas être banni ni mis en sourdine" });
+        return;
+      }
+    }
+    if (action === "ban" || action === "unban") {
+      let hours: number | undefined;
+      if (action === "ban") {
+        const raw = Number(req.body?.hours);
+        if (req.body?.hours !== undefined && req.body?.hours !== null && req.body?.hours !== 0 && (!Number.isFinite(raw) || raw < 1 || raw > 720)) {
+          res.status(400).json({ error: "durée invalide (heures, 1-720, ou 0/vide = permanent)" });
+          return;
+        }
+        hours = Number.isFinite(raw) && raw > 0 ? raw : undefined;
+      }
+      const reason = action === "ban" ? String(req.body?.reason || "").slice(0, 200) : undefined;
+      const ok = setUserBanned(jid, action === "ban", { reason, hours });
+      if (!ok) {
+        res.status(404).json({ error: "utilisateur inconnu du répertoire" });
+        return;
+      }
+      recordAudit(
+        "panel",
+        action === "ban" ? "user.ban" : "user.unban",
+        jid,
+        action === "ban"
+          ? `banni depuis le dashboard${reason ? ` — motif : ${reason}` : ""}${hours ? ` — pendant ${hours} h` : " — permanent"}`
+          : "réhabilité depuis le dashboard"
+      );
+      res.json({ ok: true, banned: action === "ban" });
+      return;
+    }
+    if (action === "note") {
+      const text = String(req.body?.text ?? "");
+      if (text.length > 300) {
+        res.status(400).json({ error: "note trop longue (max 300 caractères)" });
+        return;
+      }
+      if (!setUserNote(jid, text)) {
+        res.status(404).json({ error: "utilisateur inconnu du répertoire" });
+        return;
+      }
+      recordAudit("panel", "user.note", jid, text ? "note mise à jour" : "note effacée");
+      res.json({ ok: true });
+      return;
+    }
+    if (action === "mute" || action === "unmute") {
+      if (!setUserMuted(jid, action === "mute")) {
+        res.status(404).json({ error: "utilisateur inconnu du répertoire" });
+        return;
+      }
+      recordAudit("panel", action === "mute" ? "user.mute" : "user.unmute", jid, "sourdine IA — commandes conservées");
+      res.json({ ok: true, muted: action === "mute" });
+      return;
+    }
+    if (action === "optout" || action === "optin") {
+      if (!setUserNoAnnounce(jid, action === "optout")) {
+        res.status(404).json({ error: "utilisateur inconnu du répertoire" });
+        return;
+      }
+      recordAudit("panel", action === "optout" ? "user.optout" : "user.optin", jid, "préférence annonces");
+      res.json({ ok: true, noAnnounce: action === "optout" });
+      return;
+    }
+    if (action === "set-ai-limit") {
+      const raw = req.body?.limit;
+      const limit = raw === null || raw === "" || raw === undefined ? null : Number(raw);
+      if (limit !== null && (!Number.isFinite(limit) || limit < 1 || limit > 500)) {
+        res.status(400).json({ error: "limite invalide (1-500 requêtes/jour, ou null = limite globale)" });
+        return;
+      }
+      if (!setUserAILimit(jid, limit)) {
+        res.status(404).json({ error: "utilisateur inconnu du répertoire" });
+        return;
+      }
+      recordAudit("panel", "user.ai-limit", jid, limit ? `limite IA quotidienne : ${limit}` : "limite IA globale rétablie");
+      res.json({ ok: true, limit });
+      return;
+    }
+    if (action === "reset-quota") {
+      const resetAI = resetAIQuota(jid);
+      const resetWeb = resetWebQuota(jid);
+      const resetASR = resetAsrBudget(jid);
+      recordAudit("panel", "user.reset-quota", jid, "quotas IA/web/vocal remis à zéro");
+      res.json({ ok: true, reset: { ai: resetAI, web: resetWeb, asr: resetASR } });
+      return;
+    }
+    if (action === "dm") {
+      const text = String(req.body?.text || "").trim();
+      if (!text || text.length > 4000) {
+        res.status(400).json({ error: "message vide ou trop long (max 4000)" });
+        return;
+      }
+      try {
+        await sendDirectMessage(jid, text);
+        recordAudit("panel", "user.dm", jid, "DM envoyé depuis le dashboard");
+        res.json({ ok: true });
+      } catch (err: any) {
+        res.status(503).json({ error: err?.message || "envoi impossible" });
+      }
+      return;
+    }
+    res.status(400).json({ error: "action inconnue (ban|unban|reset-quota|dm)" });
+  });
+
+  // 9.18 (E) — actions groupées : une seule requête pour ≤200 jids.
+  app.post("/api/bot/users/action-bulk", rateLimit(10, 60_000), (req, res) => {
+    const jids = (Array.isArray(req.body?.jids) ? req.body.jids : [])
+      .map((j: unknown) => String(j || "").trim())
+      .filter((j: string) => /^[0-9a-zA-Z@.:_-]+$/.test(j))
+      .slice(0, 200);
+    const action = String(req.body?.action || "");
+    const allowed = ["ban", "unban", "mute", "unmute", "reset-quota", "optout", "optin"];
+    if (!jids.length) {
+      res.status(400).json({ error: "aucun jid valide" });
+      return;
+    }
+    if (!allowed.includes(action)) {
+      res.status(400).json({ error: "action inconnue (ban|unban|mute|unmute|reset-quota|optout|optin)" });
+      return;
+    }
+    const reason = String(req.body?.reason || "").slice(0, 200);
+    const rawHours = Number(req.body?.hours);
+    const hours = Number.isFinite(rawHours) && rawHours > 0 ? rawHours : undefined;
+    const ownerDigits = String(process.env.OWNER_NUMBER || getConfig().ownerNumber || "").replace(/[^0-9]/g, "");
+    let applied = 0;
+    let skippedOwner = 0;
+    let notFound = 0;
+    for (const jid of jids) {
+      const jidDigits = jid.split("@")[0].replace(/[^0-9]/g, "");
+      const isOwnerJid = (ownerDigits && ownerDigits === jidDigits) || isKnownOwnerLid(jid);
+      if (isOwnerJid && (action === "ban" || action === "mute")) {
+        skippedOwner += 1;
+        continue;
+      }
+      let ok = true;
+      if (action === "ban") ok = setUserBanned(jid, true, { reason, hours });
+      else if (action === "unban") ok = setUserBanned(jid, false);
+      else if (action === "mute") ok = setUserMuted(jid, true);
+      else if (action === "unmute") ok = setUserMuted(jid, false);
+      else if (action === "optout") ok = setUserNoAnnounce(jid, true);
+      else if (action === "optin") ok = setUserNoAnnounce(jid, false);
+      else if (action === "reset-quota") {
+        resetAIQuota(jid);
+        resetWebQuota(jid);
+        resetAsrBudget(jid);
+      }
+      if (!ok) notFound += 1;
+      else applied += 1;
+    }
+    recordAudit(
+      "panel",
+      `user.bulk-${action}`,
+      `${applied} jid(s)`,
+      `owner ignoré(s) : ${skippedOwner}, inconnu(s) : ${notFound}${reason ? ` — motif : ${reason}` : ""}`
+    );
+    res.json({ ok: true, applied, skippedOwner, notFound });
+  });
+
+  // 9.18 (H) — export CSV de la liste filtrée (mêmes filtres que la liste).
+  app.get("/api/bot/users/export", rateLimit(5, 60_000), (req, res) => {
+    const segment = String(req.query.segment || "all");
+    const q = String(req.query.q || "").trim().toLowerCase();
+    const weekAgo = Date.now() - 7 * 86400_000;
+    const monthAgo = Date.now() - 30 * 86400_000;
+    let filtered = listUsers();
+    if (segment === "active7d") filtered = filtered.filter((u) => u.lastSeen >= weekAgo && !u.banned);
+    else if (segment === "new30d") filtered = filtered.filter((u) => u.firstSeen >= monthAgo && !u.banned);
+    else if (segment === "banned") filtered = filtered.filter((u) => u.banned);
+    else filtered = filtered.filter((u) => !u.banned);
+    if (q) {
+      filtered = filtered.filter((u) => u.jid.toLowerCase().includes(q) || (u.name || "").toLowerCase().includes(q));
+    }
+    const esc = (v: unknown): string => {
+      const s = String(v ?? "");
+      return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = "jid;nom;numero_resolu;premier_contact;derniere_activite;messages;commandes;banni;motif;note;muet;refuse_annonces";
+    const rows = filtered.slice(0, 5000).map((u) =>
+      [
+        u.jid,
+        u.name,
+        u.resolvedNumber || "",
+        new Date(u.firstSeen).toISOString(),
+        new Date(u.lastSeen).toISOString(),
+        u.messageCount,
+        u.commandCount,
+        u.banned ? (u.bannedUntil ? `jusqu_a ${new Date(u.bannedUntil).toISOString()}` : "permanent") : "",
+        u.banReason || "",
+        u.note || "",
+        u.muted ? "oui" : "",
+        u.noAnnounce ? "oui" : "",
+      ]
+        .map(esc)
+        .join(";")
+    );
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="nebula_users.csv"');
+    res.send("\uFEFF" + header + "\n" + rows.join("\n"));
+  });
+
+  // 9.18 (I) — fiche détail : quotas complets + historique d'actions (audit).
+  app.get("/api/bot/users/:jid/detail", rateLimit(30, 60_000), (req, res) => {
+    const jid = String(req.params.jid || "");
+    if (!/^[0-9a-zA-Z@.:_-]+$/.test(jid)) {
+      res.status(400).json({ error: "jid invalide" });
+      return;
+    }
+    const found = listUsers().find((u) => u.jid === jid);
+    if (!found) {
+      res.status(404).json({ error: "utilisateur inconnu du répertoire" });
+      return;
+    }
+    isBannedUser(jid); // expiration paresseuse d'un ban temporaire
+    const fresh = listUsers().find((u) => u.jid === jid) || found;
+    const audit = getAuditEvents(500)
+      .filter((e: { target?: string }) => e.target === jid)
+      .slice(0, 50);
+    res.json({
+      user: fresh,
+      quota: { ai: getAIQuotaUsage(jid), web: getWebQuotaUsage(jid), asr: getAsrUsage(jid) },
+      audit,
+    });
+  });
+
+  app.post("/api/bot/announce", rateLimit(5, 60_000), (req, res) => {
+    const text = String(req.body?.text || "");
+    const rawTargets: unknown[] = Array.isArray(req.body?.targets) ? req.body.targets : [];
+    // 9.18 (F) — le refus d'annonces est appliqué CÔTÉ SERVEUR (défense en
+    // profondeur : même une UI compromise ne contourne pas l'opt-out).
+    const dirUser = new Map(listUsers().map((u) => [u.jid, u]));
+    const optedOut = rawTargets
+      .map((t) => String(t))
+      .filter((t) => !t.endsWith("@g.us") && dirUser.get(t)?.noAnnounce);
+    const targets = rawTargets.map((t) => String(t)).filter((t) => !optedOut.includes(t));
+    const result = startAnnouncement(text, targets);
+    if (!result.ok) {
+      res.status(result.error.includes("en cours") ? 409 : 400).json({ error: result.error });
+      return;
+    }
+    recordAudit("panel", "announce.start", result.id, `${result.total} destinataire(s)${optedOut.length ? `, ${optedOut.length} opt-out ignoré(s)` : ""}`);
+    res.json({ ok: true, id: result.id, total: result.total, skippedOptOut: optedOut.length });
+  });
+
+  app.get("/api/bot/announce/status", rateLimit(30, 60_000), (_req, res) => {
+    res.json({ job: getAnnouncementStatus(), history: getAnnouncementHistory() });
+  });
+
+  app.post("/api/bot/announce/draft", rateLimit(10, 60_000), async (req, res) => {
+    const idea = String(req.body?.idea || "");
+    if (!isAIEngineConfigured()) {
+      res.status(503).json({ error: "aucune clé IA configurée (Gemini ou NIM)" });
+      return;
+    }
+    const result = await draftAnnouncement(idea, (prompt) => generateTextWithFallback(prompt));
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true, text: result.text });
   });
 
   // ---------------------------------------------------------------------------
@@ -666,19 +1044,6 @@ export function createApp(): express.Express {
       }
     }
 
-    const bridge = getBridgeLoadSummary();
-    tests.push({
-      name: "Vendored Command Bridge",
-      category: "registry",
-      status: bridge.skipped === 0 ? "pass" : "warn",
-      latencyMs: 1,
-      message:
-        bridge.skipped === 0
-          ? `${bridge.loaded} imported commands loaded; no missing native dependencies.`
-          : `${bridge.skipped} vendored commands skipped (missing native dependencies / load errors). This is expected if whatsapp-rust-bridge is not installed — the menu omits them.`,
-      details: { loaded: bridge.loaded, skipped: bridge.skipped, skippedFiles: bridge.skippedFiles.slice(0, 12) },
-    });
-
     tests.push({
       name: "Command Registry Validation",
       category: "registry",
@@ -698,9 +1063,10 @@ export function createApp(): express.Express {
     try {
       const testGroupId = "diagnostic_healthcheck@g.us";
       const initialSettings = database.getGroupSettings(testGroupId);
-      database.updateGroupSettings(testGroupId, { antilink: true });
+      // 8.61: moderation fields are gone — probe with `welcome` instead.
+      database.updateGroupSettings(testGroupId, { welcome: !initialSettings.welcome });
       const readBack = database.getGroupSettings(testGroupId);
-      const isDbOk = readBack.antilink === true;
+      const isDbOk = readBack.welcome === !initialSettings.welcome;
 
       // Revert test write
       database.updateGroupSettings(testGroupId, initialSettings);
@@ -724,20 +1090,19 @@ export function createApp(): express.Express {
     }
 
     // 3. Dependency & Codec Verification
+    // Runtime dependencies that actually exist (8.61): the historical list
+    // named seven packages removed from package.json and a "whatsapp-rust-
+    // bridge" that never existed — every check was a guaranteed false fail.
     const depsToCheck = [
       { name: "@whiskeysockets/baileys", label: "WhatsApp Multi-Device Engine" },
       { name: "@google/genai", label: "Gemini AI Official SDK" },
-      { name: "fluent-ffmpeg", label: "FFmpeg Audio/Video Converter" },
-      { name: "ffmpeg-static", label: "Static FFmpeg Binary Wrapper" },
-      { name: "node-webpmux", label: "WebP / Sticker Codec Tools" },
-      { name: "mumaker", label: "Textmaker Graphics Generator" },
-      { name: "@bochilteam/scraper", label: "Entertainment & Media Scrapers" },
-      { name: "@vitalets/google-translate-api", label: "Google Multi-Language Translate" },
+      { name: "express", label: "Control Panel Server" },
+      { name: "axios", label: "HTTP Client" },
+      { name: "cheerio", label: "HTML Parser" },
       { name: "qrcode", label: "WhatsApp QR Image Engine" },
+      { name: "yt-search", label: "YouTube Search" },
+      { name: "ruhend-scraper", label: "Instagram Downloader Engine" },
       { name: "adm-zip", label: "Project Archive & Deployment Packager" },
-      { name: "ytdl-core", label: "YouTube Stream Downloader" },
-      { name: "ruhend-scraper", label: "Extended Media Scraper Engine" },
-      { name: "whatsapp-rust-bridge", label: "Native WhatsApp Rust Bridge (imported commands)" },
     ];
 
     const depResults = depsToCheck.map(dep => {
@@ -791,9 +1156,8 @@ export function createApp(): express.Express {
       });
     }
 
-    // 5. AI Engine Subsystem
-    const apiKey = process.env.GEMINI_API_KEY;
-    const isAiConfigured = Boolean(apiKey && apiKey !== "MY_GEMINI_API_KEY" && apiKey.trim() !== "");
+    // 5. AI Engine Subsystem (Gemini primary, NVIDIA NIM fallback — 8.35)
+    const isAiConfigured = isAIEngineConfigured();
     tests.push({
       name: "Gemini AI Engine Subsystem",
       category: "ai",
@@ -894,6 +1258,14 @@ export function createApp(): express.Express {
   // ---------------------------------------------------------------------------
   // API: Get details or code of a single command
   // ---------------------------------------------------------------------------
+  // 8.84 (audit commandes C3) : certains built-ins vivent dans un fichier
+  // source dont le nom diffère de la commande enregistrée (novabox.ts
+  // exporte la commande « anime » — anime.ts est la fiche MyAnimeList,
+  // un AUTRE built-in).
+  const COMMAND_SOURCE_FILE_OVERRIDES: Record<string, string> = {
+    anime: "novabox.ts",
+  };
+
   app.get("/api/bot/commands/:name", (req, res) => {
     const cmdName = req.params.name.toLowerCase();
     const cmd = getCommand(cmdName);
@@ -901,22 +1273,28 @@ export function createApp(): express.Express {
       return res.status(404).json({ error: "Command not found." });
     }
 
+    // Alias-safe : on résout toujours vers la VRAIE commande (demander « a »
+    // montre le source de « anime », pas un fichier a.ts inexistant).
+    const realName = cmd.name.toLowerCase();
+
     // Panel-authored commands live in the data store; built-ins on disk.
-    let code = getPanelCommandSource(cmdName) || "";
+    let code = getPanelCommandSource(realName) || "";
 
     if (!code) {
-      const filePath = path.join(getCommandsDir(), `${cmdName}.ts`);
+      const sourceFile = COMMAND_SOURCE_FILE_OVERRIDES[realName] || `${realName}.ts`;
+      const filePath = path.join(getCommandsDir(), sourceFile);
       if (fs.existsSync(filePath)) {
         code = fs.readFileSync(filePath, "utf-8");
-      } else {
-      // Return structured representation if file not on disk
-        code = `import { BotCommand } from "../types.js";\n\n// Autogenerated dynamic code fallback\nconst cmd: BotCommand = {\n  name: "${cmd.name}",\n  category: "${cmd.category}",\n  description: "${cmd.description}",\n  execute: async (sock, msg, context) => {\n    await context.reply("Hello from ${cmd.name}!");\n  }\n};\nexport default cmd;`;
       }
     }
 
+    // 8.84 (C3) : plus de FAUX code autogénéré — si le source n'est pas
+    // lisible, on le dit honnêtement (l'éditeur s'ouvre vide et la route
+    // save refuse un code vide : aucun risque de « sauver » le faux code).
     res.json({
       ...cmd,
-      code
+      code,
+      codeNote: code ? undefined : "Source non disponible pour cette commande intégrée.",
     });
   });
 
@@ -999,9 +1377,8 @@ export function createApp(): express.Express {
       return res.status(400).json({ error: "Security Guardrail: Prompt contains content that violates safe dynamic generation guidelines." });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey.trim() === "") {
-      return res.status(400).json({ error: "Gemini API key is not configured. Please add it to Settings > Secrets." });
+    if (!isAIEngineConfigured()) {
+      return res.status(400).json({ error: "No AI engine configured. Please add GEMINI_API_KEY or NVIDIA_NIM_API_KEY to Settings > Secrets." });
     }
 
     const cleanName = commandName.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -1631,8 +2008,84 @@ The \`.env\` file contains a placeholder API key. Set your real \`GEMINI_API_KEY
       return res.status(410).json({ error: "This temporary download link has expired or is invalid." });
     }
 
+    // 8.83 — TTL glissant : chaque téléchargement (GET/HEAD, requêtes range
+    // incluses) relance le délai d'expiration de ce fichier.
+    touchTempDownload(token);
+
     // Increment download counter
     record.downloadCount = (record.downloadCount || 0) + 1;
+
+    // 9.18oooo (quick win) — aperçu de lien WhatsApp (OpenGraph) : les
+    // navigations navigateur et les robots d'aperçu reçoivent une PAGE DE
+    // GARDE avec balises OG (titre, taille, vignette) au lieu d'un fichier
+    // brut que WhatsApp ne sait pas présenter. TOUT le reste continue de
+    // recevoir le fichier inchangé : Range (lecteurs vidéo), HEAD (sondes de
+    // la page épisodes), ?inline=true (page hébergée ffff), ?dl=1 (bouton de
+    // la page), iframes (Sec-Fetch-Dest: iframe — téléchargements groupés de
+    // la page épisodes) et clients sans Accept: text/html (curl, axios,
+    // Baileys, fetch blob du dashboard).
+    const acceptHeader = String(req.headers.accept || "");
+    const secFetchDest = req.headers["sec-fetch-dest"];
+    const wantsLandingPage =
+      req.method === "GET" &&
+      !req.headers.range &&
+      req.query.inline !== "true" &&
+      req.query.dl === undefined && // ?dl=1 (bouton de la page) → fichier brut
+      acceptHeader.includes("text/html") &&
+      (secFetchDest === undefined || String(secFetchDest) === "document");
+    if (wantsLandingPage) {
+      const escapeHtmlAttr = (v: string) =>
+        String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+      const fname = escapeHtmlAttr(record.filename);
+      const sizeMB = (record.sizeBytes / 1048576).toFixed(1).replace(".", ",");
+      const isVideo = String(record.mimeType || "").startsWith("video/");
+      const base = getServerBaseUrl();
+      const baseForRaw = getServerBaseUrl();
+      const rawUrl = `${baseForRaw || req.baseUrl || ""}/api/media/download/${token}`;
+      const ogImage = base ? `${base}/apple-touch-icon.png` : "";
+      const ogVideoTags = isVideo
+        ? `<meta property="og:video" content="${escapeHtmlAttr(`${rawUrl}?inline=true`)}">\n` +
+          `<meta property="og:video:secure_url" content="${escapeHtmlAttr(`${rawUrl}?inline=true`)}">\n` +
+          `<meta property="og:video:type" content="${escapeHtmlAttr(record.mimeType || "video/mp4")}">\n`
+        : "";
+      const playBtn = isVideo
+        ? `<a class="ghost" href="?inline=true">▶️ Lire dans le navigateur</a>`
+        : "";
+      return res.status(200).setHeader("Content-Type", "text/html; charset=utf-8").send(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${fname} — Nebula</title>
+  <meta property="og:title" content="${fname}">
+  <meta property="og:description" content="${sizeMB} Mo · lien temporaire Nebula — télécharge-le avant expiration.">
+  <meta property="og:site_name" content="Nebula">
+  ${ogVideoTags}<meta property="og:type" content="website">
+  ${ogImage ? `<meta property="og:image" content="${escapeHtmlAttr(ogImage)}">\n  <meta name="twitter:card" content="summary">` : ""}
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b1011; color: #f4f7f4; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+    .card { background: #142022; border: 1px solid #263737; border-radius: 14px; padding: 36px; max-width: 520px; width: 100%; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
+    .icon { font-size: 44px; margin-bottom: 8px; }
+    h1 { color: #a2e3cb; font-size: 20px; word-break: break-all; margin: 0 0 6px; }
+    .meta { color: #b0bcb8; font-size: 14px; margin-bottom: 26px; }
+    a.btn, a.ghost { display: block; box-sizing: border-box; width: 100%; padding: 14px; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 16px; margin-top: 10px; }
+    a.btn { background: #a2e3cb; color: #0b1011; }
+    a.ghost { background: transparent; border: 1px solid #263737; color: #b0bcb8; }
+    .badge { display: inline-block; margin-top: 22px; background: #1d2b2d; color: #b0bcb8; padding: 5px 14px; border-radius: 9999px; font-size: 12px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">${isVideo ? "🎬" : "📦"}</div>
+    <h1>${fname}</h1>
+    <p class="meta">${sizeMB} Mo · lien temporaire</p>
+    <a class="btn" href="?dl=1">⬇️ Télécharger</a>
+    ${playBtn}
+    <span class="badge">Nebula Secure Media Engine</span>
+  </div>
+</body>
+</html>`);
+    }
 
     const filePath = record.filePath;
     let fileSize = record.sizeBytes;
@@ -1644,6 +2097,26 @@ The \`.env\` file contains a placeholder API key. Set your real \`GEMINI_API_KEY
     }
 
     const range = req.headers.range;
+
+    // 9.18dddd : débit réel servi, une ligne par téléchargement — c'est ce qui
+    // dira quel maillon (tunnel Cloudflare, réseau, appareil) plafonne la
+    // livraison vers le PC/téléphone (recherche vitesse livraison 18/10).
+    const trackServeRate = (fileStream: fs.ReadStream) => {
+      const serveStart = Date.now();
+      let servedBytes = 0;
+      fileStream.on("data", (chunk) => {
+        servedBytes += chunk.length;
+      });
+      res.on("close", () => {
+        if (servedBytes <= 0) return;
+        const seconds = Math.max(0.001, (Date.now() - serveStart) / 1000);
+        const servedMB = servedBytes / 1048576;
+        const state = res.writableEnded ? "complet" : "interrompu";
+        console.log(
+          `[MEDIA] ${record.filename} : ${servedMB.toFixed(1)} Mo en ${seconds.toFixed(1)} s (${(servedMB / seconds).toFixed(1)} Mo/s, ${state}${range ? ", range" : ""})`
+        );
+      });
+    };
 
     res.setHeader("Accept-Ranges", "bytes");
     res.setHeader("Content-Type", record.mimeType || "application/octet-stream");
@@ -1673,6 +2146,7 @@ The \`.env\` file contains a placeholder API key. Set your real \`GEMINI_API_KEY
 
       const chunksize = end - start + 1;
       const fileStream = fs.createReadStream(filePath, { start, end });
+      trackServeRate(fileStream);
 
       res.writeHead(206, {
         "Content-Range": `bytes ${start}-${end}/${fileSize}`,
@@ -1683,6 +2157,7 @@ The \`.env\` file contains a placeholder API key. Set your real \`GEMINI_API_KEY
     } else {
       res.setHeader("Content-Length", fileSize);
       const fileStream = fs.createReadStream(filePath);
+      trackServeRate(fileStream);
       fileStream.pipe(res);
     }
   };

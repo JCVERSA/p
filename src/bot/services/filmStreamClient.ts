@@ -1,0 +1,299 @@
+import axios from "axios";
+import * as cheerio from "cheerio";
+import { animeProxyOptions } from "./scrapingProxy.js";
+import { isSafeDownloadUrl } from "../urlSafety.js";
+
+/**
+ * 9.18wwww — Novaboxb : client du catalogue FILMS (décision owner 25/10).
+ *
+ * Source retenue après recherche approfondie (rapport 25/10) : French-Stream
+ * — le plus complet ET le plus recommandé (vérifié vivant depuis le VPS
+ * owner : HTTP 200 + recherche fonctionnelle). Films uniquement dans cette
+ * version (les séries du même site restent une extension future).
+ *
+ * Structure du site (moteur DataLife Engine, vérifiée sur fiches réelles) :
+ *  - recherche   : POST /engine/ajax/search.php  (query, page) → HTML
+ *                  <div class="search-item" onclick="location.href='<path>'">
+ *  - joueurs     : GET /engine/ajax/film_api.php?id=<id> → JSON
+ *                  { players: { ViDZY: {VOSTFR,FRENCH,TRUEFRENCH}, Dood: …,
+ *                               Voe: …, Filmoon: … } }
+ *  - id          : premier segment du slug d'URL (/15135028-insidious…).
+ *
+ * La langue est STRUCTURELLE (une URL par langue et par joueur) — le même
+ * modèle de vérité que les animés (slugs -vf/-vostfr). Les hébergeurs
+ * (ViDZY, Voe, Filmoon, Vidmoly, Uqload…) recoupent l'écosystème anime :
+ * le moteur partagé animeStreamExtractor les résout déjà ; Dood y est
+ * ajouté par la même livraison (famille veev).
+ *
+ * Rotation de domaine : le site change d'adresse toutes les 2-6 semaines
+ * (blocages ARCOM). L'origine est donc pilotée par env
+ * (NEBULA_FILM_SOURCE, défaut https://french-stream.net) — une ligne
+ * .env suffit à suivre une migration, zéro code.
+ *
+ * Sécurité : URLs reconstruites depuis l'origine configurée et validées
+ * (jamais d'URL arbitraire suivie), timeout et tailles plafonnés, source
+ * jamais nommée côté utilisateur (règle 8.42 — « catalogue films »).
+ */
+
+const FILM_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+/** Origine du catalogue films (pilotable par env — rotation de domaine). */
+export function filmStreamOrigin(): string {
+  return (process.env.NEBULA_FILM_SOURCE || "https://french-stream.net").replace(/\/+$/, "");
+}
+
+export interface FilmSearchResult {
+  title: string;
+  url: string;
+  poster?: string;
+}
+
+export interface FilmPlayer {
+  /** Nom du joueur côté site (console uniquement — jamais à l'utilisateur). */
+  name: string;
+  /** Langue normalisée : TRUEFRENCH/FRENCH → VF, VOSTFR → VOSTFR. */
+  language: "VF" | "VOSTFR";
+  /** URL directe de l'embed du joueur. */
+  url: string;
+}
+
+export function filmStreamHeaders(origin: string): Record<string, string> {
+  return {
+    "User-Agent": FILM_UA,
+    "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.6",
+    Referer: `${origin}/`,
+  };
+}
+
+/** Extrait l'id numérique d'une URL de fiche (pur — testé). */
+export function extractFilmId(filmUrl: string): string | null {
+  const m = (filmUrl || "").match(/\/(\d+)-[^/]*\.html/i) || (filmUrl || "").match(/[?&]newsid=(\d+)/);
+  return m ? m[1] : null;
+}
+
+/** Normalise une langue du site vers VF/VOSTFR (pur — testé).
+ * 9.18xxxx (terrain 30/10) : l'API réelle utilise des clés minuscules —
+ * vostfr / vff (VF France) / vfq (VF Québec) / default (joueur générique,
+ * rattaché VOSTFR par prudence). L'ancien format majuscule reste admis. */
+export function normalizeFilmLanguage(raw: string): "VF" | "VOSTFR" | null {
+  const l = (raw || "").trim().toLowerCase();
+  if (l === "vff" || l === "vfq" || l === "french" || l === "truefrench" || l === "vf") return "VF";
+  if (l === "vostfr" || l === "vost" || l === "default") return "VOSTFR";
+  return null;
+}
+
+/**
+ * Parse le HTML de recherche (pur — testé sur fixture du terrain).
+ * Les résultats sont des div.search-item avec onclick location.href.
+ */
+export function parseFilmSearchHtml(html: string, origin: string): FilmSearchResult[] {
+  const $ = cheerio.load(html || "");
+  const out: FilmSearchResult[] = [];
+  $("div.search-item").each((_i, el) => {
+    const onclick = $(el).attr("onclick") || "";
+    const hrefMatch = onclick.match(/location\.href='([^']+)'/);
+    if (!hrefMatch || !hrefMatch[1]) return;
+    const path = hrefMatch[1];
+    const url = path.startsWith("http") ? path : `${origin}${path.startsWith("/") ? "" : "/"}${path}`;
+    if (!url.startsWith(origin)) return; // SSRF : jamais hors de l'origine configurée
+    const title = ($(el).find("div.search-title").text() || "").trim();
+    if (!title) return;
+    const poster = ($(el).find("img").attr("src") || "").trim() || undefined;
+    out.push({ title, url, poster });
+  });
+  return out;
+}
+
+/**
+ * Parse la réponse de l'API joueurs (pur — testé sur fixture RÉELLE du
+ * terrain 30/10) : { players: { vidzy: { default, vostfr, vff, vfq },
+ * uqload: {…}, dood/voe/filmoon: { relais kokoflix }, premium: {…} } }.
+ * Les clés de langue sont MINUSCULES (vff = VF France, vfq = VF Québec,
+ * default = joueur générique traité VOSTFR) — l'ancien format
+ * FRENCH/TRUEFRENCH reste accepté.
+ */
+export function parseFilmPlayersApi(data: any): FilmPlayer[] {
+  const players = data?.players;
+  if (!players || typeof players !== "object" || Array.isArray(players)) return [];
+  const out: FilmPlayer[] = [];
+  for (const [name, langs] of Object.entries(players as Record<string, any>)) {
+    if (!langs || typeof langs !== "object" || Array.isArray(langs)) continue;
+    for (const [rawLang, rawUrl] of Object.entries(langs as Record<string, any>)) {
+      const language = normalizeFilmLanguage(rawLang);
+      const url = String(rawUrl || "").trim();
+      if (!language || !/^https?:\/\//i.test(url)) continue;
+      out.push({ name: String(name).trim() || "Player", language, url });
+    }
+  }
+  return out;
+}
+
+/** Recherche un film sur le catalogue (POST AJAX, Referer requis). */
+export async function filmSearch(query: string): Promise<FilmSearchResult[]> {
+  const origin = filmStreamOrigin();
+  const res = await axios.post(
+    `${origin}/engine/ajax/search.php`,
+    new URLSearchParams({ query, page: "1" }).toString(),
+    {
+      headers: { ...filmStreamHeaders(origin), "Content-Type": "application/x-www-form-urlencoded" },
+      timeout: 15000,
+      validateStatus: () => true,
+      ...animeProxyOptions(),
+    }
+  );
+  if (res.status !== 200 || typeof res.data !== "string") return [];
+  return parseFilmSearchHtml(res.data, origin);
+}
+
+/**
+ * Récupère la fiche d'un film : détecte les SÉRIES (non supportées à ce
+ * jour) et retourne les joueurs par langue. Jamais d'exception réseau —
+ * l'appelant affiche un message honnête.
+ */
+/**
+ * Durée de la fiche (« Horreur, Thriller - 1h46 ») en secondes (pur — testé).
+ * 9.18aaaa (terrain 31/10) : la durée de repli plate (110 min) sous-estimait
+ * les longs films (Across the Spider-Verse : 140 min) — la fiche porte la
+ * VRAIE durée, l'estimation de taille devient honnête PAR film. Le « h » est
+ * volontairement en minuscule (H264/H265 des releases ne doivent pas matcher).
+ */
+export function parseFilmDurationSec(html: string): number | null {
+  if (!html) return null;
+  // 9.18cccc (audit) : bornes raisonnables d'un FILM (20 min – 4 h 30) —
+  // sans elles, un « 24h24 » horaire ou un compte à rebours de fiche
+  // produisait une estimation de taille absurde (24 h de bande passante).
+  const MIN_FILM_SEC = 1200;
+  const MAX_FILM_SEC = 16200;
+  const hm = html.match(/\b(\d{1,2})\s*h\s*(\d{2})\b/);
+  if (hm) {
+    const sec = parseInt(hm[1], 10) * 3600 + parseInt(hm[2], 10) * 60;
+    return sec >= MIN_FILM_SEC && sec <= MAX_FILM_SEC ? sec : null;
+  }
+  const mm = html.match(/\b(\d{1,3})\s?min\b/);
+  if (mm) {
+    const sec = parseInt(mm[1], 10) * 60;
+    return sec >= MIN_FILM_SEC && sec <= MAX_FILM_SEC ? sec : null;
+  }
+  return null;
+}
+
+export async function getFilmDetail(
+  filmUrl: string
+): Promise<
+  { kind: "film"; players: FilmPlayer[]; durationSec?: number } | { kind: "series" } | { kind: "error"; reason: string }
+> {
+  const origin = filmStreamOrigin();
+  if (!filmUrl.startsWith(origin)) return { kind: "error", reason: "url-externe" };
+
+  const pageRes = await axios.get(filmUrl, {
+    headers: filmStreamHeaders(origin),
+    timeout: 15000,
+    validateStatus: () => true,
+    maxRedirects: 3,
+    ...animeProxyOptions(),
+  });
+  if (pageRes.status !== 200 || typeof pageRes.data !== "string") {
+    return { kind: "error", reason: `http-${pageRes.status}` };
+  }
+  // Une série expose ses épisodes via ep-data.php — honnête : films only.
+  if (pageRes.data.includes("ep-data.php") || pageRes.data.includes('"episodes-')) {
+    return { kind: "series" };
+  }
+
+  const filmId = extractFilmId(filmUrl);
+  if (!filmId) return { kind: "error", reason: "id-introuvable" };
+
+  const apiRes = await axios.get(`${origin}/engine/ajax/film_api.php?id=${filmId}`, {
+    headers: filmStreamHeaders(origin),
+    timeout: 15000,
+    validateStatus: () => true,
+    ...animeProxyOptions(),
+  });
+  if (apiRes.status !== 200) return { kind: "error", reason: `api-http-${apiRes.status}` };
+  const players = parseFilmPlayersApi(apiRes.data);
+  if (players.length === 0) return { kind: "error", reason: "aucun-joueur" };
+  return { kind: "film", players, durationSec: parseFilmDurationSec(pageRes.data) ?? undefined };
+}
+
+/** Hosts relais des players films (redirigent vers le vrai embed). */
+const FILM_RELAY_HOST_RE = /(^|\.)kokoflix\.lol$/i;
+
+/** True si l'URL est un relais player du catalogue films (pur — testé). */
+export function isFilmRelayUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return FILM_RELAY_HOST_RE.test(u.hostname) || /_go\.php$/i.test(u.pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 9.18xxxx (terrain 30/10) : dood/voe/filmoon sont servis via un relais
+ * (kokoflix.lol/<ville>_go.php?id=…) qui exige le Referer du catalogue et
+ * mène au vrai embed. On suit la redirection HTTP, puis les redirections
+ * JS/meta/iframe de la page. Échec → URL d'origine (l'appelant saute ce
+ * miroir honnêtement). Les embeds DIRECTS (vidzy, uqload) ne passent pas
+ * ici — le moteur partagé les résout déjà.
+ */
+export async function resolveFilmPlayerUrl(url: string): Promise<string> {
+  if (!isFilmRelayUrl(url)) return url;
+  try {
+    const origin = filmStreamOrigin();
+    const res = await axios.get(url, {
+      headers: { ...filmStreamHeaders(origin), Accept: "text/html,application/xhtml+xml,*/*;q=0.8" },
+      timeout: 12_000,
+      maxRedirects: 5,
+      validateStatus: () => true,
+      ...animeProxyOptions(),
+    });
+    if (res.status !== 200 || typeof res.data !== "string") return url;
+    // 1. Redirection HTTP déjà suivie par axios → l'URL finale est le player.
+    //    9.18cccc (audit) : garde SSRF — un relais ne doit JAMAIS pouvoir
+    //    pointer le bot vers une URL privée (localhost, link-local, cloud
+    //    metadata). URL non publique = relais laissé tel quel (skippé en aval
+    //    par la garde anti-relais, jamais d'échec visible).
+    const finalUrl: unknown = (res.request as any)?.res?.responseUrl;
+    if (
+      typeof finalUrl === "string" &&
+      /^https?:\/\//i.test(finalUrl) &&
+      finalUrl !== url &&
+      !isFilmRelayUrl(finalUrl) &&
+      (await isSafeDownloadUrl(finalUrl))
+    ) {
+      return finalUrl;
+    }
+    // 2. Redirection JS / meta refresh / iframe vers le vrai embed.
+    const html: string = res.data;
+    const patterns = [
+      /(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']/i,
+      /http-equiv=["']?refresh["']?[^>]*content=["']?\d+;\s*url=([^"'>]+)/i,
+      /<iframe[^>]+src=["']([^"']+)["']/i,
+    ];
+    for (const re of patterns) {
+      const m = html.match(re);
+      // 9.18cccc (audit) : même garde SSRF pour les liens extraits de la page.
+      if (m?.[1] && /^https?:\/\//i.test(m[1]) && !isFilmRelayUrl(m[1]) && (await isSafeDownloadUrl(m[1]))) {
+        return m[1];
+      }
+    }
+    return url;
+  } catch {
+    return url;
+  }
+}
+
+/** Miroirs d'une langue, triés par priorité du moteur partagé (pur). */
+export function filmMirrorsForLanguage(players: FilmPlayer[], language: "VF" | "VOSTFR"): string[] {
+  const urls = players.filter((p) => p.language === language).map((p) => p.url);
+  return [...new Set(urls)];
+}
+
+/** Langues réellement disponibles dans la liste de joueurs (pur). */
+export function filmAvailableLanguages(players: FilmPlayer[]): ("VF" | "VOSTFR")[] {
+  const langs: ("VF" | "VOSTFR")[] = [];
+  if (players.some((p) => p.language === "VF")) langs.push("VF");
+  if (players.some((p) => p.language === "VOSTFR")) langs.push("VOSTFR");
+  return langs;
+}
