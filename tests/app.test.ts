@@ -125,23 +125,46 @@ describe("Simulation playground", () => {
     expect(res.body.text).toContain("Nebula Bot - Status");
   });
 
-  it("runs .roast me without crashing (mock sock)", async () => {
+  it("runs .help without crashing (mock sock)", async () => {
     const res = await request(app)
       .post("/api/bot/simulate")
       .set(auth)
-      .send({ senderName: "Tester", text: ".roast me" });
+      .send({ senderName: "Tester", text: ".help" });
     expect(res.status).toBe(200);
-    expect(res.body.text).toContain("Nebula Roast");
+    expect(res.body.text).toContain("Nebula Engine");
   });
 
-  it("runs .menu with the command directory", async () => {
+  it("runs .menu — footer owner via .env, neutre par défaut (9.18hhh)", async () => {
+    delete process.env.OWNER_NAME;
+    delete process.env.OWNER_TELEGRAM;
+    delete process.env.OWNER_NUMBER;
     const res = await request(app)
       .post("/api/bot/simulate")
       .set(auth)
       .send({ senderName: "Tester", text: ".menu" });
     expect(res.status).toBe(200);
-    expect(res.body.text).toContain("SERVICES");
-    expect(res.body.text).toContain("Powered by Nebula Engine");
+    // Menu style Na (8.60) : sections encadrées ; aucun contact codé dur.
+    expect(res.body.text).toContain("TOOLS & UTILITY");
+    expect(res.body.text).not.toContain("wa.me/");
+    expect(res.body.text).not.toContain("Dark Neon");
+    // Contacts configurés via .env → bloc OWNER affiché.
+    process.env.OWNER_NAME = "Test Owner";
+    process.env.OWNER_NUMBER = "15551234567";
+    process.env.OWNER_TELEGRAM = "testuser";
+    try {
+      const res2 = await request(app)
+        .post("/api/bot/simulate")
+        .set(auth)
+        .send({ senderName: "Tester", text: ".menu" });
+      expect(res2.status).toBe(200);
+      expect(res2.body.text).toContain("wa.me/15551234567");
+      expect(res2.body.text).toContain("Test Owner");
+      expect(res2.body.text).toContain("t.me/testuser");
+    } finally {
+      delete process.env.OWNER_NAME;
+      delete process.env.OWNER_TELEGRAM;
+      delete process.env.OWNER_NUMBER;
+    }
   });
 
   it("reports unknown commands gracefully", async () => {
@@ -334,6 +357,51 @@ describe("Project archive download", () => {
       expect(res.status).toBe(404);
     }
   });
+
+  it("2026-10-11 (audit J-5) : le zip exige l'auth panneau — SANS session → 401, jamais public", async () => {
+    const res = await request(app).get("/nebula-bot-latest.zip");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("9.18 — User manager routes", () => {
+  it("GET /api/bot/users : forme paginée avec compteurs (tri par défaut côté serveur)", async () => {
+    const res = await request(app).get("/api/bot/users").set(auth);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.users)).toBe(true);
+    expect(res.body.counts).toBeTruthy();
+    expect(typeof res.body.total).toBe("number");
+    expect(typeof res.body.limit).toBe("number");
+  });
+
+  it("GET /api/bot/users/export : CSV authentifié, 401 sans session", async () => {
+    const res = await request(app).get("/api/bot/users/export").set(auth);
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/csv");
+    const res2 = await request(app).get("/api/bot/users/export");
+    expect(res2.status).toBe(401);
+  });
+
+  it("détail d'un jid inconnu : 404 honnête", async () => {
+    const res = await request(app).get("/api/bot/users/inconnu@s.whatsapp.net/detail").set(auth);
+    expect(res.status).toBe(404);
+  });
+
+  it("bulk ban : l'owner est ignoré, jamais banni (garde multi-jids)", async () => {
+    process.env.OWNER_NUMBER = "15551234567";
+    try {
+      const res = await request(app)
+        .post("/api/bot/users/action-bulk")
+        .set(auth)
+        .send({ jids: ["15551234567@s.whatsapp.net", "1555600000099@s.whatsapp.net"], action: "ban" });
+      expect(res.status).toBe(200);
+      expect(res.body.skippedOwner).toBe(1);
+      expect(res.body.applied).toBe(0); // l'autre jid est inconnu du répertoire → notFound
+      expect(res.body.notFound).toBe(1);
+    } finally {
+      delete process.env.OWNER_NUMBER;
+    }
+  });
 });
 
 describe("Rate limiting", () => {
@@ -456,10 +524,13 @@ describe("System and commands checkup diagnostics", () => {
     const names = res.body.tests.map((t: any) => t.name);
     expect(names).not.toContain("Weather API Integration");
 
-    // M12: vendor breakage must be visible, not silent.
-    const bridge = res.body.tests.find((t: any) => t.name === "Vendored Command Bridge");
-    expect(bridge).toBeDefined();
-    expect(typeof bridge.details.skipped).toBe("number");
+    // 8.56: the vendored CJS bridge was REMOVED (owner decision) — the
+    // checkup must not resurrect it, and the registry validation it hosted
+    // stays the authoritative registry diagnostic.
+    expect(names).not.toContain("Vendored Command Bridge");
+    const registry = res.body.tests.find((t: any) => t.name === "Command Registry Validation");
+    expect(registry).toBeDefined();
+    expect(registry.status).toBe("pass");
   });
 });
 
@@ -639,5 +710,75 @@ describe("Health, audit trail and backup (M13/§8)", () => {
       .set(auth)
       .send({ format: "something-else", config: {} });
     expect(bad.status).toBe(400);
+  });
+});
+
+describe("9.18jjj — dashboard Config : identité owner + fuseau (page Config, effet immédiat)", () => {
+  it("POST /api/bot/config accepte ownerName/ownerTelegram/timezone et persiste", async () => {
+    const res = await request(app)
+      .post("/api/bot/config")
+      .set(auth)
+      .send({ ownerName: "Dash Owner", ownerTelegram: "@dashuser", timezone: "Europe/Paris" });
+    expect(res.status).toBe(200);
+    expect(res.body.ownerName).toBe("Dash Owner");
+    expect(res.body.ownerTelegram).toBe("dashuser"); // @ retiré
+    expect(res.body.timezone).toBe("Europe/Paris");
+    const get = await request(app).get("/api/bot/config").set(auth);
+    expect(get.body.ownerName).toBe("Dash Owner");
+    expect(get.body.timezone).toBe("Europe/Paris");
+  });
+
+  it("fuseau invalide refusé (400) ; vide = retour à UTC", async () => {
+    const bad = await request(app).post("/api/bot/config").set(auth).send({ timezone: "not a tz!" });
+    expect(bad.status).toBe(400);
+    const empty = await request(app).post("/api/bot/config").set(auth).send({ timezone: "   " });
+    expect(empty.status).toBe(200);
+    expect(empty.body.timezone).toBe("UTC");
+  });
+
+  it("le bloc OWNER du menu suit la CONFIG dashboard (sans .env) — .env reste prioritaire", async () => {
+    delete process.env.OWNER_NAME;
+    delete process.env.OWNER_TELEGRAM;
+    delete process.env.OWNER_NUMBER;
+    await request(app).post("/api/bot/config").set(auth).send({
+      ownerName: "Cfg Owner",
+      ownerNumber: "15551234567",
+      ownerTelegram: "cfguser",
+    });
+    // simulateMessage en direct : même chemin que la route, sans le
+    // rate-limiter HTTP (le quota simulate est déjà consommé par ce fichier).
+    const { simulateMessage } = await import("../src/bot/botEngine.js");
+    const { getConfig } = await import("../src/bot/config.js");
+    const menuCmd = `${getConfig().prefix}menu`; // des tests plus haut ont changé le préfixe
+    const res = await simulateMessage("Tester", menuCmd);
+    expect(res.text).toContain("wa.me/15551234567");
+    expect(res.text).toContain("Cfg Owner");
+    expect(res.text).toContain("t.me/cfguser");
+    // .env prioritaire sur la config
+    process.env.OWNER_NAME = "Env Owner";
+    try {
+      const res2 = await simulateMessage("Tester", menuCmd);
+      expect(res2.text).toContain("Env Owner");
+      expect(res2.text).not.toContain("Cfg Owner");
+    } finally {
+      delete process.env.OWNER_NAME;
+    }
+  });
+
+  it("vider les champs via le dashboard efface le bloc owner du menu", async () => {
+    delete process.env.OWNER_NAME;
+    delete process.env.OWNER_TELEGRAM;
+    delete process.env.OWNER_NUMBER;
+    const res = await request(app).post("/api/bot/config").set(auth).send({
+      ownerName: "",
+      ownerNumber: "",
+      ownerTelegram: "",
+    });
+    expect(res.status).toBe(200);
+    const { simulateMessage } = await import("../src/bot/botEngine.js");
+    const { getConfig } = await import("../src/bot/config.js");
+    const menu = await simulateMessage("Tester", `${getConfig().prefix}menu`);
+    expect(menu.text).not.toContain("wa.me/");
+    expect(menu.text).not.toContain("t.me/");
   });
 });
