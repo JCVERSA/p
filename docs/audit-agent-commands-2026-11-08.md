@@ -173,3 +173,22 @@ ou réduire le plafond côté agent. À trancher côté owner.
 | À trancher | #6 frape cumulée · #10 `.agent` en groupe | choix owner | — |
 
 Recommandation : lots A+B maintenant (aucune décision à prendre), C+D après feu vert.
+
+---
+
+## 5. Suivi — correctifs livrés (9.19n, 08/11, feu vert owner « oui vas y »)
+
+| Finding | Statut | Correctif |
+|---|---|---|
+| #2 boucle sans try | ✅ **livré** | try/catch PAR message (`botEngine.ts`) — un message qui jette est logué, le reste du lot continue |
+| #3 socket capturé | ✅ **livré** | `sendMuted` + `offerCatalogRetry` passent par `resolveLiveSocket` — plus AUCUN `sock.sendMessage` direct dans agentRunner (pin de test) |
+| #4 quota avant l'appel | ✅ **livré** | quota consommé au SUCCÈS de l'appel, aux 6 sites (agent ×4, DM botEngine, `.ai`) — une panne fournisseur ne brûle plus le quota |
+| #5 `.img` hors RoleGuard | ✅ **livré** | porte ACL avant le routage interne (fail-closed, politique de groupe appliquée, owner jamais bloqué — testé comportementalement) |
+| #7 tag ownerOnly mort | ✅ **livré** | `agtrace` taggé `ownerOnly: true` (double filet avec sa porte inline) |
+| #8 trace lastCallByUser | ✅ **livré** (constat **rectifié**) | la map ÉTAIT bornée (`clear()` à 500) mais le clear perdait les cooldowns ACTIFS — remplacé par l'élagage des seules entrées expirées |
+| #9 agtrace exécutable | ✅ **livré** | `agtrace` ajouté à `AGENT_DENYLIST` |
+| #1 sessions par chat | ⏳ **9.19o** (lot D) | scoping (chat, auteur) de `.a`/`.f` — livraison séparée, novabox.ts fait 4 132 lignes |
+| #6 frape cumulée | ⏳ à trancher | compromis humanisation 9.19f — décision owner |
+| #10 `.agent` en groupe | ⏳ à trancher | décision owner |
+
+Qualité : 2081/2081 tests (+10), tsc 0, ESLint 0, CI verte.
