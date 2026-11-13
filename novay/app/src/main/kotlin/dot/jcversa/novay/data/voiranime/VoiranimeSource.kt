@@ -64,21 +64,27 @@ class VoiranimeSource(
             "${VoiranimeParsers.ORIGIN}/?s=$enc"
         )
         val pages = urls.map { url ->
-            async { runCatching { fetchHtmlBlocking(url) }.getOrNull() }
+            async { runCatching { fetchHtmlBlocking(url) } }
         }.awaitAll()
 
         val merged = mutableListOf<AnimeSearchResult>()
         val seen = mutableSetOf<String>()
-        for (html in pages) {
-            if (html == null) continue
+        for (page in pages) {
+            val html = page.getOrNull() ?: continue
             for (entry in VoiranimeParsers.parseVoiranimeSearch(html)) {
                 if (seen.add(entry.slug)) merged.add(entry)
             }
         }
-        if (merged.isEmpty() && pages.any { it == null }) {
-            // Au moins une requête a échoué réseau : erreur honnête plutôt
-            // qu'un faux « aucun résultat ».
-            throw IOException("Recherche impossible : voir-anime.to injoignable")
+        if (merged.isEmpty()) {
+            // Au moins une requête a échoué réseau : erreur honnête AVEC la
+            // cause réelle (DNS muet, HTTP 403, timeout…) plutôt qu'un faux
+            // « aucun résultat » — décisif quand un domaine tourne.
+            val failure = pages.firstNotNullOfOrNull { it.exceptionOrNull() }
+            if (failure != null) {
+                throw IOException(
+                    "voir-anime.to : ${failure.message ?: failure.javaClass.simpleName}"
+                )
+            }
         }
         completeFranchises(merged)
     }
