@@ -16,7 +16,9 @@ data class AnimeSearchResult(
     val slug: String = "",
     val language: String? = null, // "VF" | "VOSTFR" | null
     val subtitle: String? = null,
-    val isVf: Boolean = false
+    val isVf: Boolean = false,
+    // Affiche du catalogue (URL absolue, résolue contre l'origine).
+    val posterUrl: String? = null
 )
 
 /** Une saison/film d'un anime (langue structurelle du sous-chemin). */

@@ -89,6 +89,27 @@ object SamaParsers {
         html.replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ").trim()
 
     /**
+     * Attribut d'une balise SANS fermeture (img, source…) repérée par sa
+     * classe — ex. src de l'affiche .asn-search-result-img. Essaie [attrs]
+     * dans l'ordre (src puis data-src : certains sites lazy-loadent).
+     */
+    private fun classTagAttr(html: String, className: String, vararg attrs: String): String {
+        val re = Regex(
+            "<([a-z0-9]+)\\b[^>]*class=[\"'][^\"']*$className[^\"']*[\"'][^>]*>",
+            RegexOption.IGNORE_CASE
+        )
+        val tag = re.find(html)?.value ?: return ""
+        for (attr in attrs) {
+            val v = Regex("$attr\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
+                .find(tag)?.groupValues?.get(1) ?: continue
+            // Un placeholder de lazy-loading (src="data:image/gif;base64…")
+            // n'est PAS l'affiche : le vrai chemin vit dans data-src.
+            if (v.isNotEmpty() && !v.startsWith("data:")) return v
+        }
+        return ""
+    }
+
+    /**
      * Parse la réponse du fetch.php : ancres .asn-search-result avec leur
      * titre et sous-titre. Les hrefs sont absolus sur le site ; un href
      * relatif est résolu contre [origin].
@@ -115,12 +136,23 @@ object SamaParsers {
             // repli sur la méta (<p class="asn-search-meta">Anime · 2002</p>).
             val subtitle = classText(anchor.groupValues[2], "asn-search-result-subtitle")
                 .ifEmpty { classText(anchor.groupValues[2], "asn-search-meta") }
+            // Affiche réelle : <img class="asn-search-result-img" src="…">
+            // (data-src en repli — lazy-loading éventuel).
+            val posterPath = classTagAttr(
+                anchor.groupValues[2], "asn-search-result-img", "src", "data-src"
+            )
+            val posterUrl = if (posterPath.isEmpty()) null else try {
+                URI("$origin/").resolve(posterPath).toString()
+            } catch (_: Exception) {
+                posterPath
+            }
             out.add(
                 AnimeSearchResult(
                     title = title,
                     url = url,
                     slug = url.trimEnd('/').substringAfterLast('/', ""),
-                    subtitle = subtitle.ifEmpty { null }
+                    subtitle = subtitle.ifEmpty { null },
+                    posterUrl = posterUrl
                 )
             )
             if (out.size >= 30) break

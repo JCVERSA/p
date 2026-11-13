@@ -1,8 +1,11 @@
 package dot.jcversa.novay.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,6 +34,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dot.jcversa.novay.data.AnimeSearchResult
@@ -40,6 +46,7 @@ import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LangPill
 import dot.jcversa.novay.ui.components.LoadingView
+import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.bounceClick
 import dot.jcversa.novay.ui.theme.Amber500
 import dot.jcversa.novay.ui.theme.DarkCardBorder
@@ -118,6 +125,10 @@ fun ShowScreen(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    // V2.1 : banniere affiche (image reelle du catalogue).
+                    item(key = "banner") {
+                        ShowBanner(anime = anime)
+                    }
                     if (vf.isNotEmpty()) {
                         stickyHeader(key = "header-vf") {
                             SectionHeader(label = "VF", vf = true, count = vf.size)
@@ -239,6 +250,56 @@ private fun SeasonCard(season: AnimeSeason, onClick: () -> Unit) {
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
                 tint = TextMuted
+            )
+        }
+    }
+}
+
+/**
+ * Bannière de la fiche anime : l'affiche réelle du catalogue en pleine
+ * largeur, avec un dégradé sombre pour garder le sous-titre lisible.
+ * Sans affiche : le placeholder film, même forme.
+ */
+@Composable
+private fun ShowBanner(anime: AnimeSearchResult) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(210.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .border(1.dp, DarkCardBorder, RoundedCornerShape(24.dp))
+    ) {
+        PosterImage(
+            url = anime.posterUrl,
+            contentDescription = anime.title,
+            spinnerSize = 20.dp,
+            modifier = Modifier.fillMaxSize()
+        )
+        // Dégradé bas : le sous-titre reste lisible sur n'importe quelle
+        // image (claire ou sombre).
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Transparent,
+                            Color(0xCC000000)
+                        )
+                    )
+                )
+        )
+        if (!anime.subtitle.isNullOrBlank()) {
+            Text(
+                text = anime.subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(14.dp)
             )
         }
     }

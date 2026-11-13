@@ -24,7 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.DownloadDone
-import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -49,6 +48,7 @@ import dot.jcversa.novay.data.AnimeSource
 import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LoadingView
+import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.bounceClick
 import dot.jcversa.novay.ui.theme.Amber500
 import dot.jcversa.novay.ui.theme.DarkCardBorder
@@ -195,20 +195,16 @@ private fun ResultCard(result: AnimeSearchResult, onClick: () -> Unit) {
             modifier = Modifier.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
+            // V2.1 : affiche reelle du catalogue.
+            PosterImage(
+                url = result.posterUrl,
+                contentDescription = result.title,
                 modifier = Modifier
                     .size(width = 52.dp, height = 68.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(DarkSurfaceVariant)
-                    .border(1.dp, DarkCardBorder, RoundedCornerShape(12.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Movie,
-                    contentDescription = null,
-                    tint = TextMuted
-                )
-            }
+                    .border(1.dp, DarkCardBorder, RoundedCornerShape(12.dp))
+            )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(

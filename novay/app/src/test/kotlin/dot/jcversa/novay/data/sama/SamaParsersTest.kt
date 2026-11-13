@@ -67,6 +67,32 @@ class SamaParsersTest {
         // href relatif resolu contre l'origine
         assertEquals("https://anime-sama.to/catalogue/naruto-shippuden", out[1].url)
         assertEquals("Naruto Shippuden", out[1].title)
+        // V2.1 : affiche reelle (src de l'img .asn-search-result-img)
+        assertEquals(
+            "https://cdn.jsdelivr.net/gh/Anime-Sama/IMG@img/contenu/thumb/naruto.webp",
+            out[0].posterUrl
+        )
+        // Pas d'img dans le second resultat : pas d'affiche
+        assertEquals(null, out[1].posterUrl)
+    }
+
+    @Test
+    fun `affiche en data-src lazy et chemin relatif resolus contre l origine`() {
+        val html = """
+<a href="https://anime-sama.to/catalogue/solo-leveling/" class="asn-search-result">
+  <img class="asn-search-result-img" loading="lazy" data-src="/img/contenu/thumb/solo-leveling.webp" src="data:image/gif;base64,R0lGOD" />
+  <div class="asn-search-result-content"><h3 class="asn-search-result-title"><mark>Solo Leveling</mark></h3></div>
+</a>
+        """.trimIndent()
+        val out = SamaParsers.parseSamaSearch(html, "https://anime-sama.to")
+        assertEquals(1, out.size)
+        // src = placeholder base64 1x1 du lazy-loading : le VRAI chemin est
+        // dans data-src, et le chemin relatif est resolu contre l'origine.
+        assertEquals("Solo Leveling", out[0].title)
+        assertEquals(
+            "https://anime-sama.to/img/contenu/thumb/solo-leveling.webp",
+            out[0].posterUrl
+        )
     }
 
     @Test
