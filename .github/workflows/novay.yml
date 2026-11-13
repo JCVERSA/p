@@ -57,7 +57,7 @@ jobs:
       - name: Tests unitaires
         run: |
           set +e
-          gradle :app:testReleaseUnitTest --no-daemon 2>&1 | tee test.log
+          gradle :app:testDebugUnitTest --no-daemon 2>&1 | tee test.log
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
@@ -71,7 +71,7 @@ jobs:
           fi
           # Garde-fou : zero rapport de test = tests non compiles (source
           # set ?) - un silence n'est pas un succes.
-          reports=$(ls app/build/test-results/testReleaseUnitTest/*.xml 2>/dev/null | wc -l)
+          reports=$(ls app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | wc -l)
           if [ "$reports" -eq 0 ]; then
             echo "::error::Aucun test execute - le source set src/test/kotlin n'est pas pris en compte"
             exit 1

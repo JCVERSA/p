@@ -44,6 +44,12 @@ android {
   buildFeatures {
     compose = true
   }
+  sourceSets {
+    // AGP 9 (built-in Kotlin) : les .kt des srcDirs "java" compilent en
+    // Kotlin (comme src/main/java du panel) — on declare explicitement le
+    // dossier test/kotlin pour ne pas dependre de la convention.
+    getByName("test").java.srcDir("src/test/kotlin")
+  }
   lint {
     // media3 marque une grande partie de son API @UnstableApi (stable en
     // pratique, utilisé en production partout) — les usages sont couverts
