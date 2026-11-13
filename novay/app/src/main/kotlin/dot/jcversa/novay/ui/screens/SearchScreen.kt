@@ -1,5 +1,6 @@
 package dot.jcversa.novay.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -31,6 +33,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,41 +42,56 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.data.AnimeSource
+import dot.jcversa.novay.data.Franchise
+import dot.jcversa.novay.data.voiranime.VoiranimeParsers
 import dot.jcversa.novay.ui.components.AnimateEntrance
+import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LangPill
+import dot.jcversa.novay.ui.components.LoadingView
 import dot.jcversa.novay.ui.components.bounceClick
 import dot.jcversa.novay.ui.theme.Amber500
 import dot.jcversa.novay.ui.theme.DarkCardBorder
 import dot.jcversa.novay.ui.theme.DarkSurfaceCard
 import dot.jcversa.novay.ui.theme.DarkSurfaceVariant
 import dot.jcversa.novay.ui.theme.TextMuted
+import kotlinx.coroutines.launch
 
-/** Résultat de démonstration (V0). V1 : résultats réels de voiranime. */
-private data class DemoShow(
-    val title: String,
-    val vf: Boolean,
-    val vostfr: Boolean
-)
-
-private val demoShows = listOf(
-    DemoShow("Solo Leveling", vf = true, vostfr = true),
-    DemoShow("The Apothecary Diaries", vf = false, vostfr = true),
-    DemoShow("Kill Blue", vf = true, vostfr = true),
-    DemoShow("Tokyo Revengers", vf = true, vostfr = true),
-    DemoShow("Ranma ½", vf = false, vostfr = true),
-    DemoShow("Jujutsu Kaisen", vf = true, vostfr = true)
-)
+/** États de l'écran de recherche. */
+private sealed interface SearchState {
+    data object Idle : SearchState
+    data object Loading : SearchState
+    data class Error(val message: String) : SearchState
+    data class Results(val franchises: List<Franchise>) : SearchState
+}
 
 /**
- * Écran Recherche (squelette V0) : champ squircle + résultats factices
- * pour valider thème, motion et navigation. V1 : recherche voiranime
- * (OkHttp + portage des parseurs du bot).
+ * Écran Recherche : interroge le catalogue (recherche double Madara +
+ * complétion de franchises, cf. VoiranimeSource) et regroupe les entrées
+ * par anime — saisons étiquetées, films nommés.
  */
 @Composable
-fun SearchScreen(onOpenShow: () -> Unit) {
+fun SearchScreen(
+    source: AnimeSource,
+    onOpenShow: (Franchise) -> Unit
+) {
     var query by rememberSaveable { mutableStateOf("") }
+    var state by remember { mutableStateOf<SearchState>(SearchState.Idle) }
+    val scope = rememberCoroutineScope()
+
+    fun runSearch() {
+        val q = query.trim()
+        if (q.length < 2) return
+        scope.launch {
+            state = SearchState.Loading
+            state = try {
+                SearchState.Results(VoiranimeParsers.groupFranchises(source.search(q)))
+            } catch (e: Exception) {
+                SearchState.Error(e.message ?: "Erreur inconnue")
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -94,9 +113,7 @@ fun SearchScreen(onOpenShow: () -> Unit) {
             value = query,
             onValueChange = { query = it },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = {
-                Text(text = "Rechercher un anime…")
-            },
+            placeholder = { Text(text = "Rechercher un anime…") },
             leadingIcon = {
                 Icon(
                     imageVector = Icons.Filled.Search,
@@ -107,6 +124,7 @@ fun SearchScreen(onOpenShow: () -> Unit) {
             singleLine = true,
             shape = RoundedCornerShape(18.dp),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { runSearch() }),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Amber500,
                 unfocusedBorderColor = DarkCardBorder,
@@ -119,14 +137,31 @@ fun SearchScreen(onOpenShow: () -> Unit) {
         )
         Spacer(Modifier.height(12.dp))
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            itemsIndexed(demoShows) { index, show ->
-                AnimateEntrance(index = index) {
-                    ShowResultCard(show = show, onClick = onOpenShow)
+        when (val s = state) {
+            SearchState.Idle -> Text(
+                text = "Tape au moins 2 lettres puis valide — la recherche interroge les deux modes du site et complète les saisons manquantes.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            SearchState.Loading -> LoadingView(message = "Recherche sur ${source.name}…")
+            is SearchState.Error -> ErrorView(message = s.message, onRetry = { runSearch() })
+            is SearchState.Results -> {
+                if (s.franchises.isEmpty()) {
+                    Text(
+                        text = "Aucun résultat pour « ${query.trim()} ».",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        itemsIndexed(s.franchises) { index, franchise ->
+                            AnimateEntrance(index = index) {
+                                FranchiseCard(franchise = franchise, onClick = { onOpenShow(franchise) })
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -134,7 +169,9 @@ fun SearchScreen(onOpenShow: () -> Unit) {
 }
 
 @Composable
-private fun ShowResultCard(show: DemoShow, onClick: () -> Unit) {
+private fun FranchiseCard(franchise: Franchise, onClick: () -> Unit) {
+    val hasVf = franchise.entries.any { it.result.isVf }
+    val hasVostfr = franchise.entries.any { !it.result.isVf }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -147,7 +184,6 @@ private fun ShowResultCard(show: DemoShow, onClick: () -> Unit) {
             modifier = Modifier.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Placeholder affiche — V1 : miniature réelle (Coil).
             Box(
                 modifier = Modifier
                     .size(width = 52.dp, height = 68.dp)
@@ -165,16 +201,21 @@ private fun ShowResultCard(show: DemoShow, onClick: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = show.title,
+                    text = franchise.baseTitle,
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (show.vf) LangPill(text = "VF", vf = true)
-                    if (show.vostfr) LangPill(text = "VOSTFR")
+                    if (hasVf) LangPill(text = "VF", vf = true)
+                    if (hasVostfr) LangPill(text = "VOSTFR")
                 }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "${franchise.entries.size} saison(s) & film(s)",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,

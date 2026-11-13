@@ -16,6 +16,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import dot.jcversa.novay.data.AnimeEpisode
+import dot.jcversa.novay.data.AnimeSource
+import dot.jcversa.novay.data.Franchise
+import dot.jcversa.novay.data.FranchiseEntry
+import dot.jcversa.novay.data.voiranime.VoiranimeSource
 import dot.jcversa.novay.ui.components.SlateMotionProvider
 import dot.jcversa.novay.ui.screens.EpisodesScreen
 import dot.jcversa.novay.ui.screens.PlayerScreen
@@ -23,8 +28,21 @@ import dot.jcversa.novay.ui.screens.SearchScreen
 import dot.jcversa.novay.ui.screens.ShowScreen
 import dot.jcversa.novay.ui.theme.DarkBackground
 
-/** Écrans NoVaY (V0 : squelettes ; V1 : catalogue voiranime). */
-private enum class AppScreen { SEARCH, SHOW, EPISODES, PLAYER }
+/** Écrans NoVaY, avec leur payload de navigation. */
+sealed class Destination {
+    data object Search : Destination()
+    data class Show(val franchise: Franchise) : Destination()
+    data class Episodes(val entry: FranchiseEntry) : Destination()
+    data class Player(val entry: FranchiseEntry, val episode: AnimeEpisode) : Destination()
+}
+
+/** Profondeur d'un écran dans le flux (sens de la transition animée). */
+private fun Destination.rank(): Int = when (this) {
+    Destination.Search -> 0
+    is Destination.Show -> 1
+    is Destination.Episodes -> 2
+    is Destination.Player -> 3
+}
 
 /**
  * Coque de navigation NoVaY : flux linéaire
@@ -33,11 +51,12 @@ private enum class AppScreen { SEARCH, SHOW, EPISODES, PLAYER }
  */
 @Composable
 fun NoVaYApp() {
-    val stack = remember { mutableStateListOf(AppScreen.SEARCH) }
+    val source = remember { VoiranimeSource() }
+    val stack = remember { mutableStateListOf<Destination>(Destination.Search) }
 
     BackHandler(enabled = stack.size > 1) { stack.removeAt(stack.lastIndex) }
 
-    val open: (AppScreen) -> Unit = { stack.add(it) }
+    val open: (Destination) -> Unit = { stack.add(it) }
     val back: () -> Unit = { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
 
     SlateMotionProvider {
@@ -49,7 +68,7 @@ fun NoVaYApp() {
                 targetState = stack.last(),
                 modifier = Modifier.fillMaxSize(),
                 transitionSpec = {
-                    if (targetState.ordinal > initialState.ordinal) {
+                    if (targetState.rank() > initialState.rank()) {
                         (slideInHorizontally(tween(260)) { it / 4 } + fadeIn(tween(220)))
                             .togetherWith(
                                 slideOutHorizontally(tween(200)) { -it / 4 } + fadeOut(tween(180))
@@ -69,18 +88,25 @@ fun NoVaYApp() {
                         .padding(innerPadding)
                 ) {
                     when (screen) {
-                        AppScreen.SEARCH -> SearchScreen(
-                            onOpenShow = { open(AppScreen.SHOW) }
+                        Destination.Search -> SearchScreen(
+                            source = source,
+                            onOpenShow = { open(Destination.Show(it)) }
                         )
-                        AppScreen.SHOW -> ShowScreen(
+                        is Destination.Show -> ShowScreen(
+                            franchise = screen.franchise,
                             onBack = back,
-                            onOpenEpisodes = { open(AppScreen.EPISODES) }
+                            onOpenEpisodes = { open(Destination.Episodes(it)) }
                         )
-                        AppScreen.EPISODES -> EpisodesScreen(
+                        is Destination.Episodes -> EpisodesScreen(
+                            source = source,
+                            entry = screen.entry,
                             onBack = back,
-                            onOpenPlayer = { open(AppScreen.PLAYER) }
+                            onOpenPlayer = { open(Destination.Player(screen.entry, it)) }
                         )
-                        AppScreen.PLAYER -> PlayerScreen(
+                        is Destination.Player -> PlayerScreen(
+                            source = source,
+                            entry = screen.entry,
+                            episode = screen.episode,
                             onBack = back
                         )
                     }

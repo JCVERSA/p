@@ -44,6 +44,12 @@ android {
   buildFeatures {
     compose = true
   }
+  lint {
+    // media3 marque une grande partie de son API @UnstableApi (stable en
+    // pratique, utilisé en production partout) — les usages sont couverts
+    // par @androidx.annotation.OptIn dans PlayerScreen.
+    disable += "UnsafeOptInUsageError"
+  }
 }
 
 dependencies {
@@ -60,5 +66,9 @@ dependencies {
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.okhttp)
+  implementation(libs.media3.exoplayer)
+  implementation(libs.media3.exoplayer.hls)
+  implementation(libs.media3.ui)
+  testImplementation(libs.junit)
   debugImplementation(libs.androidx.compose.ui.tooling)
 }

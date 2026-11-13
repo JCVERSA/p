@@ -1,5 +1,6 @@
 package dot.jcversa.novay.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -29,8 +31,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.data.Franchise
+import dot.jcversa.novay.data.FranchiseEntry
 import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.LangPill
 import dot.jcversa.novay.ui.components.bounceClick
@@ -39,17 +42,16 @@ import dot.jcversa.novay.ui.theme.DarkSurfaceCard
 import dot.jcversa.novay.ui.theme.DarkSurfaceVariant
 import dot.jcversa.novay.ui.theme.TextMuted
 
-private val demoSeasons = listOf("Saison 1", "Saison 2")
-
 /**
- * Écran Fiche/Saisons (squelette V0). V1 : saisons réelles du catalogue
- * avec sélecteur VF/VOSTFR (voiranime expose chaque langue comme une
- * saison — cf. organizeVfSelection côté bot).
+ * Écran Fiche/Saisons : les saisons et films de la franchise, étiquetés
+ * par le portage de organizeVfSelection (saisons croissantes, films
+ * nommés, sous-titres distinctifs intacts).
  */
 @Composable
 fun ShowScreen(
+    franchise: Franchise,
     onBack: () -> Unit,
-    onOpenEpisodes: () -> Unit
+    onOpenEpisodes: (FranchiseEntry) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -67,7 +69,7 @@ fun ShowScreen(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                text = "Solo Leveling",
+                text = franchise.baseTitle,
                 style = MaterialTheme.typography.headlineMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -76,7 +78,6 @@ fun ShowScreen(
         Spacer(Modifier.height(16.dp))
 
         Row {
-            // Placeholder affiche — V1 : miniature réelle (Coil).
             Box(
                 modifier = Modifier
                     .size(width = 96.dp, height = 136.dp)
@@ -94,18 +95,17 @@ fun ShowScreen(
             Spacer(Modifier.width(16.dp))
             Column {
                 Text(
-                    text = "Solo Leveling",
+                    text = franchise.baseTitle,
                     style = MaterialTheme.typography.titleLarge
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    LangPill(text = "VF", vf = true)
-                    LangPill(text = "VOSTFR")
+                    if (franchise.entries.any { it.result.isVf }) LangPill(text = "VF", vf = true)
+                    if (franchise.entries.any { !it.result.isVf }) LangPill(text = "VOSTFR")
                 }
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    text = "Fiche et synopsis depuis le catalogue en V1 — " +
-                        "saisons, langues et épisodes réels.",
+                    text = "Chaque saison est une entrée du catalogue — le site publie une page par saison et par langue.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -113,13 +113,13 @@ fun ShowScreen(
         Spacer(Modifier.height(24.dp))
 
         Text(
-            text = "Saisons",
+            text = "Saisons & films",
             style = MaterialTheme.typography.titleMedium
         )
         Spacer(Modifier.height(12.dp))
-        demoSeasons.forEachIndexed { index, season ->
+        franchise.entries.forEachIndexed { index, entry ->
             AnimateEntrance(index = index) {
-                SeasonCard(name = season, onClick = onOpenEpisodes)
+                SeasonCard(entry = entry, onClick = { onOpenEpisodes(entry) })
             }
             Spacer(Modifier.height(12.dp))
         }
@@ -128,7 +128,7 @@ fun ShowScreen(
 }
 
 @Composable
-private fun SeasonCard(name: String, onClick: () -> Unit) {
+private fun SeasonCard(entry: FranchiseEntry, onClick: () -> Unit) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -141,11 +141,22 @@ private fun SeasonCard(name: String, onClick: () -> Unit) {
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = name,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f)
+            Icon(
+                imageVector = Icons.Outlined.PlayCircleOutline,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
             )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = entry.label,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = if (entry.result.isVf) "Version française" else "VOSTFR",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,

@@ -1,7 +1,7 @@
 package dot.jcversa.novay.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,12 +26,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.data.AnimeEpisode
+import dot.jcversa.novay.data.AnimeSource
+import dot.jcversa.novay.data.FranchiseEntry
 import dot.jcversa.novay.ui.components.AnimateEntrance
+import dot.jcversa.novay.ui.components.ErrorView
+import dot.jcversa.novay.ui.components.LoadingView
 import dot.jcversa.novay.ui.components.bounceClick
 import dot.jcversa.novay.ui.theme.Amber500
 import dot.jcversa.novay.ui.theme.DarkCardBorder
@@ -40,14 +51,30 @@ import dot.jcversa.novay.ui.theme.DarkSurfaceVariant
 import dot.jcversa.novay.ui.theme.TextMuted
 
 /**
- * Écran Épisodes (squelette V0). V1 : liste réelle de la saison ; le
- * bouton téléchargement (grisé ici) s'activera en V2.
+ * Écran Épisodes : liste réelle de la saison (page anime du site),
+ * épisodes numérotés en ordre croissant, films/OAV étiquetés.
  */
 @Composable
 fun EpisodesScreen(
+    source: AnimeSource,
+    entry: FranchiseEntry,
     onBack: () -> Unit,
-    onOpenPlayer: () -> Unit
+    onOpenPlayer: (AnimeEpisode) -> Unit
 ) {
+    var episodes by remember { mutableStateOf<List<AnimeEpisode>?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var retryKey by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(entry.result.url, retryKey) {
+        error = null
+        episodes = null
+        try {
+            episodes = source.episodes(entry.result)
+        } catch (e: Exception) {
+            error = e.message ?: "Erreur inconnue"
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -63,20 +90,30 @@ fun EpisodesScreen(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                text = "Solo Leveling — Saison 1",
-                style = MaterialTheme.typography.headlineMedium
+                text = entry.label,
+                style = MaterialTheme.typography.headlineMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
         Spacer(Modifier.height(16.dp))
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            itemsIndexed(List(12) { it + 1 }) { index, number ->
-                AnimateEntrance(index = index) {
-                    EpisodeRow(number = number, onClick = onOpenPlayer)
+        when {
+            error != null -> ErrorView(message = error!!, onRetry = { retryKey++ })
+            episodes == null -> LoadingView(message = "Chargement des épisodes…")
+            episodes!!.isEmpty() -> Text(
+                text = "Aucun épisode listé sur la page de cette entrée.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                itemsIndexed(episodes!!) { index, episode ->
+                    AnimateEntrance(index = index) {
+                        EpisodeRow(episode = episode, onClick = { onOpenPlayer(episode) })
+                    }
                 }
             }
         }
@@ -84,7 +121,7 @@ fun EpisodesScreen(
 }
 
 @Composable
-private fun EpisodeRow(number: Int, onClick: () -> Unit) {
+private fun EpisodeRow(episode: AnimeEpisode, onClick: () -> Unit) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -105,14 +142,14 @@ private fun EpisodeRow(number: Int, onClick: () -> Unit) {
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = number.toString(),
+                    text = if (episode.number > 0) episode.number.toString() else "★",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
             Spacer(Modifier.width(12.dp))
             Text(
-                text = "Épisode $number",
+                text = episode.label,
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f)
             )

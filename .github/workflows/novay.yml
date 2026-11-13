@@ -52,6 +52,28 @@ jobs:
             -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=NoVaY Debug,O=NoVaY,C=CM"
 
+      # Tests unitaires des parseurs (fixtures portees du bot) AVANT le
+      # build : un parseur casse ne doit jamais produire d'APK.
+      - name: Tests unitaires
+        run: |
+          set +e
+          gradle :app:testReleaseUnitTest --no-daemon 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            grep -E "^e: |error: |FAILED|FAILURE|tests completed" test.log | head -n 8 | while IFS= read -r line; do
+              echo "::error::${line:0:240}"
+            done
+            exit "$status"
+          fi
+          # Garde-fou : zero rapport de test = tests non compiles (source
+          # set ?) - un silence n'est pas un succes.
+          reports=$(ls app/build/test-results/testReleaseUnitTest/*.xml 2>/dev/null | wc -l)
+          if [ "$reports" -eq 0 ]; then
+            echo "::error::Aucun test execute - le source set src/test/kotlin n'est pas pris en compte"
+            exit 1
+          fi
+
       # APK "fat" : armeabi-v7a (32 bits, Android 7+ - exigence owner) +
       # arm64-v8a + x86_64 dans un seul fichier a installer.
       - name: Build APK (release)
@@ -92,4 +114,12 @@ jobs:
         with:
           name: novay-build-log
           path: novay/build.log
+          if-no-files-found: ignore
+
+      - name: Upload du log de tests (toujours)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: novay-test-log
+          path: novay/test.log
           if-no-files-found: ignore

@@ -17,11 +17,15 @@ anti-Cloudflare.
   sa CI : ressuscitable si le bot revient.
 
 ## Roadmap
-- **V0** (ce scaffold) : thème noir+ambre, motion SwiftSlate, flux
-  Recherche → Fiche → Épisodes → Lecteur en squelettes cliquables.
-- **V1** : catalogue voiranime — recherche, saisons (VF/VOSTFR),
-  épisodes, streaming HLS (media3) avec résolutions lues du lecteur.
-  Portage des parseurs de `src/bot/services/voiranimeClient.ts`.
+- **V0** : thème noir+ambre, motion SwiftSlate, flux
+  Recherche → Fiche → Épisodes → Lecteur en squelettes cliquables. ✔
+- **V1** (livré) : catalogue voiranime — recherche (double mode Madara +
+  complétion de franchises), saisons regroupées par anime (VF/VOSTFR),
+  épisodes, streaming HLS (media3/ExoPlayer) avec en-têtes Referer/UA et
+  les VRAIES résolutions lues de la master playlist. Parseurs portés 1:1
+  de `src/bot/services/voiranimeClient.ts` + sonde Voe de
+  `animeStreamExtractor.ts` (rot13 + double base64 + ord-3 + reverse),
+  fixtures de test du bot reprises en JUnit.
 - **V2** : téléchargement sur stockage.
 - **V3** : autres catalogues (anime-sama, jetanimes…).
 
