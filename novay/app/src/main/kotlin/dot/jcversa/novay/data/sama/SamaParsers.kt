@@ -292,10 +292,14 @@ object SamaParsers {
         abs.firstOrNull { it.contains("master.m3u8", ignoreCase = true) }?.let { return it to true }
         abs.firstOrNull()?.let { return it to true }
         val rel = REL_M3U8_RE.find(html)?.groupValues?.get(1)
-        if (rel != null && playerOrigin.isNotEmpty()) {
+        if (rel != null && playerOrigin.isNotEmpty() &&
+            !DUMMY_STREAM_RE.containsMatchIn(rel)
+        ) {
             return playerOrigin.trimEnd('/') + rel to true
         }
-        MP4_RE.find(html)?.value?.let { return it to false }
+        MP4_RE.findAll(html).map { it.value }
+            .firstOrNull { !DUMMY_STREAM_RE.containsMatchIn(it) }
+            ?.let { return it to false }
         return null
     }
 
