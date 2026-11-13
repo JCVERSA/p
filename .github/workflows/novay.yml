@@ -61,8 +61,29 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      # Meme canon de diagnostic que le build : les logs GitHub sont
+      # inaccessibles depuis le sandbox, les annotations ::error sont le
+      # seul canal lisible via l'API.
       - name: Analyze
-        run: flutter analyze --no-fatal-infos
+        run: |
+          set +e
+          flutter analyze --no-fatal-infos 2>&1 | tee analyze.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            grep ' • ' analyze.log | head -n 10 | while IFS= read -r line; do
+              echo "::error::${line:0:240}"
+            done
+            exit "$status"
+          fi
+
+      - name: Upload du log d'analyze (toujours)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: novay-analyze-log
+          path: novay/analyze.log
+          if-no-files-found: ignore
 
       # L'APK "fat" embarque armeabi-v7a (32 bits, Android 7+ requis par le
       # owner) + arm64-v8a + x86_64 : un seul fichier a installer.
