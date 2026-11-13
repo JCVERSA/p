@@ -21,9 +21,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.outlined.DownloadDone
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -72,8 +72,9 @@ private sealed interface SearchState {
 @Composable
 fun SearchScreen(
     source: AnimeSource,
-    onOpenShow: (AnimeSearchResult) -> Unit,
-    onOpenDownloads: () -> Unit = {}
+    canBack: Boolean = true,
+    onBack: () -> Unit = {},
+    onOpenShow: (AnimeSearchResult) -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var state by remember { mutableStateOf<SearchState>(SearchState.Idle) }
@@ -102,22 +103,20 @@ fun SearchScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "NoVaY",
-                    style = MaterialTheme.typography.displayMedium
+            // Racine d'onglet : pas de flèche retour ; empilée sur l'accueil
+            // (via « Rechercher ») : flèche retour visible.
+            if (canBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Retour",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.bounceClick(onClick = onBack)
                 )
-                Text(
-                    text = "Animes VF & VOSTFR, depuis ton téléphone",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Spacer(Modifier.width(8.dp))
             }
-            // V2 : accès aux téléchargements (hors-ligne).
-            Icon(
-                imageVector = Icons.Outlined.DownloadDone,
-                contentDescription = "Téléchargements",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.bounceClick(onClick = onOpenDownloads)
+            Text(
+                text = "Rechercher",
+                style = MaterialTheme.typography.headlineMedium
             )
         }
         Spacer(Modifier.height(16.dp))

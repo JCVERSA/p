@@ -19,7 +19,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.outlined.DownloadDone
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -60,7 +59,6 @@ import kotlinx.coroutines.withContext
 @Composable
 fun HomeScreen(
     onOpenSearch: () -> Unit,
-    onOpenDownloads: () -> Unit,
     onResume: (entry: WatchHistoryEntry) -> Unit
 ) {
     val context = LocalContext.current
@@ -105,12 +103,6 @@ fun HomeScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
-                Icon(
-                    imageVector = Icons.Outlined.DownloadDone,
-                    contentDescription = "Téléchargements",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.bounceClick(onClick = onOpenDownloads)
-                )
             }
             Spacer(Modifier.height(16.dp))
             // Barre de recherche factice : un tap ouvre la vraie recherche.

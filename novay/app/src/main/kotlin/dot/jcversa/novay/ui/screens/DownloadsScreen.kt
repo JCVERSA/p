@@ -55,7 +55,8 @@ import kotlinx.coroutines.withContext
  */
 @Composable
 fun DownloadsScreen(
-    onBack: () -> Unit,
+    canBack: Boolean = true,
+    onBack: () -> Unit = {},
     onPlay: (season: AnimeSeason, episode: AnimeEpisode, stream: ResolvedStream) -> Unit
 ) {
     val context = LocalContext.current
@@ -78,13 +79,16 @@ fun DownloadsScreen(
     ) {
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Retour",
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.bounceClick(onClick = onBack)
-            )
-            Spacer(Modifier.width(8.dp))
+            // Racine d'onglet : pas de flèche retour.
+            if (canBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Retour",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.bounceClick(onClick = onBack)
+                )
+                Spacer(Modifier.width(8.dp))
+            }
             Text(
                 text = "Téléchargements",
                 style = MaterialTheme.typography.headlineMedium

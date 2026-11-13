@@ -64,6 +64,23 @@ anti-Cloudflare.
     repli silencieux).
   - **Écran Téléchargements** (icône en haut de la recherche) : progression
     par épisode, lecture, suppression.
+- **V2.1** (livré) : **interface**.
+  - **Affiches réelles** du catalogue (`asn-search-result-img`, src puis
+    data-src — les placeholders `data:` 1×1 du lazy-loading sont ignorés) :
+    miniatures de recherche + bannière pleine largeur sur la fiche anime
+    (dégradé sombre, sous-titre lisible). Coil 2.7, chaque image signée
+    UA + Referer de son origine (anti-hotlink).
+  - **Écran d'accueil** : « Reprendre la lecture » (historique persisté,
+    une entrée par épisode, lienIds + jeton conservés pour reprendre sans
+    repasser par la recherche — le jeton expiré est rafraîchi par
+    SamaSource), téléchargements en cours avec progression, compteur
+    d'épisodes prêts hors-ligne.
+  - **Lecteur plein écran** : paysage automatique, barres système
+    masquées (immersion), contrôles Compose maison (lecture/pause, barre
+    de progression seekable, temps), double-tap ±10 s (moitié
+    gauche/droite), qualités dans un bouton réglages.
+  - **Barre de navigation basse** : Accueil / Recherche /
+    Téléchargements (la barre disparaît pendant la lecture).
 - **V3** : autres catalogues.
 
 La sonde réseau CI (job « Sonde anime-sama », push avec `[probe]` dans le
