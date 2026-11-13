@@ -69,6 +69,14 @@ sealed class Destination {
     ) : Destination()
 }
 
+/**
+ * Pile de navigation AU NIVEAU DU PROCESSUS (pas de remember) : elle
+ * survit a toute recreation de l activite. Sans cela, le lecteur qui
+ * force le paysage recreait l activite et renvoyait a l accueil - le
+ * lecteur semblait ne jamais s ouvrir.
+ */
+private val processStack = mutableStateListOf<Destination>(Destination.Home)
+
 /** Racines d'onglet (barre de navigation basse). */
 private val Destination.isTab: Boolean
     get() = this is Destination.Home || this is Destination.Search || this is Destination.Downloads
@@ -90,7 +98,7 @@ private fun Destination.rank(): Int = when (this) {
 @Composable
 fun NoVaYApp() {
     val source = remember { SamaSource() }
-    val stack = remember { mutableStateListOf<Destination>(Destination.Home) }
+    val stack = processStack
 
     BackHandler(enabled = stack.size > 1) { stack.removeAt(stack.lastIndex) }
 

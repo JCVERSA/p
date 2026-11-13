@@ -19,10 +19,15 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.NoVaY">
+        <!-- Lecteur video : la rotation (paysage force par le lecteur) ne
+             doit JAMAIS recree l activite - Compose recompose
+             naturellement, la lecture continue et la pile de navigation
+             survit (sinon : retour immediate a l accueil). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|keyboard|keyboardHidden|navigation"
             android:theme="@style/Theme.NoVaY">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
