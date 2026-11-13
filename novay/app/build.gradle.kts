@@ -76,5 +76,7 @@ dependencies {
   implementation(libs.media3.exoplayer.hls)
   implementation(libs.media3.ui)
   testImplementation(libs.junit)
+  // org.json reel pour les tests JVM (celui d'android.jar est un stub).
+  testImplementation(libs.org.json)
   debugImplementation(libs.androidx.compose.ui.tooling)
 }

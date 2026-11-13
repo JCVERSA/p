@@ -49,39 +49,59 @@ import dot.jcversa.novay.data.AnimeSource
 import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.ResolvedStream
 import dot.jcversa.novay.data.voiranime.VoiranimeParsers
+import dot.jcversa.novay.downloads.Downloads
 import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LoadingView
 import dot.jcversa.novay.ui.components.bounceClick
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Écran Lecteur : résout le flux de l'épisode (page → iframe voembed →
  * payload chiffré → HLS) puis le joue avec media3/ExoPlayer, en passant
  * les en-têtes Referer/Origin/UA exigés par le CDN. Les résolutions sont
  * les VRAIES variantes de la master playlist.
+ *
+ * V2 : si l'épisode est téléchargé (ou que la navigation vient de
+ * l'écran Téléchargements), la lecture passe par le cache offline —
+ * aucune requête réseau.
  */
 @Composable
 fun PlayerScreen(
     source: AnimeSource,
     season: AnimeSeason,
     episode: AnimeEpisode,
+    initialStream: ResolvedStream? = null,
     onBack: () -> Unit
 ) {
-    var stream by remember { mutableStateOf<ResolvedStream?>(null) }
+    val context = LocalContext.current
+    // Lecture hors-ligne : flux fourni par l'écran Téléchargements, ou
+    // épisode téléchargé (vérifié au chargement — index SQLite hors du
+    // thread principal).
+    var offline by remember(episode.url, episode.number) { mutableStateOf(initialStream != null) }
+    var stream by remember { mutableStateOf<ResolvedStream?>(initialStream) }
     var error by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(true) }
+    var loading by remember { mutableStateOf(initialStream == null) }
     var retryKey by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(episode.url, retryKey) {
-        loading = true
-        error = null
-        stream = null
-        try {
-            stream = source.stream(episode)
-        } catch (e: Exception) {
-            error = e.message ?: "Erreur inconnue"
-        } finally {
-            loading = false
+        if (initialStream == null) {
+            offline = withContext(Dispatchers.IO) {
+                runCatching {
+                    Downloads.isDownloaded(context, season.url, episode.number)
+                }.getOrDefault(false)
+            }
+            loading = true
+            error = null
+            stream = null
+            try {
+                stream = source.stream(episode)
+            } catch (e: Exception) {
+                error = e.message ?: "Erreur inconnue"
+            } finally {
+                loading = false
+            }
         }
     }
 
@@ -129,14 +149,14 @@ fun PlayerScreen(
         when {
             loading -> LoadingView(message = "Résolution du flux depuis le lecteur…")
             error != null -> ErrorView(message = error!!, onRetry = { retryKey++ })
-            stream != null -> PlayerContent(stream = stream!!)
+            stream != null -> PlayerContent(stream = stream!!, offline = offline)
         }
     }
 }
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun PlayerContent(stream: ResolvedStream) {
+private fun PlayerContent(stream: ResolvedStream, offline: Boolean) {
     val context = LocalContext.current
     val player = remember { ExoPlayer.Builder(context).build() }
     // null = master playlist (qualité adaptative « Auto »).
@@ -146,19 +166,24 @@ private fun PlayerContent(stream: ResolvedStream) {
         onDispose { player.release() }
     }
 
-    LaunchedEffect(stream, selectedQualityUrl) {
+    LaunchedEffect(stream, selectedQualityUrl, offline) {
         val url = selectedQualityUrl ?: stream.url
-        val httpFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent(stream.headers["User-Agent"] ?: VoiranimeParsers.UA)
-            .setDefaultRequestProperties(stream.headers - "User-Agent")
-            .setAllowCrossProtocolRedirects(true)
-        val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
-        val mediaSource = if (stream.isHls) {
-            HlsMediaSource.Factory(dataSourceFactory)
-                .createMediaSource(MediaItem.fromUri(url))
+        val mediaSource = if (offline) {
+            // V2 : cache offline d'abord, réseau en repli (jamais écrit).
+            Downloads.offlineMediaSource(context, stream)
         } else {
-            ProgressiveMediaSource.Factory(dataSourceFactory)
-                .createMediaSource(MediaItem.fromUri(url))
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent(stream.headers["User-Agent"] ?: VoiranimeParsers.UA)
+                .setDefaultRequestProperties(stream.headers - "User-Agent")
+                .setAllowCrossProtocolRedirects(true)
+            val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
+            if (stream.isHls) {
+                HlsMediaSource.Factory(dataSourceFactory)
+                    .createMediaSource(MediaItem.fromUri(url))
+            } else {
+                ProgressiveMediaSource.Factory(dataSourceFactory)
+                    .createMediaSource(MediaItem.fromUri(url))
+            }
         }
         player.setMediaSource(mediaSource)
         player.prepare()
@@ -184,7 +209,14 @@ private fun PlayerContent(stream: ResolvedStream) {
                 .aspectRatio(16f / 9f)
         )
 
-        if (stream.qualities.isNotEmpty()) {
+        if (offline) {
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "Lecture hors-ligne (épisode téléchargé).",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 20.dp)
+            )
+        } else if (stream.qualities.isNotEmpty()) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Text(
                     text = "Qualité (résolutions du lecteur)",

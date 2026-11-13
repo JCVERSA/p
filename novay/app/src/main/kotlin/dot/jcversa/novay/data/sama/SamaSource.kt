@@ -280,6 +280,15 @@ class SamaSource(
             "Referer" to "$playerOrigin/",
             "Origin" to playerOrigin
         )
+        // En-têtes enregistrés pour l'hôte du flux : les téléchargements et
+        // la lecture hors-ligne (DataSource media3) les exigeront aussi.
+        try {
+            val host = java.net.URI(streamUrl).host ?: ""
+            if (host.isNotEmpty()) {
+                dot.jcversa.novay.downloads.StreamHeadersRegistry.register(host, headers)
+            }
+        } catch (_: Exception) {
+        }
         val qualities = if (isHls) {
             // Les pistes sont optionnelles : l'URL master reste jouable.
             try {

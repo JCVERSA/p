@@ -45,7 +45,25 @@ anti-Cloudflare.
   - Chaîne validée **E2E depuis un runner GitHub Actions** le 13/11
     (recherche « naruto » → saisons → épisodes → lecteur ansembed →
     master.m3u8 sur vmnow.online).
-- **V2** : téléchargement sur stockage.
+- **V2** (livré) : **téléchargement hors-ligne** (media3 DownloadService).
+  - Un bouton de téléchargement par épisode (icône flèche, puis
+    progression % en direct dans la liste, ✓ vert quand c'est prêt).
+  - **Meilleure qualité automatique** : la plus haute résolution de la
+    master playlist (une seule variante téléchargée, pas quatre).
+  - **Progression en notification** (canal dédié, mise à jour 1 s),
+    service foreground `dataSync`, un téléchargement à la fois.
+  - **Reprise automatique** : index persisté (SQLite media3) + en-têtes
+    Referer/Origin par hôte persistés (SharedPreferences) — un
+    téléchargement interrompu (réseau, redémarrage du téléphone) repart
+    où il s'était arrêté à la réouverture de l'appli.
+  - **Stockage privé** `Android/data/dot.jcversa.novay/files/offline`
+    (cache media3 SimpleCache) : zéro permission de stockage, invisible
+    des autres applis ; suppression depuis l'écran Téléchargements.
+  - **Lecture hors-ligne** : un épisode téléchargé se lit depuis le cache
+    sans aucune requête réseau (CacheDataSource, cache d'abord, réseau en
+    repli silencieux).
+  - **Écran Téléchargements** (icône en haut de la recherche) : progression
+    par épisode, lecture, suppression.
 - **V3** : autres catalogues.
 
 La sonde réseau CI (job « Sonde anime-sama », push avec `[probe]` dans le

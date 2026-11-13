@@ -4,6 +4,12 @@
     <!-- V1 : scrape des catalogues + streaming HLS depuis le telephone. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- V2 : telechargements en arriere-plan (service foreground dataSync
+         + notification de progression, rejet possible sur Android 13+ sans
+         interrompre les telechargements). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="false"
@@ -23,6 +29,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- V2 : telechargements en arriere-plan (progression en
+             notification, reprise apres redemarrage). -->
+        <service
+            android:name=".downloads.NovayDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

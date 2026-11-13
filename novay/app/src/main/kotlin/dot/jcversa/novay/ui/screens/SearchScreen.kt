@@ -23,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.DownloadDone
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -71,7 +72,8 @@ private sealed interface SearchState {
 @Composable
 fun SearchScreen(
     source: AnimeSource,
-    onOpenShow: (AnimeSearchResult) -> Unit
+    onOpenShow: (AnimeSearchResult) -> Unit,
+    onOpenDownloads: () -> Unit = {}
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var state by remember { mutableStateOf<SearchState>(SearchState.Idle) }
@@ -96,14 +98,28 @@ fun SearchScreen(
             .padding(horizontal = 20.dp)
     ) {
         Spacer(Modifier.height(20.dp))
-        Text(
-            text = "NoVaY",
-            style = MaterialTheme.typography.displayMedium
-        )
-        Text(
-            text = "Animes VF & VOSTFR, depuis ton téléphone",
-            style = MaterialTheme.typography.bodyMedium
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "NoVaY",
+                    style = MaterialTheme.typography.displayMedium
+                )
+                Text(
+                    text = "Animes VF & VOSTFR, depuis ton téléphone",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            // V2 : accès aux téléchargements (hors-ligne).
+            Icon(
+                imageVector = Icons.Outlined.DownloadDone,
+                contentDescription = "Téléchargements",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.bounceClick(onClick = onOpenDownloads)
+            )
+        }
         Spacer(Modifier.height(16.dp))
 
         OutlinedTextField(
