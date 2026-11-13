@@ -43,12 +43,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSource
-import dot.jcversa.novay.data.Franchise
-import dot.jcversa.novay.data.voiranime.VoiranimeParsers
 import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.ErrorView
-import dot.jcversa.novay.ui.components.LangPill
 import dot.jcversa.novay.ui.components.LoadingView
 import dot.jcversa.novay.ui.components.bounceClick
 import dot.jcversa.novay.ui.theme.Amber500
@@ -63,18 +61,17 @@ private sealed interface SearchState {
     data object Idle : SearchState
     data object Loading : SearchState
     data class Error(val message: String) : SearchState
-    data class Results(val franchises: List<Franchise>) : SearchState
+    data class Results(val results: List<AnimeSearchResult>) : SearchState
 }
 
 /**
- * Écran Recherche : interroge le catalogue (recherche double Madara +
- * complétion de franchises, cf. VoiranimeSource) et regroupe les entrées
- * par anime — saisons étiquetées, films nommés.
+ * Écran Recherche : interroge le catalogue (variantes de requête côté
+ * source : article retiré, singulier/pluriel, « rezero » → « re zero »).
  */
 @Composable
 fun SearchScreen(
     source: AnimeSource,
-    onOpenShow: (Franchise) -> Unit
+    onOpenShow: (AnimeSearchResult) -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var state by remember { mutableStateOf<SearchState>(SearchState.Idle) }
@@ -86,7 +83,7 @@ fun SearchScreen(
         scope.launch {
             state = SearchState.Loading
             state = try {
-                SearchState.Results(VoiranimeParsers.groupFranchises(source.search(q)))
+                SearchState.Results(source.search(q))
             } catch (e: Exception) {
                 SearchState.Error(e.message ?: "Erreur inconnue")
             }
@@ -139,15 +136,15 @@ fun SearchScreen(
 
         when (val s = state) {
             SearchState.Idle -> Text(
-                text = "Tape au moins 2 lettres puis valide — la recherche interroge les deux modes du site et complète les saisons manquantes.",
+                text = "Tape au moins 2 lettres puis valide — la recherche essaie aussi les variantes proches (article, pluriel).",
                 style = MaterialTheme.typography.bodySmall
             )
             SearchState.Loading -> LoadingView(message = "Recherche sur ${source.name}…")
             is SearchState.Error -> ErrorView(message = s.message, onRetry = { runSearch() })
             is SearchState.Results -> {
-                if (s.franchises.isEmpty()) {
+                if (s.results.isEmpty()) {
                     Text(
-                        text = "Aucun résultat pour « ${query.trim()} ».",
+                        text = "Aucun résultat pour « ${query.trim()} » — vérifie l'orthographe, ou sépare bien les mots du titre.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 } else {
@@ -156,9 +153,9 @@ fun SearchScreen(
                         contentPadding = PaddingValues(bottom = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        itemsIndexed(s.franchises) { index, franchise ->
+                        itemsIndexed(s.results) { index, result ->
                             AnimateEntrance(index = index) {
-                                FranchiseCard(franchise = franchise, onClick = { onOpenShow(franchise) })
+                                ResultCard(result = result, onClick = { onOpenShow(result) })
                             }
                         }
                     }
@@ -169,9 +166,7 @@ fun SearchScreen(
 }
 
 @Composable
-private fun FranchiseCard(franchise: Franchise, onClick: () -> Unit) {
-    val hasVf = franchise.entries.any { it.result.isVf }
-    val hasVostfr = franchise.entries.any { !it.result.isVf }
+private fun ResultCard(result: AnimeSearchResult, onClick: () -> Unit) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -201,21 +196,20 @@ private fun FranchiseCard(franchise: Franchise, onClick: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = franchise.baseTitle,
+                    text = result.title,
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (hasVf) LangPill(text = "VF", vf = true)
-                    if (hasVostfr) LangPill(text = "VOSTFR")
+                if (!result.subtitle.isNullOrBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = result.subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = "${franchise.entries.size} saison(s) & film(s)",
-                    style = MaterialTheme.typography.bodySmall
-                )
             }
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,

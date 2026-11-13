@@ -46,7 +46,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSource
-import dot.jcversa.novay.data.FranchiseEntry
+import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.ResolvedStream
 import dot.jcversa.novay.data.voiranime.VoiranimeParsers
 import dot.jcversa.novay.ui.components.AnimateEntrance
@@ -63,7 +63,7 @@ import dot.jcversa.novay.ui.components.bounceClick
 @Composable
 fun PlayerScreen(
     source: AnimeSource,
-    entry: FranchiseEntry,
+    season: AnimeSeason,
     episode: AnimeEpisode,
     onBack: () -> Unit
 ) {
@@ -118,7 +118,7 @@ fun PlayerScreen(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = entry.label,
+                    text = season.name,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis

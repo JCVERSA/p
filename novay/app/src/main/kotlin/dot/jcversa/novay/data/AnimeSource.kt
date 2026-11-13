@@ -3,28 +3,38 @@ package dot.jcversa.novay.data
 /**
  * Contrat de catalogue NoVaY.
  *
- * Portage Kotlin des parseurs de `src/bot/services/voiranimeClient.ts` et
- * de la sonde Voe de `animeStreamExtractor.ts` : mêmes formes de données,
- * mêmes fixtures de test. L'IP résidentielle du téléphone remplace le
- * serveur du bot (atout anti-Cloudflare).
- *
- * V1 : voiranime. V3 : autres catalogues (anime-sama, jetanimes…).
+ * V1 : anime-sama (structure validée E2E depuis un runner GitHub Actions
+ * le 13/11 — cf. SamaParsers pour le détail). voiranime est mort (domaine
+ * déréférencé) ; ses parseurs restent portés dans data/voiranime pour un
+ * éventuel retour.
  */
 
-/** Une entrée du catalogue (= une « saison » publiée par le site). */
+/** Une entrée du catalogue (un anime). */
 data class AnimeSearchResult(
     val title: String,
     val url: String,
-    val slug: String,
+    val slug: String = "",
     val language: String? = null, // "VF" | "VOSTFR" | null
+    val subtitle: String? = null,
     val isVf: Boolean = false
 )
 
-/** Un épisode d'une entrée. */
+/** Une saison/film d'un anime (langue structurelle du sous-chemin). */
+data class AnimeSeason(
+    val name: String,
+    val url: String,
+    val language: String? = null
+)
+
+/** Un épisode d'une saison. */
 data class AnimeEpisode(
     val number: Int, // 0 pour un film/OAV
-    val url: String,
-    val label: String // « Épisode N » | « Film » | « OAV »
+    val url: String, // page de saison (rafraîchissement du jeton) ou page épisode
+    val label: String, // « Épisode N » | « Film » | « OAV »
+    // anime-sama : identifiants de lecteurs positionnels (« lien:186672 »)
+    // + jeton de session pour /api/lien.php. Autres sources : vide.
+    val lienIds: List<String> = emptyList(),
+    val jeton: String = ""
 )
 
 /** Une qualité proposée par le lecteur (variante de la master playlist HLS). */
@@ -42,34 +52,19 @@ data class ResolvedStream(
     val qualities: List<StreamQuality>
 )
 
-/**
- * Une entrée organisée : saison déduite (null pour les films), étiquette
- * prête pour la liste (portage de OrganizedVfEntry côté bot).
- */
-data class FranchiseEntry(
-    val result: AnimeSearchResult,
-    val season: Int?,
-    val isFilm: Boolean,
-    val baseTitle: String,
-    val label: String
-)
-
-/** Une franchise (anime) regroupant ses saisons et films. */
-data class Franchise(
-    val baseTitle: String,
-    val entries: List<FranchiseEntry>
-)
-
 /** Contrat commun à tous les catalogues. */
 interface AnimeSource {
-    /** Nom affiché (ex. « voir-anime »). */
+    /** Nom affiché (ex. « anime-sama »). */
     val name: String
 
-    /** Recherche et retourne les entrées du catalogue. */
+    /** Recherche et retourne les animes du catalogue. */
     suspend fun search(query: String): List<AnimeSearchResult>
 
-    /** Liste les épisodes d'une entrée (page anime du site). */
-    suspend fun episodes(entry: AnimeSearchResult): List<AnimeEpisode>
+    /** Saisons/films d'un anime (langue structurelle quand le site l'encode). */
+    suspend fun seasons(anime: AnimeSearchResult): List<AnimeSeason>
+
+    /** Épisodes d'une saison. */
+    suspend fun episodes(season: AnimeSeason): List<AnimeEpisode>
 
     /** Résout le flux jouable d'un épisode (lecteur + qualités HLS). */
     suspend fun stream(episode: AnimeEpisode): ResolvedStream

@@ -17,10 +17,9 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import dot.jcversa.novay.data.AnimeEpisode
-import dot.jcversa.novay.data.AnimeSource
-import dot.jcversa.novay.data.Franchise
-import dot.jcversa.novay.data.FranchiseEntry
-import dot.jcversa.novay.data.voiranime.VoiranimeSource
+import dot.jcversa.novay.data.AnimeSearchResult
+import dot.jcversa.novay.data.AnimeSeason
+import dot.jcversa.novay.data.sama.SamaSource
 import dot.jcversa.novay.ui.components.SlateMotionProvider
 import dot.jcversa.novay.ui.screens.EpisodesScreen
 import dot.jcversa.novay.ui.screens.PlayerScreen
@@ -31,9 +30,9 @@ import dot.jcversa.novay.ui.theme.DarkBackground
 /** Écrans NoVaY, avec leur payload de navigation. */
 sealed class Destination {
     data object Search : Destination()
-    data class Show(val franchise: Franchise) : Destination()
-    data class Episodes(val entry: FranchiseEntry) : Destination()
-    data class Player(val entry: FranchiseEntry, val episode: AnimeEpisode) : Destination()
+    data class Show(val anime: AnimeSearchResult) : Destination()
+    data class Episodes(val season: AnimeSeason) : Destination()
+    data class Player(val season: AnimeSeason, val episode: AnimeEpisode) : Destination()
 }
 
 /** Profondeur d'un écran dans le flux (sens de la transition animée). */
@@ -51,7 +50,7 @@ private fun Destination.rank(): Int = when (this) {
  */
 @Composable
 fun NoVaYApp() {
-    val source = remember { VoiranimeSource() }
+    val source = remember { SamaSource() }
     val stack = remember { mutableStateListOf<Destination>(Destination.Search) }
 
     BackHandler(enabled = stack.size > 1) { stack.removeAt(stack.lastIndex) }
@@ -93,19 +92,20 @@ fun NoVaYApp() {
                             onOpenShow = { open(Destination.Show(it)) }
                         )
                         is Destination.Show -> ShowScreen(
-                            franchise = screen.franchise,
+                            source = source,
+                            anime = screen.anime,
                             onBack = back,
                             onOpenEpisodes = { open(Destination.Episodes(it)) }
                         )
                         is Destination.Episodes -> EpisodesScreen(
                             source = source,
-                            entry = screen.entry,
+                            season = screen.season,
                             onBack = back,
-                            onOpenPlayer = { open(Destination.Player(screen.entry, it)) }
+                            onOpenPlayer = { open(Destination.Player(screen.season, it)) }
                         )
                         is Destination.Player -> PlayerScreen(
                             source = source,
-                            entry = screen.entry,
+                            season = screen.season,
                             episode = screen.episode,
                             onBack = back
                         )

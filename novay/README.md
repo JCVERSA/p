@@ -17,17 +17,33 @@ anti-Cloudflare.
   sa CI : ressuscitable si le bot revient.
 
 ## Roadmap
-- **V0** : thème noir+ambre, motion SwiftSlate, flux
-  Recherche → Fiche → Épisodes → Lecteur en squelettes cliquables. ✔
-- **V1** (livré) : catalogue voiranime — recherche (double mode Madara +
-  complétion de franchises), saisons regroupées par anime (VF/VOSTFR),
-  épisodes, streaming HLS (media3/ExoPlayer) avec en-têtes Referer/UA et
-  les VRAIES résolutions lues de la master playlist. Parseurs portés 1:1
-  de `src/bot/services/voiranimeClient.ts` + sonde Voe de
-  `animeStreamExtractor.ts` (rot13 + double base64 + ord-3 + reverse),
-  fixtures de test du bot reprises en JUnit.
+- **V0** : thème noir+ambre, motion SwiftSlate, squelettes cliquables. ✔
+- **V1** (livré) : catalogue **anime-sama** (voiranime est mort — domaine
+  déréférencé des DNS publics le 13/11 ; parseurs conservés dans
+  `data/voiranime/` pour un éventuel retour).
+  - Recherche : POST `/template-php/defaut/fetch.php` + variantes de
+    requête (article retiré, singulier/pluriel, « rezero » → « re zero »).
+  - Origine **dynamique** : le site déménage sans cesse (.com/.me/.to/.si…)
+    — résolue via le bouton `.btn-primary` du lanceur anime-sama.pw
+    (portage de samaOrigin.ts, 9.19h), cache 24 h, repli sur le dernier
+    domaine connu.
+  - Saisons : appels `panneauAnime("Nom", "saison1/vostfr")` de la page
+    anime (placeholders ignorés, langue structurelle du sous-chemin).
+  - Épisodes : tableaux INLINE `epsN = ["lien:186672", …]` (positionnels,
+    une liste par lecteur) + `epsMeta` (hôtes) + `epsJeton` (jeton de
+    session). NB : `episodes.js` externe = 404 désormais.
+  - Lecteur : `/api/lien.php?j=<jeton>&l=<id>` → page embed → m3u8 en
+    clair (master playlist → VRAIES résolutions) joué par ExoPlayer avec
+    en-têtes Referer/Origin/UA. Jeton auto-rafraîchi (rechargement de la
+    page de saison) sur expiration.
+  - Chaîne validée **E2E depuis un runner GitHub Actions** le 13/11
+    (recherche « naruto » → saisons → épisodes → lecteur ansembed →
+    master.m3u8 sur vmnow.online).
 - **V2** : téléchargement sur stockage.
-- **V3** : autres catalogues (anime-sama, jetanimes…).
+- **V3** : autres catalogues.
+
+La sonde réseau CI (job « Sonde anime-sama », push avec `[probe]` dans le
+message) re-vérifie le domaine et la structure à la demande.
 
 ## Build
 Le sandbox n'a pas de SDK Android : **GitHub Actions compile l'APK**

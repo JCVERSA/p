@@ -38,8 +38,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dot.jcversa.novay.data.AnimeEpisode
+import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.AnimeSource
-import dot.jcversa.novay.data.FranchiseEntry
 import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LoadingView
@@ -51,13 +51,13 @@ import dot.jcversa.novay.ui.theme.DarkSurfaceVariant
 import dot.jcversa.novay.ui.theme.TextMuted
 
 /**
- * Écran Épisodes : liste réelle de la saison (page anime du site),
- * épisodes numérotés en ordre croissant, films/OAV étiquetés.
+ * Écran Épisodes : liste réelle de la saison (tableaux positionnels epsN
+ * de la page — chaque épisode porte ses identifiants de lecteurs).
  */
 @Composable
 fun EpisodesScreen(
     source: AnimeSource,
-    entry: FranchiseEntry,
+    season: AnimeSeason,
     onBack: () -> Unit,
     onOpenPlayer: (AnimeEpisode) -> Unit
 ) {
@@ -65,11 +65,11 @@ fun EpisodesScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var retryKey by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(entry.result.url, retryKey) {
+    LaunchedEffect(season.url, retryKey) {
         error = null
         episodes = null
         try {
-            episodes = source.episodes(entry.result)
+            episodes = source.episodes(season)
         } catch (e: Exception) {
             error = e.message ?: "Erreur inconnue"
         }
@@ -90,7 +90,7 @@ fun EpisodesScreen(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                text = entry.label,
+                text = season.name,
                 style = MaterialTheme.typography.headlineMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -102,7 +102,7 @@ fun EpisodesScreen(
             error != null -> ErrorView(message = error!!, onRetry = { retryKey++ })
             episodes == null -> LoadingView(message = "Chargement des épisodes…")
             episodes!!.isEmpty() -> Text(
-                text = "Aucun épisode listé sur la page de cette entrée.",
+                text = "Aucun épisode listé pour cette saison.",
                 style = MaterialTheme.typography.bodyMedium
             )
             else -> LazyColumn(
@@ -142,7 +142,7 @@ private fun EpisodeRow(episode: AnimeEpisode, onClick: () -> Unit) {
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = if (episode.number > 0) episode.number.toString() else "★",
+                    text = episode.number.toString(),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -153,6 +153,14 @@ private fun EpisodeRow(episode: AnimeEpisode, onClick: () -> Unit) {
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f)
             )
+            if (episode.lienIds.size > 1) {
+                Text(
+                    text = "${episode.lienIds.size} lecteurs",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted
+                )
+                Spacer(Modifier.width(12.dp))
+            }
             // V2 : téléchargement sur stockage (grisé tant qu'indisponible).
             Icon(
                 imageVector = Icons.Outlined.Download,
