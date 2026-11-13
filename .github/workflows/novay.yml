@@ -150,19 +150,9 @@ jobs:
           say "NS => $(dig +short voir-anime.to NS 2>&1 | tr '\n' ' ')"
           say "SOA => $(dig +short voir-anime.to SOA 2>&1 | head -n 1)"
 
-          # Corps complet des 143 octets + variantes d'acces
+          # Tout par annotations : corps + headers du garde sama
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           ORIGIN="https://anime-sama.si"
-
-          say "=== CORPS ACCUEIL (complet) ==="
-          curl -sS -A "$UA" --max-time 20 -D /tmp/h.txt "$ORIGIN/" 2>/dev/null | tee /tmp/body.txt
-          say "=== HEADERS ==="
-          head -n 20 /tmp/h.txt
-          say "=== TAILLE ==="
-          wc -c < /tmp/body.txt
-
-          # Avec cookies persistes + 2e requete (challenge en 2 temps ?)
-          curl -sS -A "$UA" -c /tmp/cj -b /tmp/cj --max-time 20 -o /dev/null "$ORIGIN/" 2>/dev/null
-          curl -sS -A "$UA" -c /tmp/cj -b /tmp/cj --max-time 20 -o /tmp/b2.html -w 'code=%{http_code} size=%{size_download}' "$ORIGIN/" 2>/dev/null
-          say "2e requete avec cookies => $(wc -c < /tmp/b2.html) o"
-          say "cookies => $(grep -c anime-sama /tmp/cj 2>/dev/null || true)"
+          curl -sS -A "$UA" --max-time 20 -D /tmp/h.txt -o /tmp/body.txt "$ORIGIN/" 2>/dev/null
+          say "corps => $(wc -c < /tmp/body.txt) o | $(head -c 200 /tmp/body.txt | tr '\n' '|')"
+          say "headers => $(head -n 15 /tmp/h.txt | tr '\n' '|')"
