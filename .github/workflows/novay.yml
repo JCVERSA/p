@@ -147,10 +147,20 @@ jobs:
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           O="https://anime-sama.to"
 
-          # Requete EXACTE de l'appli (memes en-tetes que SamaSource)
-          curl -sS -A "$UA" --max-time 20 -H "Referer: $O/" -H "X-Requested-With: XMLHttpRequest" -H "Accept: text/html" -d "query=naruto" "$O/template-php/defaut/fetch.php" -o /tmp/s.html 2>/dev/null
-          say "taille => $(wc -c < /tmp/s.html) o"
-          # Carte complete du 1er resultat (500 caracteres)
-          say "carte => $(grep -oE '<a href="https://anime-sama.to/catalogue/naruto/".{0,500}' /tmp/s.html | head -n 1 | tr '\n\r' '||')"
-          # Element exact du titre
-          say "ctx titre => $(grep -oE '.{60}asn-search-result-title.{110}' /tmp/s.html | head -n 1 | tr '\n\r' '||')"
+          # TOUS les panneaux de naruto et solo-leveling (paires nom:sous-chemin)
+          for slug in naruto solo-leveling; do
+            curl -sS -A "$UA" --max-time 20 "$O/catalogue/$slug/" -o /tmp/a.html 2>/dev/null
+            pairs=$(grep -oE 'panneauAnime\("[^"]+", *"[^"]+"\)' /tmp/a.html | sed 's/panneauAnime(//;s/"//g;s/, */:/' | tr '\n' '|')
+            say "$slug total => $(echo "$pairs" | grep -o '|' | wc -l) panneaux"
+            echo "$pairs" | tr '|' '\n' | grep -v '^$' | paste -sd '|' - | fold -w 210 | while IFS= read -r chunk; do
+              say "$slug panneaux => $chunk"
+            done
+            # selecteur de langue dans la page
+            say "$slug selector => $(grep -oE '<(select|button|label|a|div) [^>]{0,90}(langue|vf|vostfr)[^>]{0,90}' /tmp/a.html | grep -viE 'panneau|saison' | head -n 3 | tr '\n\r' '||')"
+          done
+
+          # Les pages de saison VF existent-elles directement ?
+          for u in "catalogue/naruto/saison1/vf/" "catalogue/solo-leveling/saison1/vf/"; do
+            c=$(curl -sS -o /tmp/v.html --max-time 15 -A "$UA" -w '%{http_code} %{size_download}' "$O/$u" 2>/dev/null)
+            say "vf $u => $c, eps arrays => $(grep -cE 'eps[0-9]+ *=' /tmp/v.html || true), jeton => $(grep -c epsJeton /tmp/v.html || true)"
+          done
