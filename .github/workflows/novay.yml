@@ -130,47 +130,32 @@ jobs:
           path: novay/test.log
           if-no-files-found: ignore
 
-  # Sonde reseau manuelle : le site est-il vivant, redirige-t-il, vers
-  # quel domaine ? Lancee via workflow_dispatch uniquement (le runner a
-  # internet ouvert - le sandbox n'a pas acces au site).
+  # Sonde reseau manuelle (workflow_dispatch ou push [probe]) : le runner a
+  # internet ouvert - le sandbox n'a pas acces aux sites.
   probe:
-    name: Sonde voir-anime
+    name: Sonde anime-sama
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[probe]'))
     runs-on: ubuntu-24.04
     steps:
-      - name: Probe voir-anime.to + domaines alternatifs
+      - name: Sonde
         run: |
           say() { echo "::notice::${1:0:240}"; }
-
-          # Le domaine existe-t-il ? (NS/SOA via plusieurs resolveurs)
-          for ns in 8.8.8.8 1.1.1.1 9.9.9.9; do
-            a=$(dig +short @$ns voir-anime.to A 2>&1 | tr '\n' ' ')
-            say "A @$ns => ${a:-VIDE}"
-          done
-          say "NS => $(dig +short voir-anime.to NS 2>&1 | tr '\n' ' ')"
-          say "SOA => $(dig +short voir-anime.to SOA 2>&1 | head -n 1)"
-
-          # Home reelle : mecanisme de recherche + structure catalogue
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           ORIGIN="https://anime-sama.si"
           curl -sS -L -A "$UA" --max-time 25 -o /tmp/home.html "$ORIGIN/" 2>/dev/null
-          say "home => $(wc -c < /tmp/home.html) o"
-          say "fetch.php => $(grep -c 'fetch.php' /tmp/home.html || true)"
-          say "template-php => $(grep -oE '/template-php/[^\"'\'' )]*' /tmp/home.html | sort -u | head -n 3 | tr '\n\r' '||')"
-          say "form/input => $(grep -oE '<(form|input)[^>]{0,100}>' /tmp/home.html | grep -iE 'search|recherche|query' | head -n 2 | tr '\n\r' '||')"
-          say "js search => $(grep -oE '[a-zA-Z.]{0,20}fetch\([^)]{0,80}' /tmp/home.html | head -n 3 | tr '\n\r' '||')"
+
           say "ancres catalogue => $(grep -oE 'href=\"/catalogue/[^"]*\"' /tmp/home.html | sort -u | wc -l)"
           say "catalogue sample => $(grep -oE 'href=\"/catalogue/[^"]*\"' /tmp/home.html | sort -u | head -n 4 | tr '\n\r' '||')"
-
-          # .to est-il vivant ?
-          for d in anime-sama.to anime-sama.com; do
-            c=$(curl -sS -o /dev/null --max-time 15 -A "$UA" -w '%{http_code} %{url_effective}' -L "https://$d/" 2>/dev/null | tail -n 1)
-            say "$d => $c"
-          done
-
-          # Une vraie page anime : panneauAnime ?
-          url=$(grep -oE 'href=\"/catalogue/[^"]*\"' /tmp/home.html | sort -u | head -n 1 | sed 's/href="//;s/"$//')
-          say "page anime => $url"
+          url=$(grep -oE 'href=\"/catalogue/[^"]*\"' /tmp/home.html | grep -v 'saison' | sort -u | head -n 1 | sed 's/href="//;s/"$//')
           curl -sS -L -A "$UA" --max-time 25 "$ORIGIN$url" -o /tmp/anime.html 2>/dev/null
-          say "anime page => $(wc -c < /tmp/anime.html) o, panneaux => $(grep -c 'panneauAnime' /tmp/anime.html || true)"
-          say "panneaux detail => $(grep -oE 'panneauAnime\([^)]*\)' /tmp/anime.html | head -n 6 | tr '\n\r' '||')"
+          say "page $url => $(wc -c < /tmp/anime.html) o, panneaux => $(grep -c 'panneauAnime' /tmp/anime.html || true)"
+          say "panneaux => $(grep -oE 'panneauAnime\([^)]*\)' /tmp/anime.html | head -n 5 | tr '\n\r' '||')"
+
+          scripts=$(grep -oE 'src=\"/js/[^"]*\"|src=\"/script/[^"]*\"|src=\"[^"]*\.js[^"]*\"' /tmp/home.html | sed 's/src="//;s/"$//' | sort -u | head -n 5 | tr '\n' ' ')
+          say "scripts => ${scripts:-aucun}"
+          for js in $scripts; do
+            case "$js" in http*) jurl="$js";; /*) jurl="$ORIGIN$js";; *) jurl="$ORIGIN/$js";; esac
+            curl -sS -L -A "$UA" --max-time 15 -o /tmp/j.js "$jurl" 2>/dev/null
+            hit=$(grep -oE '(fetch|url|action)[^;]{0,70}(php|search)[^;]{0,40}' /tmp/j.js | head -n 2 | tr '\n\r' '||')
+            say "js $(basename $js) => $(wc -c < /tmp/j.js) o | ${hit:-rien}"
+          done
