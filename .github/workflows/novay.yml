@@ -150,24 +150,19 @@ jobs:
           say "NS => $(dig +short voir-anime.to NS 2>&1 | tr '\n' ' ')"
           say "SOA => $(dig +short voir-anime.to SOA 2>&1 | head -n 1)"
 
-          # Recherche anime-sama : le POST fetch.php ne repond plus comme avant
+          # Corps complet des 143 octets + variantes d'acces
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           ORIGIN="https://anime-sama.si"
 
-          # Corps du POST actuel
-          curl -sS -A "$UA" --max-time 20 -H "Referer: $ORIGIN/" -H "X-Requested-With: XMLHttpRequest" -d "query=naruto" "$ORIGIN/template-php/defaut/fetch.php" -o /tmp/s1.html 2>/dev/null
-          say "POST fetch.php => $(wc -c < /tmp/s1.html) o | $(head -c 180 /tmp/s1.html | tr '\n' ' ')"
+          say "=== CORPS ACCUEIL (complet) ==="
+          curl -sS -A "$UA" --max-time 20 -D /tmp/h.txt "$ORIGIN/" 2>/dev/null | tee /tmp/body.txt
+          say "=== HEADERS ==="
+          head -n 20 /tmp/h.txt
+          say "=== TAILLE ==="
+          wc -c < /tmp/body.txt
 
-          # Page d'accueil : ou poste la recherche ?
-          curl -sS -A "$UA" --max-time 20 "$ORIGIN/" -o /tmp/home.html 2>/dev/null
-          say "accueil => $(wc -c < /tmp/home.html) o"
-          say "fetch.php refs => $(grep -c 'fetch.php' /tmp/home.html || true)"
-          say "form action => $(grep -oE '<form[^>]*>' /tmp/home.html | head -n 2 | tr '\n' ' ')"
-          say "input search => $(grep -oE '<input[^>]*search[^>]*>' /tmp/home.html | head -n 2 | tr '\n' ' ')"
-          js=$(grep -oE '(fetch|url|action)[^;]{0,60}fetch\.php[^;]{0,60}' /tmp/home.html | head -n 2 | tr '\n' ' | ')
-          say "js fetch => ${js:-aucun}"
-
-          # Catalogue : la liste des animes est-elle accessible ?
-          curl -sS -L -A "$UA" --max-time 20 "$ORIGIN/catalogue/" -o /tmp/cat.html 2>/dev/null
-          say "catalogue => $(wc -c < /tmp/cat.html) o, ancres catalogue => $(grep -oE 'href="[^"]*/catalogue/[^"]*"' /tmp/cat.html | sort -u | wc -l)"
-          say "catalogue sample => $(grep -oE 'href="[^"]*/catalogue/[^"]*"' /tmp/cat.html | sort -u | head -n 3 | tr '\n' ' ')"
+          # Avec cookies persistes + 2e requete (challenge en 2 temps ?)
+          curl -sS -A "$UA" -c /tmp/cj -b /tmp/cj --max-time 20 -o /dev/null "$ORIGIN/" 2>/dev/null
+          curl -sS -A "$UA" -c /tmp/cj -b /tmp/cj --max-time 20 -o /tmp/b2.html -w 'code=%{http_code} size=%{size_download}' "$ORIGIN/" 2>/dev/null
+          say "2e requete avec cookies => $(wc -c < /tmp/b2.html) o"
+          say "cookies => $(grep -c anime-sama /tmp/cj 2>/dev/null || true)"
