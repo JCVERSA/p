@@ -1,0 +1,47 @@
+name: NoVaY diag reseau
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Sonde voir-anime
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Probe voir-anime.to + domaines alternatifs
+        run: |
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          say() { echo "::notice::${1:0:240}"; echo "$1"; }
+
+          # DNS
+          dns=$(getent hosts voir-anime.to | head -n 1)
+          say "DNS voir-anime.to => ${dns:-ECHEC}"
+
+          # Reponse HTTP de la recherche (redirections suivies)
+          code=$(curl -sS -L -A "$UA" --max-time 25 -o /tmp/body.html \
+            -w '%{http_code} %{url_effective} %{num_redirects}' \
+            "https://voir-anime.to/?s=naruto&post_type=wp-manga" 2>&1 | tail -n 1)
+          say "HTTP recherche => $code"
+
+          # Contenu : la page est-elle une vraie page de resultats madara,
+          # ou un launcher de redirection ?
+          if [ -s /tmp/body.html ]; then
+            say "taille corps => $(wc -c < /tmp/body.html) octets"
+            say "ancres /anime/ => $(grep -o '/anime/[a-z0-9-]*' /tmp/body.html | sort -u | wc -l) uniques"
+            say "page-item-detail => $(grep -c 'page-item-detail' /tmp/body.html || true)"
+            say "meta refresh => $(grep -c 'http-equiv=.refresh' /tmp/body.html || true)"
+            say "window.location => $(grep -c 'window\.location' /tmp/body.html || true)"
+            doms=$(grep -oE 'https?://[a-z0-9.-]*voiranime[a-z0-9.-]*/' /tmp/body.html | sort -u | head -n 5 | tr '\n' ' ')
+            say "domaines voiranime cites dans le corps => ${doms:-aucun}"
+            title=$(grep -oE '<title>[^<]*</title>' /tmp/body.html | head -n 1)
+            say "title => $title"
+          fi
+
+          # Domaines alternats (statut code uniquement)
+          for d in v6.voiranime.com v5.voiranime.com voiranime.com; do
+            c=$(curl -sS -o /dev/null --max-time 15 -A "$UA" -w '%{http_code}' -L "https://$d/" 2>&1 | tail -n 1)
+            say "alternat $d => $c"
+          done
