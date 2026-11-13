@@ -144,11 +144,14 @@ jobs:
           O="https://anime-sama.to"
           SAISON="$O/catalogue/naruto/saison1/vostfr/"
           curl -sS -A "$UA" --max-time 20 "$SAISON" -o /tmp/saison.html 2>/dev/null
-
           jeton=$(sed -n 's/.*epsJeton = "\([^"]*\)".*/\1/p' /tmp/saison.html | head -n 1)
-          say "jeton => ${jeton:-ABSENT}"
+          purl=$(curl -sS -A "$UA" --max-time 15 -H "Referer: $SAISON" "$O/api/lien.php?j=$jeton&l=186672" 2>/dev/null | grep -oE 'https?://[^" ]+' | head -n 1)
+          say "player => $purl"
 
-          if [ -n "$jeton" ]; then
-            r=$(curl -sS -A "$UA" --max-time 15 -H "Referer: $SAISON" -H "X-Requested-With: XMLHttpRequest" -w ' | HTTP %{http_code}' "$O/api/lien.php?j=$jeton&l=186672" 2>/dev/null | head -c 300)
-            say "api lien => $r"
-          fi
+          # La page player parle-t-elle a un client simple ?
+          curl -sS -A "$UA" --max-time 20 -H "Referer: $O/" -o /tmp/p.html -w '%{http_code}' "$purl" 2>/dev/null
+          say "player page => $(wc -c < /tmp/p.html) o"
+          say "p m3u8 => $(grep -oE 'https?://[^\"'\'' ]*m3u8[^\"'\'' ]*' /tmp/p.html | head -n 2 | tr '\n\r' '||')"
+          say "p mp4 => $(grep -oE 'https?://[^\"'\'' ]*mp4[^\"'\'' ]*' /tmp/p.html | head -n 2 | tr '\n\r' '||')"
+          say "p packed => $(grep -c 'eval(function(p,a,c,k,e,d)' /tmp/p.html || true)"
+          say "p file/hls => $(grep -oE '(file|hls|sources)[^,;]{0,80}' /tmp/p.html | head -n 3 | tr '\n\r' '||')"
