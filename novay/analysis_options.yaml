@@ -1,6 +1,0 @@
-include: package:flutter_lints/flutter.yaml
-
-linter:
-  rules:
-    # Style maison : lisibilité > verbosité.
-    prefer_single_quotes: true
