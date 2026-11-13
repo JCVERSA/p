@@ -189,6 +189,32 @@ object SamaParsers {
     }
 
     /**
+     * URL de la variante de langue MIROIR d'une saison :
+     * « …/saison1/vostfr/ » ⇄ « …/saison1/vf/ ». Null si l'URL ne porte
+     * pas de langue structurelle.
+     *
+     * Terrain 13/11 (sonde CI) : la page anime statique ne liste que la
+     * langue par défaut (VOSTFR) — la VF vit à l'URL miroir, qui répond
+     * 200 avec tableaux eps + jeton. La bascule du site est client-side ;
+     * nous, on sonde l'URL directement.
+     */
+    fun mirrorLanguageUrl(seasonUrl: String): String? {
+        val trimmed = seasonUrl.trimEnd('/')
+        return when {
+            trimmed.endsWith("/vostfr") -> trimmed.dropLast("vostfr".length) + "vf/"
+            trimmed.endsWith("/vf") -> trimmed.dropLast("vf".length) + "vostfr/"
+            else -> null
+        }
+    }
+
+    /** Langue de la variante miroir (« VOSTFR » ⇄ « VF »), null si sans langue. */
+    fun mirrorLanguage(seasonUrl: String): String? = when {
+        seasonUrl.trimEnd('/').endsWith("/vostfr") -> "VF"
+        seasonUrl.trimEnd('/').endsWith("/vf") -> "VOSTFR"
+        else -> null
+    }
+
+    /**
      * Parse les appels panneauAnime("Nom", "sous-chemin") d'une page anime.
      * Les placeholders de template ("nom"/"url") sont ignorés (comme le
      * bot) ; l'URL de saison = page anime + sous-chemin + "/".

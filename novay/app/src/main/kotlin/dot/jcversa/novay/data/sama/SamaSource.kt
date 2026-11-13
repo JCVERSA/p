@@ -140,8 +140,57 @@ class SamaSource(
     override suspend fun seasons(anime: AnimeSearchResult): List<AnimeSeason> =
         withContext(Dispatchers.IO) {
             val base = origin()
-            SamaParsers.parsePanneauSeasons(fetchBlocking(anime.url, "$base/"), anime.url)
+            val html = fetchBlocking(anime.url, "$base/")
+            val panels = SamaParsers.parsePanneauSeasons(html, anime.url)
+
+            // Terrain 13/11 : la page statique ne liste que la langue par
+            // défaut (VOSTFR) — la VF vit à l'URL miroir (.../vf/), validée
+            // par sonde CI. On sonde en parallèle la variante miroir de
+            // chaque panneau porteur d'une langue.
+            val panelUrls = panels.map { it.url }.toSet()
+            val probes = panels.mapNotNull { panel ->
+                val mirrorUrl = SamaParsers.mirrorLanguageUrl(panel.url) ?: return@mapNotNull null
+                if (mirrorUrl in panelUrls) return@mapNotNull null // déjà listée
+                async {
+                    val season = if (isRealSeasonPage(mirrorUrl, base)) {
+                        AnimeSeason(
+                            name = panel.name,
+                            url = mirrorUrl,
+                            language = SamaParsers.mirrorLanguage(mirrorUrl)
+                        )
+                    } else {
+                        null
+                    }
+                    panel.url to season
+                }
+            }
+            val mirrorsBySource = HashMap<String, AnimeSeason>()
+            for ((source, mirror) in probes.awaitAll()) {
+                if (mirror != null) mirrorsBySource[source] = mirror
+            }
+
+            // Assemblage VF d'abord (politique du bot : VF est la langue de
+            // navigation par défaut) : la variante VF précède son homologue.
+            val out = mutableListOf<AnimeSeason>()
+            for (panel in panels) {
+                val mirror = mirrorsBySource[panel.url]
+                if (mirror?.language == "VF") out.add(mirror)
+                out.add(panel)
+                if (mirror?.language == "VOSTFR") out.add(mirror)
+            }
+            out
         }
+
+    /**
+     * Une page de saison miroir est réelle si elle répond et porte des
+     * épisodes (jeton ou tableaux eps) — un soft-404 ne compte pas.
+     */
+    private fun isRealSeasonPage(url: String, base: String): Boolean = try {
+        val html = fetchBlocking(url, "$base/")
+        html.contains("epsJeton") || Regex("eps\\d+\\s*=").containsMatchIn(html)
+    } catch (_: Exception) {
+        false
+    }
 
     // ── Épisodes ──────────────────────────────────────────────────────────
 

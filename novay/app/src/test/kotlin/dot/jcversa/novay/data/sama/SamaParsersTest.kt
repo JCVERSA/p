@@ -165,6 +165,32 @@ class SamaParsersTest {
         assertEquals(2, seasons.size)
     }
 
+    // ── Variante miroir de langue (VF ⇄ VOSTFR, terrain 13/11) ───────────
+
+    @Test
+    fun `url de la variante miroir de langue`() {
+        assertEquals(
+            "https://anime-sama.to/catalogue/naruto/saison1/vf/",
+            SamaParsers.mirrorLanguageUrl("https://anime-sama.to/catalogue/naruto/saison1/vostfr/")
+        )
+        assertEquals(
+            "https://anime-sama.to/catalogue/naruto/saison1/vostfr/",
+            SamaParsers.mirrorLanguageUrl("https://anime-sama.to/catalogue/naruto/saison1/vf/")
+        )
+        assertEquals(
+            "https://anime-sama.to/catalogue/naruto/film/vf/",
+            SamaParsers.mirrorLanguageUrl("https://anime-sama.to/catalogue/naruto/film/vostfr/")
+        )
+        assertNull(SamaParsers.mirrorLanguageUrl("https://anime-sama.to/catalogue/naruto/saison1/"))
+    }
+
+    @Test
+    fun `langue de la variante miroir`() {
+        assertEquals("VF", SamaParsers.mirrorLanguage("https://anime-sama.to/catalogue/naruto/saison1/vostfr/"))
+        assertEquals("VOSTFR", SamaParsers.mirrorLanguage("https://anime-sama.to/catalogue/naruto/saison1/vf/"))
+        assertNull(SamaParsers.mirrorLanguage("https://anime-sama.to/catalogue/naruto/oav/"))
+    }
+
     // ── Épisodes (fixtures réelles de la page saison naruto, sonde v15) ──
 
     private val seasonPage = """

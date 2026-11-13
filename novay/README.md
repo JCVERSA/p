@@ -29,6 +29,10 @@ anti-Cloudflare.
     domaine connu.
   - Saisons : appels `panneauAnime("Nom", "saison1/vostfr")` de la page
     anime (placeholders ignorés, langue structurelle du sous-chemin).
+    La page statique ne liste que la langue par défaut (VOSTFR) — la VF
+    vit à l'URL miroir (`…/vostfr/` → `…/vf/`, validée par sonde) : chaque
+    panneau est sondé en parallèle et la variante existante est ajoutée,
+    VF affichée en premier.
   - Épisodes : tableaux INLINE `epsN = ["lien:186672", …]` (positionnels,
     une liste par lecteur) + `epsMeta` (hôtes) + `epsJeton` (jeton de
     session). NB : `episodes.js` externe = 404 désormais.
