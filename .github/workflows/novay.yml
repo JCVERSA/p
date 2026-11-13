@@ -150,10 +150,26 @@ jobs:
           say "NS => $(dig +short voir-anime.to NS 2>&1 | tr '\n' ' ')"
           say "SOA => $(dig +short voir-anime.to SOA 2>&1 | head -n 1)"
 
-          # voiranime.org repond 302 : est-ce le meme catalogue madara ?
+          # Launcher anime-sama.pw : ou pointe le bouton .btn-primary ?
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          code=$(curl -sS -L -A "$UA" --max-time 25 -o /tmp/org.html -w '%{http_code} %{url_effective} %{num_redirects}' "https://voiranime.org/?s=naruto&post_type=wp-manga" 2>&1 | tail -n 1)
-          say "recherche .org => $code"
+          curl -sS -A "$UA" --max-time 20 "https://anime-sama.pw" -o /tmp/sama.html 2>/dev/null
+          if [ -s /tmp/sama.html ]; then
+            href=$(grep -oE 'class="[^"]*btn-primary[^"]*"[^>]*href="[^"]*"|href="[^"]*"[^>]*class="[^"]*btn-primary[^"]*"' /tmp/sama.html | grep -oE 'https?://[^"]+' | head -n 1)
+            say "btn-primary href => ${href:-INTRUVABLE}"
+            origin=$(echo "$href" | grep -oE 'https?://[a-z0-9.-]+' | head -n 1)
+            if [ -n "$origin" ]; then
+              c=$(curl -sS -o /tmp/sama2.html --max-time 15 -A "$UA" -w '%{http_code}' -L "$origin/" 2>/dev/null | tail -n 1)
+              say "origine $origin => HTTP $c"
+              title=$(grep -oE '<title>[^<]*</title>' /tmp/sama2.html 2>/dev/null | head -n 1)
+              say "title origine => $title"
+              # structure catalogue : la recherche existe-t-elle ?
+              c2=$(curl -sS -o /tmp/sama3.html --max-time 15 -A "$UA" -w '%{http_code}' "$origin/catalogue/" 2>/dev/null | tail -n 1)
+              say "catalogue => HTTP $c2, ancres /anime/ => $(grep -o 'href="[^"]*/anime/[^"]*"' /tmp/sama3.html 2>/dev/null | wc -l)"
+            fi
+          fi
+
+          code=$(curl -sS -L -A "$UA" --max-time 25 -o /tmp/org.html -w '%{http_code} %{url_effective} %{num_redirects}' "https://voiranime.org/" 2>&1 | tail -n 1)
+          say "racine .org => $code"
           if [ -s /tmp/org.html ]; then
             say "taille corps => $(wc -c < /tmp/org.html) octets"
             say "ancres /anime/ => $(grep -o '/anime/[a-z0-9-]*' /tmp/org.html | sort -u | wc -l) uniques"
