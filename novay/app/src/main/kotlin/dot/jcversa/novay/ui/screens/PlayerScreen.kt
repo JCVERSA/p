@@ -1,23 +1,32 @@
 package dot.jcversa.novay.ui.screens
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,12 +39,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -56,18 +70,17 @@ import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LoadingView
 import dot.jcversa.novay.ui.components.bounceClick
+import dot.jcversa.novay.ui.theme.Amber500
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
- * Écran Lecteur : résout le flux de l'épisode (page → iframe voembed →
- * payload chiffré → HLS) puis le joue avec media3/ExoPlayer, en passant
- * les en-têtes Referer/Origin/UA exigés par le CDN. Les résolutions sont
- * les VRAIES variantes de la master playlist.
- *
- * V2 : si l'épisode est téléchargé (ou que la navigation vient de
- * l'écran Téléchargements), la lecture passe par le cache offline —
- * aucune requête réseau.
+ * Écran Lecteur (V2.1 : plein écran) : résout le flux de l'épisode puis le
+ * joue en PLEIN ÉCRAN — passage paysage automatique, barres système
+ * masquées (immersion), contrôles Compose maison (lecture/pause, barre de
+ * progression, temps) et double-tap ±10 s. Si l'épisode est téléchargé,
+ * la lecture passe par le cache offline — aucune requête réseau.
  */
 @Composable
 fun PlayerScreen(
@@ -139,58 +152,124 @@ fun PlayerScreen(
         onDispose { view.keepScreenOn = false }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
+    when {
+        loading -> Column(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black)
         ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Retour",
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.bounceClick(onClick = onBack)
+            PlayerHeader(
+                title = episode.label,
+                subtitle = season.name + if (offline) " · hors-ligne" else "",
+                onBack = onBack
             )
-            Spacer(Modifier.width(8.dp))
-            Column {
-                Text(
-                    text = episode.label,
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = season.name,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            LoadingView(message = "Résolution du flux depuis le lecteur…")
         }
+        error != null -> Column(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            PlayerHeader(
+                title = episode.label,
+                subtitle = season.name,
+                onBack = onBack
+            )
+            ErrorView(message = error!!, onRetry = { retryKey++ })
+        }
+        stream != null -> PlayerContent(
+            stream = stream!!,
+            offline = offline,
+            title = episode.label,
+            subtitle = season.name + if (offline) " · hors-ligne" else "",
+            onBack = onBack
+        )
+    }
+}
 
-        when {
-            loading -> LoadingView(message = "Résolution du flux depuis le lecteur…")
-            error != null -> ErrorView(message = error!!, onRetry = { retryKey++ })
-            stream != null -> PlayerContent(stream = stream!!, offline = offline)
+/** En-tête simple des états de chargement/erreur (mode portrait). */
+@Composable
+private fun PlayerHeader(title: String, subtitle: String, onBack: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = "Retour",
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.bounceClick(onClick = onBack)
+        )
+        Spacer(Modifier.width(8.dp))
+        Column {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
 
+/** mm:ss (ou h:mm:ss au-delà d'une heure). */
+private fun formatTime(ms: Long): String {
+    val total = (ms.coerceAtLeast(0L)) / 1000
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+}
+
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun PlayerContent(stream: ResolvedStream, offline: Boolean) {
+private fun PlayerContent(
+    stream: ResolvedStream,
+    offline: Boolean,
+    title: String,
+    subtitle: String,
+    onBack: () -> Unit
+) {
     val context = LocalContext.current
+    val view = LocalView.current
     val player = remember { ExoPlayer.Builder(context).build() }
     // null = master playlist (qualité adaptative « Auto »).
     var selectedQualityUrl by remember(stream) { mutableStateOf<String?>(null) }
 
+    // Contrôles maison : visibilité, lecture, progression, feedback de seek.
+    var controlsVisible by remember { mutableStateOf(true) }
+    var isPlaying by remember { mutableStateOf(false) }
+    var positionMs by remember { mutableStateOf(0L) }
+    var durationMs by remember { mutableStateOf(0L) }
+    var userSeeking by remember { mutableStateOf(false) }
+    var seekFeedback by remember { mutableStateOf<Int?>(null) }
+    var showQualities by remember { mutableStateOf(false) }
+
+    // Plein écran : paysage automatique + barres système masquées.
+    // Tout est restauré à la sortie (retour, ou fermeture de l'écran).
     DisposableEffect(Unit) {
-        onDispose { player.release() }
+        val activity = view.context as? Activity
+        val window = activity?.window
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        val controller = window?.let { WindowInsetsControllerCompat(it, view) }
+        window?.let { WindowCompat.setDecorFitsSystemWindows(it, false) }
+        controller?.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller?.hide(WindowInsetsCompat.Type.systemBars())
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+            window?.let { WindowCompat.setDecorFitsSystemWindows(it, true) }
+            player.release()
+        }
     }
 
     LaunchedEffect(stream, selectedQualityUrl, offline) {
@@ -217,68 +296,243 @@ private fun PlayerContent(stream: ResolvedStream, offline: Boolean) {
         player.playWhenReady = true
     }
 
-    Column(
+    // Progression + état de lecture (polling léger, 2 fois par seconde).
+    LaunchedEffect(player) {
+        while (true) {
+            isPlaying = player.isPlaying
+            durationMs = player.duration.coerceAtLeast(0L)
+            if (!userSeeking) positionMs = player.currentPosition.coerceAtLeast(0L)
+            delay(500)
+        }
+    }
+
+    // Les contrôles se masquent seuls après 3,5 s (uniquement en lecture).
+    LaunchedEffect(controlsVisible, isPlaying) {
+        if (controlsVisible && isPlaying) {
+            delay(3500)
+            controlsVisible = false
+        }
+    }
+
+    // Le feedback de seek (±10 s) s'efface vite.
+    LaunchedEffect(seekFeedback) {
+        if (seekFeedback != null) {
+            delay(700)
+            seekFeedback = null
+        }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .background(Color.Black)
     ) {
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     this.player = player
-                    useController = true
+                    useController = false // contrôles Compose maison
                     setShutterBackgroundColor(android.graphics.Color.BLACK)
                 }
             },
             update = { it.player = player },
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f)
+            modifier = Modifier.fillMaxSize()
         )
 
-        if (offline) {
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = "Lecture hors-ligne (épisode téléchargé).",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(horizontal = 20.dp)
-            )
-        } else if (stream.qualities.isNotEmpty()) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Text(
-                    text = "Qualité (résolutions du lecteur)",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    QualityPill(
-                        label = "Auto",
-                        selected = selectedQualityUrl == null,
-                        onClick = { selectedQualityUrl = null }
+        // Couche de gestes : tap = afficher/masquer les contrôles,
+        // double-tap = ±10 s (moitié gauche/droite de l'écran).
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(player, durationMs) {
+                    detectTapGestures(
+                        onTap = { controlsVisible = !controlsVisible },
+                        onDoubleTap = { offset ->
+                            val forward = offset.x > size.width / 2
+                            val delta = if (forward) 10_000L else -10_000L
+                            val target = (player.currentPosition + delta)
+                                .coerceIn(0L, if (durationMs > 0) durationMs else Long.MAX_VALUE)
+                            player.seekTo(target)
+                            seekFeedback = if (forward) 10 else -10
+                        }
                     )
-                    stream.qualities.forEachIndexed { index, quality ->
-                        AnimateEntrance(index = index) {
-                            QualityPill(
-                                label = quality.label,
-                                selected = selectedQualityUrl == quality.url,
-                                onClick = { selectedQualityUrl = quality.url }
+                }
+        )
+
+        // Feedback du double-tap : « +10 s » / « −10 s » au centre.
+        seekFeedback?.let { seconds ->
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color(0xB3000000),
+                modifier = Modifier.align(Alignment.Center)
+            ) {
+                Text(
+                    text = (if (seconds > 0) "+" else "−") + "${seconds}s",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                )
+            }
+        }
+
+        // Contrôles maison (fondu).
+        AnimatedVisibility(
+            visible = controlsVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color(0x99000000),
+                                Color.Transparent,
+                                Color.Transparent,
+                                Color(0xB3000000)
                             )
+                        )
+                    )
+            ) {
+                // Barre du haut : retour, titre, qualité.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Retour",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .bounceClick(onClick = onBack)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xCCFFFFFF),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (!offline && stream.qualities.isNotEmpty()) {
+                        Icon(
+                            imageVector = Icons.Outlined.Tune,
+                            contentDescription = "Qualité",
+                            tint = if (showQualities) Amber500 else Color.White,
+                            modifier = Modifier
+                                .size(28.dp)
+                                .bounceClick(onClick = { showQualities = !showQualities })
+                        )
+                    }
+                }
+
+                // Lecture / pause au centre.
+                Icon(
+                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (isPlaying) "Pause" else "Lecture",
+                    tint = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(64.dp)
+                        .bounceClick(onClick = { if (player.isPlaying) player.pause() else player.play() })
+                )
+
+                // Choix de qualité (par-dessus la vidéo).
+                AnimatedVisibility(
+                    visible = showQualities && !offline && stream.qualities.isNotEmpty(),
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 40.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = Color(0xE6141416)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            QualityPill(
+                                label = "Auto",
+                                selected = selectedQualityUrl == null,
+                                onClick = {
+                                    selectedQualityUrl = null
+                                    showQualities = false
+                                }
+                            )
+                            stream.qualities.forEachIndexed { index, quality ->
+                                AnimateEntrance(index = index) {
+                                    QualityPill(
+                                        label = quality.label,
+                                        selected = selectedQualityUrl == quality.url,
+                                        onClick = {
+                                            selectedQualityUrl = quality.url
+                                            showQualities = false
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "Changer de qualité relance la lecture au début (V1).",
-                    style = MaterialTheme.typography.bodySmall
-                )
+
+                // Barre du bas : position, progression, durée.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = formatTime(positionMs),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White
+                    )
+                    Slider(
+                        value = positionMs.toFloat(),
+                        onValueChange = {
+                            userSeeking = true
+                            positionMs = it.toLong()
+                        },
+                        onValueChangeFinished = {
+                            player.seekTo(positionMs)
+                            userSeeking = false
+                        },
+                        valueRange = 0f..(durationMs.coerceAtLeast(1000L)).toFloat(),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 10.dp),
+                        colors = SliderDefaults.colors(
+                            thumbColor = Amber500,
+                            activeTrackColor = Amber500,
+                            inactiveTrackColor = Color(0x66FFFFFF)
+                        )
+                    )
+                    Text(
+                        text = formatTime(durationMs),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White
+                    )
+                }
             }
-        } else {
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = "Flux direct (résolution unique du lecteur).",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(horizontal = 20.dp)
-            )
         }
     }
 }
@@ -287,14 +541,14 @@ private fun PlayerContent(stream: ResolvedStream, offline: Boolean) {
 private fun QualityPill(label: String, selected: Boolean, onClick: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(999.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+        color = if (selected) MaterialTheme.colorScheme.primary else Color(0x33FFFFFF),
         modifier = Modifier.bounceClick(onClick = onClick)
     ) {
         Text(
             text = label,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
             style = MaterialTheme.typography.labelMedium,
-            color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White
         )
     }
 }
