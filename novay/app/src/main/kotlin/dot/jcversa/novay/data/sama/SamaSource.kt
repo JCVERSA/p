@@ -72,7 +72,7 @@ class SamaSource(
             .url(button)
             .header("User-Agent", SamaParsers.UA)
             .build()
-        http.newCall(request).execute().use { resp ->
+        return http.newCall(request).execute().use { resp ->
             // Même un 403 suffit : seul le DOMAINE nous intéresse.
             SamaParsers.normalizeOrigin(resp.request.url.toString())
         }

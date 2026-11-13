@@ -2,9 +2,22 @@ package dot.jcversa.novay.data.voiranime
 
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSearchResult
-import dot.jcversa.novay.data.Franchise
-import dot.jcversa.novay.data.FranchiseEntry
 import dot.jcversa.novay.data.StreamQuality
+
+/** Une entrée organisée (saison déduite, null pour les films). */
+data class FranchiseEntry(
+    val result: AnimeSearchResult,
+    val season: Int?,
+    val isFilm: Boolean,
+    val baseTitle: String,
+    val label: String
+)
+
+/** Une franchise (anime) regroupant ses saisons et films. */
+data class Franchise(
+    val baseTitle: String,
+    val entries: List<FranchiseEntry>
+)
 import java.net.URI
 import java.util.Base64
 
