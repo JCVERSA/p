@@ -76,6 +76,9 @@ jobs:
             echo "::error::Aucun test execute - le source set src/test/kotlin n'est pas pris en compte"
             exit 1
           fi
+          # Compte de tests visible en annotation a chaque run (preuve API).
+          tests=$(grep -ho 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | awk '{s+=$1} END {print s}')
+          echo "::notice::${tests} tests unitaires passes"
 
       # APK "fat" : armeabi-v7a (32 bits, Android 7+ - exigence owner) +
       # arm64-v8a + x86_64 dans un seul fichier a installer.
