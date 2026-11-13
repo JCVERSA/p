@@ -1,6 +1,7 @@
 package dot.jcversa.novay.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,16 +41,24 @@ import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LangPill
 import dot.jcversa.novay.ui.components.LoadingView
 import dot.jcversa.novay.ui.components.bounceClick
+import dot.jcversa.novay.ui.theme.Amber500
 import dot.jcversa.novay.ui.theme.DarkCardBorder
 import dot.jcversa.novay.ui.theme.DarkSurfaceCard
+import dot.jcversa.novay.ui.theme.MintGreen
 import dot.jcversa.novay.ui.theme.TextMuted
 
 /**
  * Écran Fiche/Saisons : saisons et films de l'anime, CLASSES PAR CATÉGORIE
  * — toutes les VF d'abord, toutes les VOSTFR ensuite (jamais mélangées ;
- * cf. orderByLanguage). La langue vient du sous-chemin structurel
- * (« saison1/vf », « film/vostfr »…) + sondage de l'URL miroir.
+ * cf. orderByLanguage).
+ *
+ * Lisibilité (retour owner 13/11 : « s1, s2, s1, s2 » paraissait non trié) :
+ *  - chaque carte porte SON badge de langue (VF ambre / VOSTFR vert) ;
+ *  - chaque section a une bannière colorée pleine largeur ;
+ *  - l'en-tête de section est ÉPINGLÉ (sticky) : la langue courante reste
+ *    visible en haut pendant le défilement.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ShowScreen(
     source: AnimeSource,
@@ -110,60 +119,87 @@ fun ShowScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     if (vf.isNotEmpty()) {
-                        item { SectionHeader(label = "VF", vf = true, count = vf.size) }
+                        stickyHeader(key = "header-vf") {
+                            SectionHeader(label = "VF", vf = true, count = vf.size)
+                        }
                     }
-                    itemsIndexed(vf) { index, season ->
+                    itemsIndexed(vf, key = { _, s -> s.url }) { index, season ->
                         AnimateEntrance(index = index) {
                             SeasonCard(season = season, onClick = { onOpenEpisodes(season) })
                         }
                     }
                     if (vostfr.isNotEmpty()) {
-                        item {
-                            if (vf.isNotEmpty()) Spacer(Modifier.height(14.dp))
-                            SectionHeader(label = "VOSTFR", vf = false, count = vostfr.size)
+                        stickyHeader(key = "header-vostfr") {
+                            Column {
+                                if (vf.isNotEmpty()) Spacer(Modifier.height(16.dp))
+                                SectionHeader(label = "VOSTFR", vf = false, count = vostfr.size)
+                            }
                         }
                     }
-                    itemsIndexed(vostfr) { index, season ->
+                    itemsIndexed(vostfr, key = { _, s -> s.url }) { index, season ->
                         AnimateEntrance(index = index) {
                             SeasonCard(season = season, onClick = { onOpenEpisodes(season) })
                         }
                     }
                     if (others.isNotEmpty()) {
-                        item {
-                            if (vf.isNotEmpty() || vostfr.isNotEmpty()) Spacer(Modifier.height(14.dp))
-                            SectionHeader(label = "Autres", vf = false, count = others.size)
+                        stickyHeader(key = "header-others") {
+                            Column {
+                                if (vf.isNotEmpty() || vostfr.isNotEmpty()) Spacer(Modifier.height(16.dp))
+                                SectionHeader(label = "Autres", vf = false, count = others.size)
+                            }
                         }
                     }
-                    itemsIndexed(others) { index, season ->
+                    itemsIndexed(others, key = { _, s -> s.url }) { index, season ->
                         AnimateEntrance(index = index) {
                             SeasonCard(season = season, onClick = { onOpenEpisodes(season) })
                         }
                     }
-                    item { Spacer(Modifier.height(20.dp)) }
+                    item(key = "footer") { Spacer(Modifier.height(20.dp)) }
                 }
             }
         }
     }
 }
 
-/** En-tête de catégorie : badge de langue + nombre de saisons. */
+/**
+ * Bannière de catégorie : pleine largeur, teintée de la couleur de la
+ * langue, avec libellé explicite — impossible à manquer.
+ */
 @Composable
 private fun SectionHeader(label: String, vf: Boolean, count: Int) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(top = 6.dp)
+    val tint = if (vf) Amber500 else MintGreen
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = tint.copy(alpha = 0.10f),
+        border = BorderStroke(1.dp, tint.copy(alpha = 0.35f))
     ) {
-        LangPill(text = label, vf = vf)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = if (label == "Autres") {
-                "$count entrée(s) — langue du lecteur"
-            } else {
-                "$count saison(s) & film(s)"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = TextMuted
-        )
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            LangPill(text = label, vf = vf)
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = when {
+                        vf -> "Version française"
+                        label == "VOSTFR" -> "Version originale sous-titrée"
+                        else -> "Langue du lecteur"
+                    },
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = if (label == "Autres") {
+                        "$count entrée(s)"
+                    } else {
+                        "$count saison(s) & film(s)"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted
+                )
+            }
+        }
     }
 }
 
@@ -192,6 +228,13 @@ private fun SeasonCard(season: AnimeSeason, onClick: () -> Unit) {
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f)
             )
+            // La langue sur CHAQUE carte : la catégorie est lisible carte
+            // par carte, pas seulement dans l'en-tête de section.
+            when (season.language) {
+                "VF" -> LangPill(text = "VF", vf = true)
+                "VOSTFR" -> LangPill(text = "VOSTFR")
+            }
+            Spacer(Modifier.width(8.dp))
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
