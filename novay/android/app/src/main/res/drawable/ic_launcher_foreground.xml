@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- NoVaY - premier plan adaptive : monogramme N (zone sure 66dp). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#6C8CFF"
+        android:pathData="M34,33 L43,33 L43,75 L34,75 Z M65,33 L74,33 L74,75 L65,75 Z M34,33 L43,33 L74,66 L74,75 L65,75 L34,42 Z"/>
+</vector>
