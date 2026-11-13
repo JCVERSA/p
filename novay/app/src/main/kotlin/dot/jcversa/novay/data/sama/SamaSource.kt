@@ -166,21 +166,15 @@ class SamaSource(
                     panel.url to season
                 }
             }
-            val mirrorsBySource = HashMap<String, AnimeSeason>()
-            for ((source, mirror) in probes.awaitAll()) {
-                if (mirror != null) mirrorsBySource[source] = mirror
+            val mirrors = mutableListOf<AnimeSeason>()
+            for ((_, mirror) in probes.awaitAll()) {
+                if (mirror != null) mirrors.add(mirror)
             }
 
-            // Assemblage VF d'abord (politique du bot : VF est la langue de
-            // navigation par défaut) : la variante VF précède son homologue.
-            val out = mutableListOf<AnimeSeason>()
-            for (panel in panels) {
-                val mirror = mirrorsBySource[panel.url]
-                if (mirror?.language == "VF") out.add(mirror)
-                out.add(panel)
-                if (mirror?.language == "VOSTFR") out.add(mirror)
-            }
-            out
+            // Assemblage : panneaux listés + miroirs réels, PUIS classement
+            // par catégorie — toutes les VF, puis toutes les VOSTFR (jamais
+            // mélangées, cf. orderByLanguage).
+            SamaParsers.orderByLanguage(panels + mirrors)
         }
 
     /**

@@ -215,6 +215,19 @@ object SamaParsers {
     }
 
     /**
+     * Ordonne les saisons par langue, SANS les mélanger : toutes les VF
+     * d'abord (politique du bot : langue de navigation par défaut), puis
+     * toutes les VOSTFR, puis les saisons sans langue structurelle.
+     * Tri STABLE : l'ordre relatif au sein de chaque groupe est préservé.
+     */
+    fun orderByLanguage(seasons: List<AnimeSeason>): List<AnimeSeason> {
+        val vf = seasons.filter { it.language == "VF" }
+        val vostfr = seasons.filter { it.language == "VOSTFR" }
+        val others = seasons.filter { it.language == null }
+        return vf + vostfr + others
+    }
+
+    /**
      * Parse les appels panneauAnime("Nom", "sous-chemin") d'une page anime.
      * Les placeholders de template ("nom"/"url") sont ignorés (comme le
      * bot) ; l'URL de saison = page anime + sous-chemin + "/".

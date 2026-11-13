@@ -191,6 +191,41 @@ class SamaParsersTest {
         assertNull(SamaParsers.mirrorLanguage("https://anime-sama.to/catalogue/naruto/oav/"))
     }
 
+    // ── Classement par catégorie (retour owner : ne pas mélanger) ────────
+
+    private fun season(name: String, url: String, language: String?) =
+        dot.jcversa.novay.data.AnimeSeason(name = name, url = url, language = language)
+
+    @Test
+    fun `saisons classees par categorie - vf d'abord, vostfr ensuite, jamais meleangees`() {
+        val seasons = listOf(
+            season("Saison 1", "https://x/catalogue/a/saison1/vostfr/", "VOSTFR"),
+            season("Saison 1", "https://x/catalogue/a/saison1/vf/", "VF"),
+            season("Saison 2", "https://x/catalogue/a/saison2/vostfr/", "VOSTFR"),
+            season("Film", "https://x/catalogue/a/film/vf/", "VF"),
+            season("OAV", "https://x/catalogue/a/oav/", null)
+        )
+        val out = SamaParsers.orderByLanguage(seasons)
+        // Toutes les VF, puis toutes les VOSTFR, puis les sans-langue.
+        assertEquals(listOf("VF", "VF", "VOSTFR", "VOSTFR", null), out.map { it.language })
+        // Ordre stable au sein de chaque groupe (ordre d'apparition initial).
+        assertEquals("Saison 1", out[0].name)
+        assertEquals("Film", out[1].name)
+        assertEquals("Saison 1", out[2].name)
+        assertEquals("Saison 2", out[3].name)
+        assertEquals("OAV", out[4].name)
+    }
+
+    @Test
+    fun `classement - liste vide ou mono-langue intacte`() {
+        assertTrue(SamaParsers.orderByLanguage(emptyList()).isEmpty())
+        val vostfrOnly = listOf(
+            season("Saison 1", "u1", "VOSTFR"),
+            season("Saison 2", "u2", "VOSTFR")
+        )
+        assertEquals(vostfrOnly, SamaParsers.orderByLanguage(vostfrOnly))
+    }
+
     // ── Épisodes (fixtures réelles de la page saison naruto, sonde v15) ──
 
     private val seasonPage = """

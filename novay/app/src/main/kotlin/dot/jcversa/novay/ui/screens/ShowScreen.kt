@@ -45,9 +45,10 @@ import dot.jcversa.novay.ui.theme.DarkSurfaceCard
 import dot.jcversa.novay.ui.theme.TextMuted
 
 /**
- * Écran Fiche/Saisons : saisons et films de l'anime, depuis les appels
- * panneauAnime de sa page (langue structurelle du sous-chemin —
- * « saison1/vostfr », « film/vf »…).
+ * Écran Fiche/Saisons : saisons et films de l'anime, CLASSES PAR CATÉGORIE
+ * — toutes les VF d'abord, toutes les VOSTFR ensuite (jamais mélangées ;
+ * cf. orderByLanguage). La langue vient du sous-chemin structurel
+ * (« saison1/vf », « film/vostfr »…) + sondage de l'URL miroir.
  */
 @Composable
 fun ShowScreen(
@@ -101,23 +102,68 @@ fun ShowScreen(
                 style = MaterialTheme.typography.bodyMedium
             )
             else -> {
-                Text(
-                    text = "Saisons & films",
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Spacer(Modifier.height(12.dp))
+                val vf = seasons!!.filter { it.language == "VF" }
+                val vostfr = seasons!!.filter { it.language == "VOSTFR" }
+                val others = seasons!!.filter { it.language == null }
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    itemsIndexed(seasons!!) { index, season ->
+                    if (vf.isNotEmpty()) {
+                        item { SectionHeader(label = "VF", vf = true, count = vf.size) }
+                    }
+                    itemsIndexed(vf) { index, season ->
                         AnimateEntrance(index = index) {
                             SeasonCard(season = season, onClick = { onOpenEpisodes(season) })
                         }
                     }
+                    if (vostfr.isNotEmpty()) {
+                        item {
+                            if (vf.isNotEmpty()) Spacer(Modifier.height(14.dp))
+                            SectionHeader(label = "VOSTFR", vf = false, count = vostfr.size)
+                        }
+                    }
+                    itemsIndexed(vostfr) { index, season ->
+                        AnimateEntrance(index = index) {
+                            SeasonCard(season = season, onClick = { onOpenEpisodes(season) })
+                        }
+                    }
+                    if (others.isNotEmpty()) {
+                        item {
+                            if (vf.isNotEmpty() || vostfr.isNotEmpty()) Spacer(Modifier.height(14.dp))
+                            SectionHeader(label = "Autres", vf = false, count = others.size)
+                        }
+                    }
+                    itemsIndexed(others) { index, season ->
+                        AnimateEntrance(index = index) {
+                            SeasonCard(season = season, onClick = { onOpenEpisodes(season) })
+                        }
+                    }
+                    item { Spacer(Modifier.height(20.dp)) }
                 }
             }
         }
+    }
+}
+
+/** En-tête de catégorie : badge de langue + nombre de saisons. */
+@Composable
+private fun SectionHeader(label: String, vf: Boolean, count: Int) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(top = 6.dp)
+    ) {
+        LangPill(text = label, vf = vf)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = if (label == "Autres") {
+                "$count entrée(s) — langue du lecteur"
+            } else {
+                "$count saison(s) & film(s)"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = TextMuted
+        )
     }
 }
 
@@ -146,16 +192,6 @@ private fun SeasonCard(season: AnimeSeason, onClick: () -> Unit) {
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f)
             )
-            when (season.language) {
-                "VF" -> LangPill(text = "VF", vf = true)
-                "VOSTFR" -> LangPill(text = "VOSTFR")
-                else -> Text(
-                    text = "Langue du lecteur",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextMuted
-                )
-            }
-            Spacer(Modifier.width(8.dp))
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,

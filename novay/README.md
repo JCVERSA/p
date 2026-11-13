@@ -31,8 +31,10 @@ anti-Cloudflare.
     anime (placeholders ignorés, langue structurelle du sous-chemin).
     La page statique ne liste que la langue par défaut (VOSTFR) — la VF
     vit à l'URL miroir (`…/vostfr/` → `…/vf/`, validée par sonde) : chaque
-    panneau est sondé en parallèle et la variante existante est ajoutée,
-    VF affichée en premier.
+    panneau est sondé en parallèle et la variante existante est ajoutée.
+    Les saisons sont ensuite CLASSÉES PAR CATÉGORIE : toutes les VF
+    d'abord, toutes les VOSTFR ensuite — jamais mélangées (retour owner
+    13/11, même politique que les écrans VF/VOSTFR séparés du bot).
   - Épisodes : tableaux INLINE `epsN = ["lien:186672", …]` (positionnels,
     une liste par lecteur) + `epsMeta` (hôtes) + `epsJeton` (jeton de
     session). NB : `episodes.js` externe = 404 désormais.
