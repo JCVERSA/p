@@ -48,6 +48,8 @@ import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSource
 import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.ResolvedStream
+import dot.jcversa.novay.data.WatchHistory
+import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.data.voiranime.VoiranimeParsers
 import dot.jcversa.novay.downloads.Downloads
 import dot.jcversa.novay.ui.components.AnimateEntrance
@@ -72,6 +74,8 @@ fun PlayerScreen(
     source: AnimeSource,
     season: AnimeSeason,
     episode: AnimeEpisode,
+    animeTitle: String = "",
+    posterUrl: String? = null,
     initialStream: ResolvedStream? = null,
     onBack: () -> Unit
 ) {
@@ -102,6 +106,29 @@ fun PlayerScreen(
             } finally {
                 loading = false
             }
+        }
+    }
+
+    // Historique « Reprendre la lecture » : enregistré dès qu'un flux est
+    // prêt (résolu en ligne OU lu hors-ligne), pour reprendre depuis
+    // l'accueil sans repasser par la recherche.
+    LaunchedEffect(stream, offline) {
+        if (stream != null) {
+            WatchHistory.record(
+                context,
+                WatchHistoryEntry(
+                    animeTitle = animeTitle.ifEmpty { season.name },
+                    animeUrl = episode.url,
+                    posterUrl = posterUrl,
+                    seasonName = season.name,
+                    seasonUrl = season.url,
+                    episodeNumber = episode.number,
+                    episodeLabel = episode.label,
+                    lienIds = episode.lienIds,
+                    jeton = episode.jeton,
+                    watchedAt = System.currentTimeMillis()
+                )
+            )
         }
     }
 
