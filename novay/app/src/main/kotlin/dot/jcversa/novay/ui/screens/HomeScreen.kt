@@ -150,6 +150,17 @@ fun HomeScreen(
             }
         }
 
+        if (history.isEmpty() && active.isEmpty() && completed == 0) {
+            item(key = "empty") {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Bienvenue — cherche un anime pour commencer.\n\nLes épisodes que tu regardes et télécharges apparaîtront ici, prêts à reprendre d'un seul tap.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextMuted
+                )
+            }
+        }
+
         if (active.isNotEmpty() || completed > 0) {
             item(key = "downloads-header") {
                 Spacer(Modifier.height(12.dp))
