@@ -141,25 +141,29 @@ jobs:
         run: |
           say() { echo "::notice::${1:0:240}"; }
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          ORIGIN="https://anime-sama.si"
+          O="https://anime-sama.to"
 
-          # Ou mene le 302 de la racine ?
-          say "racine final => $(curl -sS -o /dev/null --max-time 20 -A "$UA" -w '%{url_effective} (%{num_redirects} redir)' -L "$ORIGIN/" 2>/dev/null)"
+          # 1. Recherche POST fetch.php DIRECTEMENT sur .to
+          curl -sS -A "$UA" --max-time 20 -H "Referer: $O/" -H "X-Requested-With: XMLHttpRequest" -d "query=naruto" "$O/template-php/defaut/fetch.php" -o /tmp/s.html 2>/dev/null
+          say "search => $(wc -c < /tmp/s.html) o, asn => $(grep -c 'asn-search-result' /tmp/s.html || true)"
+          say "search hrefs => $(grep -oE 'href="[^"]+"' /tmp/s.html | head -n 3 | tr '\n\r' '||')"
 
-          # episodes.js passe-t-il le garde ? (fichier statique)
-          for p in "catalogue/a-certain-dark-item/saison1/vostfr/episodes.js" "catalogue/86-eighty-six/saison1/vostfr/episodes.js"; do
-            curl -sS -L -A "$UA" --max-time 20 "$ORIGIN/$p" -o /tmp/e.js 2>/dev/null
-            say "$p => $(wc -c < /tmp/e.js) o | epsN => $(grep -cE 'eps[0-9]+ *=' /tmp/e.js || true) | $(head -c 120 /tmp/e.js | tr '\n\r' '||')"
-          done
+          # 2. Page anime -> panneauAnime
+          curl -sS -A "$UA" --max-time 20 "$O/catalogue/a-certain-dark-item/" -o /tmp/a.html 2>/dev/null
+          say "anime page => $(wc -c < /tmp/a.html) o, panneaux => $(grep -c 'panneauAnime' /tmp/a.html || true)"
+          say "panneaux => $(grep -oE 'panneauAnime\([^)]*\)' /tmp/a.html | head -n 5 | tr '\n\r' '||')"
 
-          # La page de saison redirige ou ? (chaine complete)
-          curl -sS --max-time 20 -A "$UA" -D /tmp/h1.txt -o /dev/null "$ORIGIN/catalogue/a-certain-dark-item/saison1/vostfr/" 2>/dev/null
-          say "saison headers => $(grep -iE '^(HTTP|location|set-cookie)' /tmp/h1.txt | tr '\n\r' '||')"
+          # 3. episodes.js
+          curl -sS -A "$UA" --max-time 20 "$O/catalogue/a-certain-dark-item/saison1/vostfr/episodes.js" -o /tmp/e.js 2>/dev/null
+          say "eps.js => $(wc -c < /tmp/e.js) o, tableaux => $(grep -cE 'eps[0-9]+ *=' /tmp/e.js || true)"
+          say "eps tete => $(head -c 250 /tmp/e.js | tr '\n\r' '||')"
 
-          # Le catalogue de la home est-il complet ? pagination ?
-          curl -sS -L -A "$UA" --max-time 25 -o /tmp/home.html "$ORIGIN/" 2>/dev/null
-          say "pagination => $(grep -oE 'href=\"[^"]*page[^"0-9]*[0-9]+\"' /tmp/home.html | sort -u | head -n 3 | tr '\n\r' '||')"
-          say "catalogue/card count => $(grep -c 'catalogue-card\|anime-card\|card-title' /tmp/home.html || true)"
-
-          # search_text : la home reference-t-elle un catalogue JSON/JS embarque ?
-          say "data-catalogue => $(grep -oE '(data-[a-z]*catalog[a-z]*|listAnime|catalogueJson)[^>]{0,60}' /tmp/home.html | head -n 2 | tr '\n\r' '||')"
+          # 4. Player du 1er episode
+          purl=$(grep -oE "'http[^']*'" /tmp/e.js | tr -d "'" | head -n 1)
+          say "player => $purl"
+          if [ -n "$purl" ]; then
+            curl -sS -A "$UA" --max-time 15 -o /tmp/p.html -w '%{http_code}' "$purl" 2>/dev/null
+            say "player page => $(wc -c < /tmp/p.html) o"
+            say "player m3u8 => $(grep -oE 'https?://[^\" ]*m3u8[^\" ]*' /tmp/p.html | head -n 2 | tr '\n\r' '||')"
+            say "player mp4/src => $(grep -oE 'player\.src[^;]{0,70}|https?://[^\" ]*mp4[^\" ]*' /tmp/p.html | head -n 2 | tr '\n\r' '||')"
+          fi
