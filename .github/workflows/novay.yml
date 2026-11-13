@@ -145,12 +145,9 @@ jobs:
           SAISON="$O/catalogue/naruto/saison1/vostfr/"
           curl -sS -A "$UA" --max-time 20 "$SAISON" -o /tmp/saison.html 2>/dev/null
 
-          # Le jeton dans la page
-          say "epsJeton ctx => $(grep -oE '.{0,60}epsJeton.{0,100}' /tmp/saison.html | head -n 2 | tr '\n\r' '||')"
-          jeton=$(grep -oE 'epsJeton *= *["\'][^"\']+["\']' /tmp/saison.html | head -n 1 | grep -oE '["\'][^"\']+["\']' | tr -d '"\'')
+          jeton=$(sed -n 's/.*epsJeton = "\([^"]*\)".*/\1/p' /tmp/saison.html | head -n 1)
           say "jeton => ${jeton:-ABSENT}"
 
-          # Appel reel avec le jeton
           if [ -n "$jeton" ]; then
             r=$(curl -sS -A "$UA" --max-time 15 -H "Referer: $SAISON" -H "X-Requested-With: XMLHttpRequest" -w ' | HTTP %{http_code}' "$O/api/lien.php?j=$jeton&l=186672" 2>/dev/null | head -c 300)
             say "api lien => $r"
