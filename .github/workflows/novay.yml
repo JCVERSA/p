@@ -144,14 +144,14 @@ jobs:
           O="https://anime-sama.to"
           SAISON="$O/catalogue/naruto/saison1/vostfr/"
           curl -sS -A "$UA" --max-time 20 "$SAISON" -o /tmp/saison.html 2>/dev/null
-          curl -sS -A "$UA" --max-time 20 -H "Referer: $SAISON" "$O/js/contenu/videos.js" -o /tmp/videos.js 2>/dev/null
 
-          # L'appel exact a /api/lien.php
-          say "fetch lien => $(grep -oE "fetch\('/api/lien\.php[^\']*'" /tmp/videos.js | head -n 2 | tr '\n\r' '||')"
-          say "ctx fetch => $(grep -oE '.{0,140}/api/lien\.php.{0,140}' /tmp/videos.js | head -n 2 | tr '\n\r' '||')"
+          # Le jeton dans la page
+          say "epsJeton ctx => $(grep -oE '.{0,60}epsJeton.{0,100}' /tmp/saison.html | head -n 2 | tr '\n\r' '||')"
+          jeton=$(grep -oE 'epsJeton *= *["\'][^"\']+["\']' /tmp/saison.html | head -n 1 | grep -oE '["\'][^"\']+["\']' | tr -d '"\'')
+          say "jeton => ${jeton:-ABSENT}"
 
-          # Appel reel pour le lien 186672 (ep 1 de la liste 1)
-          for q in "j=186672" "id=186672" "lien=186672"; do
-            r=$(curl -sS -A "$UA" --max-time 15 -H "Referer: $SAISON" -H "X-Requested-With: XMLHttpRequest" -w ' | HTTP %{http_code}' "$O/api/lien.php?$q" 2>/dev/null | head -c 200)
-            say "api ?$q => $r"
-          done
+          # Appel reel avec le jeton
+          if [ -n "$jeton" ]; then
+            r=$(curl -sS -A "$UA" --max-time 15 -H "Referer: $SAISON" -H "X-Requested-With: XMLHttpRequest" -w ' | HTTP %{http_code}' "$O/api/lien.php?j=$jeton&l=186672" 2>/dev/null | head -c 300)
+            say "api lien => $r"
+          fi
