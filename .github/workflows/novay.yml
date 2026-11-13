@@ -150,7 +150,7 @@ jobs:
           # Requete EXACTE de l'appli (memes en-tetes que SamaSource)
           curl -sS -A "$UA" --max-time 20 -H "Referer: $O/" -H "X-Requested-With: XMLHttpRequest" -H "Accept: text/html" -d "query=naruto" "$O/template-php/defaut/fetch.php" -o /tmp/s.html 2>/dev/null
           say "taille => $(wc -c < /tmp/s.html) o"
-          say "occurrences asn => $(grep -o 'asn-search-result' /tmp/s.html | wc -l)"
-          say "tag porteur => $(grep -oE '<[a-z0-9]+[^>]{0,140}asn-search-result[^>]{0,140}>' /tmp/s.html | head -n 2 | tr '\n\r' '||')"
-          say "ctx catalogue => $(grep -oE '.{130}/catalogue/naruto/.{70}' /tmp/s.html | head -n 1 | tr '\n\r' '||')"
-          say "titre present => $(grep -c 'asn-search-result-title' /tmp/s.html || true)"
+          # Carte complete du 1er resultat (500 caracteres)
+          say "carte => $(grep -oE '<a href="https://anime-sama.to/catalogue/naruto/".{0,500}' /tmp/s.html | head -n 1 | tr '\n\r' '||')"
+          # Element exact du titre
+          say "ctx titre => $(grep -oE '.{60}asn-search-result-title.{110}' /tmp/s.html | head -n 1 | tr '\n\r' '||')"
