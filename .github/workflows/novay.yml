@@ -150,11 +150,11 @@ jobs:
           say "NS => $(dig +short voir-anime.to NS 2>&1 | tr '\n' ' ')"
           say "SOA => $(dig +short voir-anime.to SOA 2>&1 | head -n 1)"
 
-          # Candidats alternatifs : NS vivant + code HTTP
-          for d in voir-anime.to voir-anime.sx voir-anime.co voir-anime.net voir-anime.tv voiranime.su voiranime.one voiranime.cc; do
+          # Catalogues connus du bot : vivants ?
+          for d in nakanime.tv anime-sama.pw jetanimes.com v6.voiranime.com voiranime.org; do
             nsr=$(dig +short $d NS 2>/dev/null | head -n 1)
             c=$(curl -sS -o /dev/null --max-time 12 -w '%{http_code}' -L "https://$d/" 2>/dev/null | tail -n 1)
-            say "candidat $d => NS=${nsr:-none} HTTP=${c:-000}"
+            say "catalogue $d => NS=${nsr:-none} HTTP=${c:-000}"
           done
 
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
