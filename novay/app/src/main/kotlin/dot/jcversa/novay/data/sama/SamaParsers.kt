@@ -73,13 +73,16 @@ object SamaParsers {
 
     private val ANCHOR_FULL_RE = Regex("<a\\b([^>]*)>([\\s\\S]*?)</a>", RegexOption.IGNORE_CASE)
 
-    /** Texte d'un div par sa classe (balises internes retirées). */
+    /** Texte d'un élément par sa classe (quelle que soit la balise). */
     private fun classText(html: String, className: String): String {
+        // Structure réelle (sonde 13/11) : le titre est un <h3>, le
+        // sous-titre un <p>, le contenu un <div> — on accepte TOUTE balise
+        // (backreference sur la balise ouvrante/fermante).
         val re = Regex(
-            "<div\\b[^>]*class=\"[^\"]*$className[^\"]*\"[^>]*>([\\s\\S]*?)</div>",
+            "<([a-z0-9]+)\\b[^>]*class=[\"'][^\"']*$className[^\"']*[\"'][^>]*>([\\s\\S]*?)</\\1>",
             RegexOption.IGNORE_CASE
         )
-        return re.find(html)?.groupValues?.get(1)?.let { stripTags(it) } ?: ""
+        return re.find(html)?.groupValues?.get(2)?.let { stripTags(it) } ?: ""
     }
 
     private fun stripTags(html: String): String =
@@ -105,9 +108,13 @@ object SamaParsers {
                 href
             }
             if (!seen.add(url)) continue
+            // Titre réel : <h3 class="asn-search-result-title"><mark>…</mark></h3>.
             val title = classText(anchor.groupValues[2], "asn-search-result-title")
             if (title.length < 2) continue
+            // Sous-titre réel : <p class="asn-search-result-subtitle">…</p>,
+            // repli sur la méta (<p class="asn-search-meta">Anime · 2002</p>).
             val subtitle = classText(anchor.groupValues[2], "asn-search-result-subtitle")
+                .ifEmpty { classText(anchor.groupValues[2], "asn-search-meta") }
             out.add(
                 AnimeSearchResult(
                     title = title,

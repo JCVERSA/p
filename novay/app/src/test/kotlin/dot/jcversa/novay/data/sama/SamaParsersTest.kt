@@ -46,14 +46,16 @@ class SamaParsersTest {
 
     @Test
     fun `resultats asn-search-result avec titres et sous-titres`() {
+        // Structure REELLE capturee par la sonde v22 (13/11) : le titre est
+        // un <h3> (avec <mark> de surlignage), le sous-titre un <p>, le
+        // contenu un <div> — pas seulement des div.
         val html = """
 <div class="col-6 col-md-4">
-  <a class="asn-search-result" href="https://anime-sama.to/catalogue/naruto/">
-    <div class="asn-search-result-title">Naruto</div>
-    <div class="asn-search-result-subtitle">Shonen - Action</div>
+  <a href="https://anime-sama.to/catalogue/naruto/" class="asn-search-result"><img class="asn-search-result-img" loading="lazy" src="https://cdn.jsdelivr.net/gh/Anime-Sama/IMG@img/contenu/thumb/naruto.webp" alt="" />
+    <div class="asn-search-result-content"><h3 class="asn-search-result-title"><mark>Naruto</mark>  </h3><p class="asn-search-meta">Anime · Scans · 2002</p><p class="asn-search-result-subtitle">Shonen - Action</p></div>
   </a>
   <a class="asn-search-result" href="/catalogue/naruto-shippuden">
-    <div class="asn-search-result-title">Naruto Shippuden</div>
+    <div class="asn-search-result-content"><h3 class="asn-search-result-title">Naruto <mark>Shippuden</mark></h3></div>
   </a>
 </div>
         """.trimIndent()
@@ -65,6 +67,19 @@ class SamaParsersTest {
         // href relatif resolu contre l'origine
         assertEquals("https://anime-sama.to/catalogue/naruto-shippuden", out[1].url)
         assertEquals("Naruto Shippuden", out[1].title)
+    }
+
+    @Test
+    fun `sous-titre de repli sur la meta quand le sous-titre manque`() {
+        val html = """
+<a href="https://anime-sama.to/catalogue/naruto/" class="asn-search-result">
+  <div class="asn-search-result-content"><h3 class="asn-search-result-title">Naruto</h3><p class="asn-search-meta">Anime · Scans · 2002</p></div>
+</a>
+        """.trimIndent()
+        val out = SamaParsers.parseSamaSearch(html, "https://anime-sama.to")
+        assertEquals(1, out.size)
+        assertEquals("Naruto", out[0].title)
+        assertEquals("Anime · Scans · 2002", out[0].subtitle)
     }
 
     @Test
