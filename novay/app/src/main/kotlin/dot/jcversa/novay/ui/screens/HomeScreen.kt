@@ -59,6 +59,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun HomeScreen(
     onOpenSearch: () -> Unit,
+    onOpenDownloads: () -> Unit = {},
     onResume: (entry: WatchHistoryEntry) -> Unit
 ) {
     val context = LocalContext.current

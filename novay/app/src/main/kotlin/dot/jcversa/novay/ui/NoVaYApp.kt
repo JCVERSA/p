@@ -177,6 +177,7 @@ fun NoVaYApp() {
                     when (screen) {
                         Destination.Home -> HomeScreen(
                             onOpenSearch = { openTab(Destination.Search) },
+                            onOpenDownloads = { openTab(Destination.Downloads) },
                             onResume = { entry ->
                                 open(playerDestination(entry))
                             }
