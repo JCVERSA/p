@@ -150,41 +150,36 @@ jobs:
           say "NS => $(dig +short voir-anime.to NS 2>&1 | tr '\n' ' ')"
           say "SOA => $(dig +short voir-anime.to SOA 2>&1 | head -n 1)"
 
-          # Launcher anime-sama.pw : ou pointe le bouton .btn-primary ?
+          # E2E anime-sama.si : recherche -> saisons -> episodes.js -> player
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          curl -sS -A "$UA" --max-time 20 "https://anime-sama.pw" -o /tmp/sama.html 2>/dev/null
-          if [ -s /tmp/sama.html ]; then
-            href=$(grep -oE 'class="[^"]*btn-primary[^"]*"[^>]*href="[^"]*"|href="[^"]*"[^>]*class="[^"]*btn-primary[^"]*"' /tmp/sama.html | grep -oE 'https?://[^"]+' | head -n 1)
-            say "btn-primary href => ${href:-INTRUVABLE}"
-            origin=$(echo "$href" | grep -oE 'https?://[a-z0-9.-]+' | head -n 1)
-            if [ -n "$origin" ]; then
-              c=$(curl -sS -o /tmp/sama2.html --max-time 15 -A "$UA" -w '%{http_code}' -L "$origin/" 2>/dev/null | tail -n 1)
-              say "origine $origin => HTTP $c"
-              title=$(grep -oE '<title>[^<]*</title>' /tmp/sama2.html 2>/dev/null | head -n 1)
-              say "title origine => $title"
-              # structure catalogue : la recherche existe-t-elle ?
-              c2=$(curl -sS -o /tmp/sama3.html --max-time 15 -A "$UA" -w '%{http_code}' "$origin/catalogue/" 2>/dev/null | tail -n 1)
-              say "catalogue => HTTP $c2, ancres /anime/ => $(grep -o 'href="[^"]*/anime/[^"]*"' /tmp/sama3.html 2>/dev/null | wc -l)"
-            fi
-          fi
+          ORIGIN="https://anime-sama.si"
 
-          code=$(curl -sS -L -A "$UA" --max-time 25 -o /tmp/org.html -w '%{http_code} %{url_effective} %{num_redirects}' "https://voiranime.org/" 2>&1 | tail -n 1)
-          say "racine .org => $code"
-          if [ -s /tmp/org.html ]; then
-            say "taille corps => $(wc -c < /tmp/org.html) octets"
-            say "ancres /anime/ => $(grep -o '/anime/[a-z0-9-]*' /tmp/org.html | sort -u | wc -l) uniques"
-            say "page-item-detail => $(grep -c 'page-item-detail' /tmp/org.html || true)"
-            title=$(grep -oE '<title>[^<]*</title>' /tmp/org.html | head -n 1)
-            say "title => $title"
-            slugs=$(grep -oE '/anime/[a-z0-9-]+' /tmp/org.html | sort -u | head -n 4 | tr '\n' ' ')
-            say "slugs extraits => ${slugs:-aucun}"
-          fi
+          # 1. Recherche (POST fetch.php)
+          curl -sS -A "$UA" --max-time 20 -d "query=naruto" "$ORIGIN/template-php/defaut/fetch.php" -o /tmp/search.html 2>/dev/null
+          say "search => $(wc -c < /tmp/search.html) o, asn-result => $(grep -c 'asn-search-result' /tmp/search.html || true)"
+          say "sample href => $(grep -oE 'href="[^"]+"' /tmp/search.html | head -n 3 | tr '\n' ' ')"
 
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          code=$(curl -sS -L -A "$UA" --max-time 20 -o /tmp/body.html -w '%{http_code} %{url_effective}' "https://voir-anime.to/" 2>&1 | tail -n 1)
-          say "HTTP accueil => $code"
-          if [ -s /tmp/body.html ]; then
-            doms=$(grep -oE 'https?://[a-z0-9.-]+' /tmp/body.html | sort -u | grep -viE 'w3.org|google|cloudflare|jquery|bootstrap' | head -n 5 | tr '\n' ' ')
-            say "domaines cites dans le corps => ${doms:-aucun}"
-          fi
+          # 2. Page anime -> panneauAnime
+          url=$(grep -oE 'href="[^"]*catalogue[^"]*"' /tmp/search.html | head -n 1 | sed 's/href="//;s/"$//')
+          case "$url" in http*) ;; /*) url="$ORIGIN$url";; *) url="$ORIGIN/$url";; esac
+          say "anime url => $url"
+          curl -sS -A "$UA" --max-time 20 "$url" -o /tmp/anime.html 2>/dev/null
+          say "anime page => $(wc -c < /tmp/anime.html) o, panneauAnime => $(grep -c 'panneauAnime' /tmp/anime.html || true)"
+          say "panneaux => $(grep -oE 'panneauAnime\([^)]*\)' /tmp/anime.html | head -n 6 | tr '\n' ' | ')"
 
+          # 3. episodes.js de la 1re saison
+          sub=$(grep -oE 'panneauAnime\([^)]*\)' /tmp/anime.html | head -n 1 | grep -oE '"[^"]*"' | tail -n 1 | tr -d '"')
+          say "subPath => $sub"
+          curl -sS -A "$UA" --max-time 20 "$url/$sub/episodes.js" -o /tmp/eps.js 2>/dev/null
+          say "episodes.js => $(wc -c < /tmp/eps.js) o, tableaux eps => $(grep -cE 'eps[0-9]+ *=' /tmp/eps.js || true)"
+          say "eps contenu => $(head -c 400 /tmp/eps.js | tr '\n' ' ')"
+
+          # 4. Player du 1er episode (liste 1) -> resolvable ?
+          purl=$(grep -oE "'[^']*'|\"[^\"]*\"" /tmp/eps.js | tr -d "'\"" | grep '^http' | head -n 1)
+          say "player 1 => $purl"
+          if [ -n "$purl" ]; then
+            pc=$(curl -sS -A "$UA" --max-time 15 -o /tmp/player.html -w '%{http_code}' "$purl" 2>/dev/null | tail -n 1)
+            say "player http => $pc, $(wc -c < /tmp/player.html) o"
+            say "player m3u8 => $(grep -oE 'https?://[^\"'\'' ]*m3u8[^\"'\'' ]*' /tmp/player.html | head -n 2 | tr '\n' ' ')"
+            say "player src => $(grep -oE 'player\.src[^;]{0,80}' /tmp/player.html | head -n 1)"
+          fi
