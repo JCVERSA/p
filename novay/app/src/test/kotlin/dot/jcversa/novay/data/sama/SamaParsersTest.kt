@@ -185,10 +185,22 @@ class SamaParsersTest {
     }
 
     @Test
-    fun `langue de la variante miroir`() {
-        assertEquals("VF", SamaParsers.mirrorLanguage("https://anime-sama.to/catalogue/naruto/saison1/vostfr/"))
-        assertEquals("VOSTFR", SamaParsers.mirrorLanguage("https://anime-sama.to/catalogue/naruto/saison1/vf/"))
-        assertNull(SamaParsers.mirrorLanguage("https://anime-sama.to/catalogue/naruto/oav/"))
+    fun `chaine complete miroir - la saison a l url vf est bien VF`() {
+        // Bug 13/11 (retour owner : « le badge VOSTFR est partout, meme sur
+        // la VF ») : la langue de la saison miroir se lit sur SON PROPRE
+        // sous-chemin, pas sur celui du panneau d'origine. C'est la CHAINE
+        // EXACTE que SamaSource utilise pour étiqueter la saison sondée.
+        val panelUrl = "https://anime-sama.to/catalogue/naruto/saison1/vostfr/"
+        val mirrorUrl = SamaParsers.mirrorLanguageUrl(panelUrl)!!
+        assertEquals("https://anime-sama.to/catalogue/naruto/saison1/vf/", mirrorUrl)
+        assertEquals("VF", SamaParsers.samaSubPathLanguage(mirrorUrl))
+
+        // Et dans l'autre sens : un panneau vf (rare, site qui liste les
+        // deux) sonde un miroir vostfr correctement étiqueté VOSTFR.
+        val panelVf = "https://anime-sama.to/catalogue/naruto/saison1/vf/"
+        val mirrorVostfr = SamaParsers.mirrorLanguageUrl(panelVf)!!
+        assertEquals("https://anime-sama.to/catalogue/naruto/saison1/vostfr/", mirrorVostfr)
+        assertEquals("VOSTFR", SamaParsers.samaSubPathLanguage(mirrorVostfr))
     }
 
     // ── Classement par catégorie (retour owner : ne pas mélanger) ────────

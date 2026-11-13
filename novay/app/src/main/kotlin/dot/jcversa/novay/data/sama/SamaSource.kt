@@ -158,7 +158,12 @@ class SamaSource(
                         AnimeSeason(
                             name = panel.name,
                             url = mirrorUrl,
-                            language = SamaParsers.mirrorLanguage(mirrorUrl)
+                            // Langue STRUCTURELLE de l'URL miroir elle-même :
+                            // …/saison1/vf/ = VF. (Bug 13/11 : l'ancien
+                            // mirrorLanguage retournait la langue de
+                            // l'AUTRE côté — toute la VF était étiquetée
+                            // VOSTFR et la section VF n'existait jamais.)
+                            language = SamaParsers.samaSubPathLanguage(mirrorUrl)
                         )
                     } else {
                         null

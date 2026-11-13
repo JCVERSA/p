@@ -197,6 +197,9 @@ object SamaParsers {
      * langue par défaut (VOSTFR) — la VF vit à l'URL miroir, qui répond
      * 200 avec tableaux eps + jeton. La bascule du site est client-side ;
      * nous, on sonde l'URL directement.
+     *
+     * NB : la langue de la saison miroir se lit avec
+     * [samaSubPathLanguage] sur l'URL miroir elle-même (…/vf/ = VF).
      */
     fun mirrorLanguageUrl(seasonUrl: String): String? {
         val trimmed = seasonUrl.trimEnd('/')
@@ -205,13 +208,6 @@ object SamaParsers {
             trimmed.endsWith("/vf") -> trimmed.dropLast("vf".length) + "vostfr/"
             else -> null
         }
-    }
-
-    /** Langue de la variante miroir (« VOSTFR » ⇄ « VF »), null si sans langue. */
-    fun mirrorLanguage(seasonUrl: String): String? = when {
-        seasonUrl.trimEnd('/').endsWith("/vostfr") -> "VF"
-        seasonUrl.trimEnd('/').endsWith("/vf") -> "VOSTFR"
-        else -> null
     }
 
     /**
