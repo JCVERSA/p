@@ -7,6 +7,8 @@ import dot.jcversa.novay.data.AnimeSource
 import dot.jcversa.novay.data.ResolvedStream
 import dot.jcversa.novay.data.StreamQuality
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
