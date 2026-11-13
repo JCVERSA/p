@@ -15,7 +15,7 @@ class SamaParsersTest {
     // ── Origine dynamique (launcher) ─────────────────────────────────────
 
     @Test
-    fun `bouton btn-primary du lanceur => origine`() {
+    fun `bouton btn-primary du lanceur - origine`() {
         val html = """
             <html><body>
               <a class="btn btn-primary btn-lg" href="https://anime-sama.si">Entrer</a>
@@ -25,7 +25,7 @@ class SamaParsersTest {
     }
 
     @Test
-    fun `href relatif resolu contre la base, pas de bouton => null`() {
+    fun `href relatif resolu contre la base, pas de bouton - null`() {
         val html = """<a class="btn btn-primary" href="/catalogue/">Entrer</a>"""
         assertEquals(
             "https://anime-sama.pw",
@@ -68,7 +68,7 @@ class SamaParsersTest {
     }
 
     @Test
-    fun `html vide ou sans resultat => liste vide`() {
+    fun `html vide ou sans resultat - liste vide`() {
         assertTrue(SamaParsers.parseSamaSearch("", "https://anime-sama.to").isEmpty())
         assertTrue(SamaParsers.parseSamaSearch("<html><body>Accueil</body></html>", "https://anime-sama.to").isEmpty())
     }
@@ -204,7 +204,7 @@ class SamaParsersTest {
     }
 
     @Test
-    fun `reponse api lien - erreur de jeton => null`() {
+    fun `reponse api lien - erreur de jeton - null`() {
         assertNull(SamaParsers.parseLienApiResponse("""{"erreur":"jeton"}"""))
         assertNull(SamaParsers.parseLienApiResponse(""))
     }
