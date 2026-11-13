@@ -9,7 +9,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
-import androidx.media3.datasource.CacheDataSource
+import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -82,15 +82,16 @@ object Downloads {
                 ctx.getExternalFilesDir(null) ?: ctx.filesDir,
                 "offline"
             )
-            cacheInternal = androidx.media3.datasource.cache.SimpleCache(
+            val cache = androidx.media3.datasource.cache.SimpleCache(
                 dir,
                 androidx.media3.datasource.cache.NoOpCacheEvictor(),
                 dbProvider
             )
+            cacheInternal = cache
             DownloadManager(
                 ctx,
                 dbProvider,
-                cacheInternal,
+                cache,
                 RegistryDataSourceFactory()
             ) { it.run() }.also {
                 it.maxParallelDownloads = 1
