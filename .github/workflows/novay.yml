@@ -142,24 +142,18 @@ jobs:
           say() { echo "::notice::${1:0:240}"; }
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           O="https://anime-sama.to"
+          SAISON="$O/catalogue/naruto/saison1/vostfr/"
+          curl -sS -A "$UA" --max-time 20 "$SAISON" -o /tmp/saison.html 2>/dev/null
 
-          # Naruto : panneaux + saison + episodes.js avec statuts
-          curl -sS -A "$UA" --max-time 20 "$O/catalogue/naruto/" -o /tmp/n.html 2>/dev/null
-          say "naruto page => $(wc -c < /tmp/n.html) o, panneaux => $(grep -oE 'panneauAnime\(\"[^\"]+\"[^)]*\)' /tmp/n.html | head -n 6 | tr '\n\r' '||')"
+          # Les tableaux epsN inline de la page de saison
+          say "eps arrays => $(grep -oE 'eps[0-9]+ *= *\[[^]]{0,150}' /tmp/saison.html | head -n 4 | tr '\n\r' '||')"
 
-          for p in "catalogue/naruto/saison1/vostfr/" "catalogue/naruto/saison1/vostfr/episodes.js"; do
-            c=$(curl -sS -A "$UA" --max-time 20 -H "Referer: $O/catalogue/naruto/saison1/vostfr/" -o /tmp/x.bin -w '%{http_code} %{size_download} %{content_type}' "$O/$p" 2>/dev/null)
-            say "$p => $c"
-          done
+          # videos.js : la source des players ?
+          curl -sS -A "$UA" --max-time 20 -H "Referer: $SAISON" "$O/js/contenu/videos.js?v=1794453009" -o /tmp/videos.js 2>/dev/null
+          say "videos.js => $(wc -c < /tmp/videos.js) o, eps => $(grep -cE 'eps[0-9]+ *=' /tmp/videos.js || true)"
+          say "videos tete => $(head -c 300 /tmp/videos.js | tr '\n\r' '||')"
 
-          # La page de saison reference-t-elle episodes.js ?
-          curl -sS -A "$UA" --max-time 20 "$O/catalogue/naruto/saison1/vostfr/" -o /tmp/saison.html 2>/dev/null
-          say "saison page => $(wc -c < /tmp/saison.html) o"
-          say "refs eps => $(grep -oE '[a-zA-Z0-9./_-]*episodes[a-zA-Z0-9./_-]*' /tmp/saison.html | sort -u | head -n 4 | tr '\n\r' '||')"
-          say "scripts saison => $(grep -oE 'src=\"[^\"]*\.js[^"]*\"' /tmp/saison.html | sort -u | head -n 5 | tr '\n\r' '||')"
-          say "eps inline => $(grep -cE 'eps[0-9]+ *=' /tmp/saison.html || true)"
-
-          # episodes.js obtenu : contenu si ce n'est pas une erreur HTML
-          if [ -s /tmp/x.bin ] && ! head -c 20 /tmp/x.bin | grep -q '<!'; then
-            say "eps contenu => $(head -c 250 /tmp/x.bin | tr '\n\r' '||')"
-          fi
+          # lecteur.js : comment la page construit l'iframe player ?
+          curl -sS -A "$UA" --max-time 20 -H "Referer: $SAISON" "$O/js/contenu/lecteur.js?v=1794461006" -o /tmp/lecteur.js 2>/dev/null
+          say "lecteur.js => $(wc -c < /tmp/lecteur.js) o"
+          say "lecteur iframe => $(grep -oE '(iframe|src|embed)[^;]{0,70}' /tmp/lecteur.js | head -n 4 | tr '\n\r' '||')"
