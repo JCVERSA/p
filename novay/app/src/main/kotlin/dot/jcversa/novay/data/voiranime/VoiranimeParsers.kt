@@ -3,6 +3,8 @@ package dot.jcversa.novay.data.voiranime
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.StreamQuality
+import java.net.URI
+import java.util.Base64
 
 /** Une entrée organisée (saison déduite, null pour les films). */
 data class FranchiseEntry(
@@ -18,8 +20,6 @@ data class Franchise(
     val baseTitle: String,
     val entries: List<FranchiseEntry>
 )
-import java.net.URI
-import java.util.Base64
 
 /**
  * Parseurs VOIRANIME — portage 1:1 des fonctions pures de
