@@ -146,13 +146,12 @@ jobs:
           curl -sS -A "$UA" --max-time 20 "$SAISON" -o /tmp/saison.html 2>/dev/null
           curl -sS -A "$UA" --max-time 20 -H "Referer: $SAISON" "$O/js/contenu/videos.js" -o /tmp/videos.js 2>/dev/null
 
-          # Ou vit l'ID 186672 dans la page de saison ?
-          say "contexte 186672 => $(grep -oE '.{0,110}186672.{0,110}' /tmp/saison.html | grep -v 'eps1 =' | head -n 2 | tr '\n\r' '||')"
+          # L'appel exact a /api/lien.php
+          say "fetch lien => $(grep -oE "fetch\('/api/lien\.php[^\']*'" /tmp/videos.js | head -n 2 | tr '\n\r' '||')"
+          say "ctx fetch => $(grep -oE '.{0,140}/api/lien\.php.{0,140}' /tmp/videos.js | head -n 2 | tr '\n\r' '||')"
 
-          # videos.js : comment les lien:NNN sont-ils resolus ?
-          say "videos lien => $(grep -oE '.{0,70}lien:.{0,70}' /tmp/videos.js | head -n 3 | tr '\n\r' '||')"
-          say "videos split => $(grep -oE '.{0,60}(split|getElementById|querySelector|fetch|ajax).{0,60}' /tmp/videos.js | head -n 5 | tr '\n\r' '||')"
-
-          # Y a-t-il un endpoint d'API mentionne ?
-          say "api refs => $(grep -oE '(api|php|ajax)[a-zA-Z0-9./_-]{0,50}' /tmp/videos.js | sort -u | head -n 5 | tr '\n\r' '||')"
-          say "api saison page => $(grep -oE '/[a-z-]+\.php[a-zA-Z0-9/?=&_-]{0,40}' /tmp/saison.html | sort -u | head -n 5 | tr '\n\r' '||')"
+          # Appel reel pour le lien 186672 (ep 1 de la liste 1)
+          for q in "j=186672" "id=186672" "lien=186672"; do
+            r=$(curl -sS -A "$UA" --max-time 15 -H "Referer: $SAISON" -H "X-Requested-With: XMLHttpRequest" -w ' | HTTP %{http_code}' "$O/api/lien.php?$q" 2>/dev/null | head -c 200)
+            say "api ?$q => $r"
+          done
