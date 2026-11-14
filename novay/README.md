@@ -124,6 +124,36 @@ anti-Cloudflare.
     4G, reprise auto en Wi-Fi, préférence persistée.
   - **Raisons de pause explicites** : « En attente du Wi-Fi » vs « En
     pause » vs « En file ».
+- **V2.4** (livré) : **interface Mihon** — le design system complet de
+  mihonapp/mihon (fork de Tachiyomi, Apache-2.0) porté sur nos moteurs.
+  - **Look Tachiyomi exact** : schéma M3 complet (bleu #2979FF, fond
+    #1B1B1F, rôles sémantiques : badge nouveaux = secondary, badge
+    téléchargé = tertiary) + **thème AMOLED** (noir pur, toggle dans
+    Plus → Réglages, bascule instantanée).
+  - **5 onglets** : Bibliothèque / Mises à jour / Historique / Catalogue
+    / Plus — barre M3 avec pastille de sélection, badge compteur,
+    transitions fade-through entre onglets, état préservé par onglet.
+  - **Bibliothèque** (nouveau) : suis des animés (cœur sur la fiche),
+    grille compacte/confortable/liste, badges « nouveaux épisodes » et
+    « téléchargés », bouton ▶ Continuer sur la carte, filtres VF/VOSTFR,
+    multi-sélection pour retirer.
+  - **Mises à jour** (nouveau) : « Vérifier » recompte les épisodes de
+    chaque favori — les nouveaux arrivent en badge sur l'onglet et se
+    consomment en ouvrant la saison.
+  - **Historique** (nouveau) : groupé par jour, barre de progression par
+    épisode, reprise directe, suppression unitaire ou globale.
+  - **Fiche anime Mihon** : backdrop d'affiche flouté (4 dp, alpha 0,2)
+    qui fond dans le fond, rangée d'actions cœur, FAB « Continuer » qui
+    se rétracte au défilement, saisons en lignes chapitres (VF d'abord,
+    VOSTFR ensuite — en-têtes épinglés).
+  - **File de téléchargements Mihon** : sections par anime avec « x/y »,
+    FAB pause/reprise globale, pill compteur — moteurs V2.3 (vitesse,
+    ETA, Wi-Fi uniquement) intacts derrière.
+  - **Épisodes style chapitres** : indicateur de téléchargement par item
+    (cercle → sablier → anneau de progression → coche → erreur),
+    « Reprise à mm:ss » des épisodes en cours.
+  - Le lecteur vidéo garde SES gestes V2.2 — seul l'accent passe au bleu
+    Tachiyomi.
 - **V3** : autres catalogues.
 
 La sonde réseau CI (job « Sonde anime-sama », push avec `[probe]` dans le

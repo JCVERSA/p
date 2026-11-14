@@ -150,6 +150,15 @@ object WatchHistory {
                 .getString(KEY, null)
         )
 
+    /** Supprime UNE entrée (bouton corbeille de l'historique). */
+    fun remove(context: Context, seasonUrl: String, episodeNumber: Int) {
+        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val key = entryKey(seasonUrl, episodeNumber)
+        val kept = decode(prefs.getString(KEY, null))
+            .filter { entryKey(it.seasonUrl, it.episodeNumber) != key }
+        prefs.edit().putString(KEY, encode(kept)).apply()
+    }
+
     fun clear(context: Context) {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().remove(KEY).apply()

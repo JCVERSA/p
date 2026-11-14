@@ -85,7 +85,6 @@ import dot.jcversa.novay.ui.components.LoadingView
 import dot.jcversa.novay.ui.components.bounceClick
 import dot.jcversa.novay.ui.player.DoubleTapSeekAccumulator
 import dot.jcversa.novay.ui.player.PlayerGestureMath
-import dot.jcversa.novay.ui.theme.Amber500
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -810,7 +809,7 @@ private fun PlayerContent(
                         Icon(
                             imageVector = Icons.Outlined.Tune,
                             contentDescription = "Qualité",
-                            tint = if (showQualities) Amber500 else Color.White,
+                            tint = if (showQualities) MaterialTheme.colorScheme.primary else Color.White,
                             modifier = Modifier
                                 .size(28.dp)
                                 .bounceClick(onClick = { showQualities = !showQualities })
@@ -820,7 +819,7 @@ private fun PlayerContent(
                     Icon(
                         imageVector = Icons.Outlined.Speed,
                         contentDescription = "Vitesse de lecture",
-                        tint = if (showSpeed || playbackSpeed != 1f) Amber500 else Color.White,
+                        tint = if (showSpeed || playbackSpeed != 1f) MaterialTheme.colorScheme.primary else Color.White,
                         modifier = Modifier
                             .size(28.dp)
                             .bounceClick(onClick = { showSpeed = !showSpeed })
@@ -946,8 +945,8 @@ private fun PlayerContent(
                             .weight(1f)
                             .padding(horizontal = 10.dp),
                         colors = SliderDefaults.colors(
-                            thumbColor = Amber500,
-                            activeTrackColor = Amber500,
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
                             inactiveTrackColor = Color(0x66FFFFFF)
                         )
                     )

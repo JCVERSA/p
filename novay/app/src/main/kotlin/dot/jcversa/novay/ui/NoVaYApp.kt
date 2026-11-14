@@ -12,45 +12,57 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DownloadDone
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.outlined.DownloadDone
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.NewReleases
+import androidx.compose.material.icons.rounded.VideoLibrary
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
+import dot.jcversa.novay.data.Library
 import dot.jcversa.novay.data.ResolvedStream
 import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.data.sama.SamaSource
 import dot.jcversa.novay.ui.components.SlateMotionProvider
+import dot.jcversa.novay.ui.screens.BrowseScreen
 import dot.jcversa.novay.ui.screens.DownloadsScreen
 import dot.jcversa.novay.ui.screens.EpisodesScreen
-import dot.jcversa.novay.ui.screens.HomeScreen
+import dot.jcversa.novay.ui.screens.HistoryScreen
+import dot.jcversa.novay.ui.screens.LibraryScreen
+import dot.jcversa.novay.ui.screens.MoreScreen
 import dot.jcversa.novay.ui.screens.PlayerScreen
-import dot.jcversa.novay.ui.screens.SearchScreen
 import dot.jcversa.novay.ui.screens.ShowScreen
-import dot.jcversa.novay.ui.theme.Amber500
-import dot.jcversa.novay.ui.theme.DarkBackground
-import dot.jcversa.novay.ui.theme.DarkSurfaceCard
-import dot.jcversa.novay.ui.theme.TextMuted
+import dot.jcversa.novay.ui.screens.UpdatesScreen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Écrans NoVaY, avec leur payload de navigation. */
 sealed class Destination {
-    data object Home : Destination()
-    data object Search : Destination()
+    data object Library : Destination()
+    data object Updates : Destination()
+    data object History : Destination()
+    data object Browse : Destination()
+    data object More : Destination()
     data object Downloads : Destination()
     data class Show(val anime: AnimeSearchResult) : Destination()
     data class Episodes(
@@ -71,33 +83,52 @@ sealed class Destination {
 
 /**
  * Pile de navigation AU NIVEAU DU PROCESSUS (pas de remember) : elle
- * survit a toute recreation de l activite. Sans cela, le lecteur qui
- * force le paysage recreait l activite et renvoyait a l accueil - le
- * lecteur semblait ne jamais s ouvrir.
+ * survit à toute recréation de l'activité. Sans cela, le lecteur qui
+ * force le paysage recréait l'activité et renvoyait à l'accueil — le
+ * lecteur semblait ne jamais s'ouvrir.
  */
-private val processStack = mutableStateListOf<Destination>(Destination.Home)
+private val processStack = mutableStateListOf<Destination>(Destination.Library)
 
 /** Racines d'onglet (barre de navigation basse). */
 private val Destination.isTab: Boolean
-    get() = this is Destination.Home || this is Destination.Search || this is Destination.Downloads
+    get() = this is Destination.Library || this is Destination.Updates ||
+        this is Destination.History || this is Destination.Browse ||
+        this is Destination.More
 
 /** Profondeur d'un écran dans le flux (sens de la transition animée). */
 private fun Destination.rank(): Int = when (this) {
-    Destination.Home, Destination.Search, Destination.Downloads -> 0
+    Destination.Library, Destination.Updates, Destination.History,
+    Destination.Browse, Destination.More -> 0
+    Destination.Downloads -> 1
     is Destination.Show -> 1
     is Destination.Episodes -> 2
     is Destination.Player -> 3
 }
 
+/** Clé stable d'un écran (préservation d'état par onglet). */
+private fun Destination.key(): String = when (this) {
+    Destination.Library -> "tab_library"
+    Destination.Updates -> "tab_updates"
+    Destination.History -> "tab_history"
+    Destination.Browse -> "tab_browse"
+    Destination.More -> "tab_more"
+    Destination.Downloads -> "downloads"
+    is Destination.Show -> "show_${anime.url}"
+    is Destination.Episodes -> "episodes_${season.url}"
+    is Destination.Player -> "player_${season.url}_${episode.number}"
+}
+
 /**
- * Coque de navigation NoVaY (V2.1) : trois onglets en bas — Accueil,
- * Recherche, Téléchargements — et un flux de détail par-dessus
- * (Fiche → Épisodes → Lecteur). Le lecteur passe en plein écran : la
- * barre disparaît pendant la lecture.
+ * Coque de navigation NoVaY (V2.4, design Mihon HomeScreen) : CINQ onglets
+ * en bas — Bibliothèque, Mises à jour, Historique, Catalogue, Plus — et un
+ * flux de détail par-dessus (Fiche → Épisodes → Lecteur). Transition
+ * fade-through entre onglets (matériau Mihon), axe partagé pour la pile.
+ * Le lecteur passe en plein écran : la barre disparaît pendant la lecture.
  */
 @Composable
 fun NoVaYApp() {
     val source = remember { SamaSource() }
+    val context = LocalContext.current
     val stack = processStack
 
     BackHandler(enabled = stack.size > 1) { stack.removeAt(stack.lastIndex) }
@@ -115,51 +146,82 @@ fun NoVaYApp() {
     }
 
     // Onglet courant = racine de la pile ; masqué en pleine lecture.
-    val currentTab = stack.firstOrNull { it.isTab } ?: Destination.Home
+    val currentTab = stack.firstOrNull { it.isTab } ?: Destination.Library
     val showBottomBar = stack.last() !is Destination.Player
 
+    // Badge « Mises à jour » : total des nouveaux épisodes des favoris,
+    // rafraîchi quand on revient sur un onglet (les visites consomment).
+    var updatesBadge by remember { mutableIntStateOf(0) }
+    val lastIsTab = stack.last().isTab
+    LaunchedEffect(lastIsTab, stack.size) {
+        if (lastIsTab) {
+            updatesBadge = withContext(Dispatchers.IO) {
+                Library.all(context).sumOf { it.newEpisodes }
+            }
+        }
+    }
+
+    val stateHolder = rememberSaveableStateHolder()
+
     SlateMotionProvider {
+    androidx.compose.material3.Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
-            containerColor = DarkBackground,
+            containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
                 if (showBottomBar) {
                     NavigationBar(
-                        containerColor = DarkSurfaceCard,
-                        contentColor = TextMuted
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     ) {
-                        tabItems.forEach { (dest, label, selectedIcon, unselectedIcon) ->
+                        tabItems.forEach { (dest, label, icon) ->
                             val selected = currentTab == dest
                             NavigationBarItem(
                                 selected = selected,
                                 onClick = { openTab(dest) },
                                 icon = {
-                                    Icon(
-                                        imageVector = if (selected) selectedIcon else unselectedIcon,
-                                        contentDescription = label
-                                    )
+                                    if (dest == Destination.Updates && updatesBadge > 0) {
+                                        BadgedBox(
+                                            badge = {
+                                                Badge(
+                                                    containerColor = MaterialTheme.colorScheme.secondary,
+                                                    contentColor = MaterialTheme.colorScheme.onSecondary,
+                                                ) {
+                                                    Text(text = "$updatesBadge")
+                                                }
+                                            },
+                                        ) {
+                                            Icon(imageVector = icon, contentDescription = label)
+                                        }
+                                    } else {
+                                        Icon(imageVector = icon, contentDescription = label)
+                                    }
                                 },
                                 label = { Text(text = label) },
                                 colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = Amber500,
-                                    selectedTextColor = Amber500,
-                                    unselectedIconColor = TextMuted,
-                                    unselectedTextColor = TextMuted,
-                                    indicatorColor = Color(0x26F59E0B)
-                                )
+                                    selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    selectedTextColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                                ),
                             )
                         }
                     }
                 }
-            }
+            },
         ) { innerPadding ->
             AnimatedContent(
                 targetState = stack.last(),
                 modifier = Modifier.fillMaxSize(),
                 transitionSpec = {
                     if (targetState.rank() == initialState.rank()) {
-                        // Même niveau (changement d'onglet) : fondu simple.
-                        fadeIn(tween(180)) togetherWith fadeOut(tween(180))
+                        // Changement d'onglet : fade-through Mihon
+                        // (sortie courte, entrée ample).
+                        fadeIn(tween(200)) togetherWith fadeOut(tween(90))
                     } else if (targetState.rank() > initialState.rank()) {
                         (slideInHorizontally(tween(260)) { it / 4 } + fadeIn(tween(220)))
                             .togetherWith(
@@ -172,89 +234,100 @@ fun NoVaYApp() {
                             )
                     }
                 },
-                label = "novay_screen_stack"
+                label = "novay_screen_stack",
             ) { screen ->
                 // La flèche retour n'a de sens que si on peut revenir
                 // (l'écran n'est pas la racine de son onglet).
                 val canBack = stack.size > 1
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .padding(innerPadding)
-                ) {
-                    when (screen) {
-                        Destination.Home -> HomeScreen(
-                            onOpenSearch = { openTab(Destination.Search) },
-                            onOpenDownloads = { openTab(Destination.Downloads) },
-                            onResume = { entry ->
-                                open(playerDestination(entry))
-                            }
-                        )
-                        Destination.Search -> SearchScreen(
-                            source = source,
-                            canBack = canBack,
-                            onBack = back,
-                            onOpenShow = { open(Destination.Show(it)) }
-                        )
-                        Destination.Downloads -> DownloadsScreen(
-                            canBack = canBack,
-                            onBack = back,
-                            onPlay = { season, episode, stream ->
-                                open(
-                                    Destination.Player(
-                                        season = season,
-                                        episode = episode,
-                                        animeTitle = episode.label,
-                                        posterUrl = null,
-                                        initialStream = stream
+                // L'état de chaque écran (scroll…) survit aux changements d'onglet.
+                stateHolder.SaveableStateProvider(key = screen.key()) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                    ) {
+                        when (screen) {
+                            Destination.Library -> LibraryScreen(
+                                onOpenShow = { open(Destination.Show(it)) },
+                                onResume = { entry -> open(playerDestination(entry)) }
+                            )
+                            Destination.Updates -> UpdatesScreen(
+                                source = source,
+                                onOpenShow = { open(Destination.Show(it)) },
+                                onResume = { entry -> open(playerDestination(entry)) }
+                            )
+                            Destination.History -> HistoryScreen(
+                                onResume = { entry -> open(playerDestination(entry)) }
+                            )
+                            Destination.Browse -> BrowseScreen(
+                                source = source,
+                                onOpenShow = { open(Destination.Show(it)) }
+                            )
+                            Destination.More -> MoreScreen(
+                                onOpenDownloads = { open(Destination.Downloads) }
+                            )
+                            Destination.Downloads -> DownloadsScreen(
+                                canBack = canBack,
+                                onBack = back,
+                                onPlay = { season, episode, stream ->
+                                    open(
+                                        Destination.Player(
+                                            season = season,
+                                            episode = episode,
+                                            animeTitle = episode.label,
+                                            posterUrl = null,
+                                            initialStream = stream
+                                        )
                                     )
-                                )
-                            }
-                        )
-                        is Destination.Show -> ShowScreen(
-                            source = source,
-                            anime = screen.anime,
-                            onBack = back,
-                            onOpenEpisodes = { season ->
-                                open(
-                                    Destination.Episodes(
-                                        animeTitle = screen.anime.title,
-                                        posterUrl = screen.anime.posterUrl,
-                                        season = season
+                                }
+                            )
+                            is Destination.Show -> ShowScreen(
+                                source = source,
+                                anime = screen.anime,
+                                onBack = back,
+                                onOpenEpisodes = { season ->
+                                    open(
+                                        Destination.Episodes(
+                                            animeTitle = screen.anime.title,
+                                            posterUrl = screen.anime.posterUrl,
+                                            season = season
+                                        )
                                     )
-                                )
-                            }
-                        )
-                        is Destination.Episodes -> EpisodesScreen(
-                            source = source,
-                            animeTitle = screen.animeTitle,
-                            season = screen.season,
-                            onBack = back,
-                            onOpenPlayer = { episode, offlineStream ->
-                                open(
-                                    Destination.Player(
-                                        season = screen.season,
-                                        episode = episode,
-                                        animeTitle = screen.animeTitle,
-                                        posterUrl = screen.posterUrl,
-                                        initialStream = offlineStream
+                                },
+                                onResume = { entry -> open(playerDestination(entry)) }
+                            )
+                            is Destination.Episodes -> EpisodesScreen(
+                                source = source,
+                                animeTitle = screen.animeTitle,
+                                season = screen.season,
+                                onBack = back,
+                                onOpenPlayer = { episode, offlineStream ->
+                                    open(
+                                        Destination.Player(
+                                            season = screen.season,
+                                            episode = episode,
+                                            animeTitle = screen.animeTitle,
+                                            posterUrl = screen.posterUrl,
+                                            initialStream = offlineStream
+                                        )
                                     )
-                                )
-                            }
-                        )
-                        is Destination.Player -> PlayerScreen(
-                            source = source,
-                            season = screen.season,
-                            episode = screen.episode,
-                            animeTitle = screen.animeTitle,
-                            posterUrl = screen.posterUrl,
-                            initialStream = screen.initialStream,
-                            onBack = back
-                        )
+                                }
+                            )
+                            is Destination.Player -> PlayerScreen(
+                                source = source,
+                                season = screen.season,
+                                episode = screen.episode,
+                                animeTitle = screen.animeTitle,
+                                posterUrl = screen.posterUrl,
+                                initialStream = screen.initialStream,
+                                onBack = back
+                            )
+                        }
                     }
                 }
             }
         }
+    }
     }
 }
 
@@ -273,21 +346,17 @@ private fun playerDestination(entry: WatchHistoryEntry) = Destination.Player(
     initialStream = null
 )
 
-/** Les trois onglets : destination, libellé, icônes. */
+/** Les cinq onglets : destination, libellé, icône. */
 private data class TabItem(
     val dest: Destination,
     val label: String,
-    val selectedIcon: androidx.compose.ui.graphics.vector.ImageVector,
-    val unselectedIcon: androidx.compose.ui.graphics.vector.ImageVector
+    val icon: androidx.compose.ui.graphics.vector.ImageVector
 )
 
 private val tabItems = listOf(
-    TabItem(Destination.Home, "Accueil", Icons.Filled.Home, Icons.Outlined.Home),
-    TabItem(Destination.Search, "Recherche", Icons.Filled.Search, Icons.Outlined.Search),
-    TabItem(
-        Destination.Downloads,
-        "Téléchargements",
-        Icons.Filled.DownloadDone,
-        Icons.Outlined.DownloadDone
-    )
+    TabItem(Destination.Library, "Bibliothèque", Icons.Rounded.VideoLibrary),
+    TabItem(Destination.Updates, "Mises à jour", Icons.Rounded.NewReleases),
+    TabItem(Destination.History, "Historique", Icons.Rounded.History),
+    TabItem(Destination.Browse, "Catalogue", Icons.Rounded.Explore),
+    TabItem(Destination.More, "Plus", Icons.Rounded.MoreHoriz),
 )

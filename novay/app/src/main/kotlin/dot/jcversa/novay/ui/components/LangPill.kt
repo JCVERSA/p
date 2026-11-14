@@ -9,8 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dot.jcversa.novay.ui.theme.Amber500
-import dot.jcversa.novay.ui.theme.MintGreen
+import androidx.compose.material3.MaterialTheme
 
 /**
  * Badge de langue : VF en ambre, VOSTFR en vert menthe (couleur « succès »
@@ -22,7 +21,12 @@ fun LangPill(
     vf: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val tint = if (vf) Amber500 else MintGreen
+    // Rôles Mihon : VF = primaire (bleu), VOSTFR = tertiaire (vert).
+    val tint = if (vf) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.tertiary
+    }
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(999.dp),

@@ -13,8 +13,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.SubcomposeAsyncImage
-import dot.jcversa.novay.ui.theme.DarkSurfaceVariant
-import dot.jcversa.novay.ui.theme.TextMuted
+import androidx.compose.material3.MaterialTheme
 
 /**
  * Affiche d'un anime : l'image réelle du catalogue si elle existe, sinon
@@ -30,13 +29,13 @@ fun PosterImage(
 ) {
     if (url.isNullOrBlank()) {
         Box(
-            modifier = modifier.background(DarkSurfaceVariant),
+            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Outlined.Movie,
                 contentDescription = contentDescription,
-                tint = TextMuted
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     } else {
@@ -49,7 +48,7 @@ fun PosterImage(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(DarkSurfaceVariant),
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
                     contentAlignment = Alignment.Center
                 ) {
                     SwiftSlateSpinner(size = spinnerSize)
@@ -59,13 +58,13 @@ fun PosterImage(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(DarkSurfaceVariant),
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Movie,
                         contentDescription = contentDescription,
-                        tint = TextMuted
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

@@ -5,9 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,21 +21,24 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.outlined.Circle
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -59,18 +60,18 @@ import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.AnimeSource
 import dot.jcversa.novay.data.QualityOption
 import dot.jcversa.novay.data.ResolvedStream
+import dot.jcversa.novay.data.WatchHistory
 import dot.jcversa.novay.data.sama.SamaParsers
 import dot.jcversa.novay.downloads.Downloads
 import dot.jcversa.novay.ui.components.AnimateEntrance
+import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LoadingView
+import dot.jcversa.novay.ui.components.NovayAppBar
+import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.SwiftSlateSpinner
 import dot.jcversa.novay.ui.components.bounceClick
-import dot.jcversa.novay.ui.theme.Amber500
-import dot.jcversa.novay.ui.theme.DarkCardBorder
-import dot.jcversa.novay.ui.theme.DarkSurfaceCard
-import dot.jcversa.novay.ui.theme.DarkSurfaceVariant
-import dot.jcversa.novay.ui.theme.MintGreen
+import dot.jcversa.novay.ui.components.selectedBackground
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -88,11 +89,13 @@ private data class QualityDialogState(
 )
 
 /**
- * Écran Épisodes (V2.3) : liste de la saison, téléchargement à la
- * résolution CHOISIE par l'utilisateur (l'appli ne pré-choisit rien) et
- * multi-sélection (appui long) pour télécharger plusieurs épisodes d'un
- * coup. Un épisode téléchargé se lit hors-ligne.
+ * Écran Épisodes (V2.4, look Mihon MangaChapterListItem ; logique V2.3
+ * inchangée) : liste de la saison, téléchargement à la résolution CHOISIE
+ * par l'utilisateur (l'appli ne pré-choisit rien), multi-sélection (appui
+ * long) pour télécharger plusieurs épisodes d'un coup, lecture hors-ligne
+ * des épisodes téléchargés.
  */
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun EpisodesScreen(
     source: AnimeSource,
@@ -114,6 +117,9 @@ fun EpisodesScreen(
     var enqueueLabel by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
+    // Positions de lecture (sous-titre « Reprise à … » style Mihon).
+    var positions by remember { mutableStateOf<Map<Int, Long>>(emptyMap()) }
+
     // Multi-sélection (V2.3) : appui long sur un épisode.
     var selectionMode by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<Int>() }
@@ -133,6 +139,15 @@ fun EpisodesScreen(
             episodes = source.episodes(season)
         } catch (e: Exception) {
             error = e.message ?: "Erreur inconnue"
+        }
+    }
+
+    // Positions enregistrées pour cette saison (une seule lecture disque).
+    LaunchedEffect(season.url) {
+        positions = withContext(Dispatchers.IO) {
+            WatchHistory.recent(context)
+                .filter { it.seasonUrl.trimEnd('/') == season.url.trimEnd('/') }
+                .associate { it.episodeNumber to it.positionMs }
         }
     }
 
@@ -247,44 +262,33 @@ fun EpisodesScreen(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 20.dp)
-    ) {
-        Spacer(Modifier.height(12.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Retour",
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.bounceClick(onClick = onBack)
-            )
-            Spacer(Modifier.width(8.dp))
-            Column {
-                Text(
-                    text = season.name,
-                    style = MaterialTheme.typography.headlineMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                // Progression de la saison (groupe).
-                val done = seasonInfos.count { it.isCompleted }
-                if (episodes != null && episodes!!.isNotEmpty() && done > 0) {
-                    Text(
-                        text = "$done/${episodes!!.size} épisodes téléchargés",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MintGreen
+    val done = seasonInfos.count { it.isCompleted }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        NovayAppBar(
+            titleContent = {
+                AppBarTitle(title = season.name)
+                if (done > 0) {
+                    Pill(
+                        text = "$done/${episodes?.size ?: done}",
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
                     )
                 }
-            }
-        }
+            },
+            navigateUp = onBack,
+            scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(
+                rememberTopAppBarState()
+            ),
+        )
+
+        // Bandeau d'état (erreurs, analyse de lot, mise en file).
         toast?.let {
             Text(
                 text = it,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = 6.dp)
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
             )
         }
         if (resolvingBatch) {
@@ -292,7 +296,7 @@ fun EpisodesScreen(
                 text = "Analyse des lecteurs…",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp)
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
             )
         }
         enqueueLabel?.let {
@@ -300,23 +304,22 @@ fun EpisodesScreen(
                 text = "Mise en file $it",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp)
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
             )
         }
-        Spacer(Modifier.height(12.dp))
 
         when {
             error != null -> ErrorView(message = error!!, onRetry = { retryKey++ })
             episodes == null -> LoadingView(message = "Chargement des épisodes…")
             episodes!!.isEmpty() -> Text(
                 text = "Aucun épisode listé pour cette saison.",
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(16.dp),
             )
             else -> Box(modifier = Modifier.weight(1f)) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    contentPadding = PaddingValues(bottom = 96.dp),
                 ) {
                     itemsIndexed(episodes!!, key = { _, e -> e.number }) { index, episode ->
                         val info = infoFor(episode)
@@ -333,6 +336,7 @@ fun EpisodesScreen(
                                 episode = episode,
                                 dlState = state,
                                 dlPercent = info?.percent ?: 0f,
+                                resumeMs = positions[episode.number] ?: 0L,
                                 selectionMode = selectionMode,
                                 isSelected = selected.contains(episode.number),
                                 onDownload = { download(episode) },
@@ -367,18 +371,15 @@ fun EpisodesScreen(
             }
         }
 
-        // Barre d'action de la multi-sélection.
+        // Barre d'action de la multi-sélection (Mihon : fond surface, bas).
         if (selectionMode) {
-            Spacer(Modifier.height(8.dp))
             Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = DarkSurfaceCard,
-                border = BorderStroke(1.dp, DarkCardBorder),
-                modifier = Modifier.fillMaxWidth()
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.fillMaxWidth(),
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     TextButton(onClick = {
                         selected.clear()
@@ -399,7 +400,6 @@ fun EpisodesScreen(
                 }
             }
         }
-        Spacer(Modifier.height(12.dp))
     }
 
     // Dialog de résolution : chaque pastille EST l'action — aucune
@@ -424,9 +424,8 @@ fun EpisodesScreen(
                     }
                     options.forEach { option ->
                         Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = DarkSurfaceVariant,
-                            border = BorderStroke(1.dp, DarkCardBorder),
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .bounceClick(onClick = { confirm(option) })
@@ -455,95 +454,136 @@ fun EpisodesScreen(
     }
 }
 
+/**
+ * Ligne d'épisode — look MangaChapterListItem Mihon : titre + sous-titre
+ * à gauche, indicateur de téléchargement à droite, fond de sélection.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun EpisodeRow(
     episode: AnimeEpisode,
     dlState: EpDl,
     dlPercent: Float,
+    resumeMs: Long,
     selectionMode: Boolean,
     isSelected: Boolean,
     onDownload: () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
-    Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = DarkSurfaceCard,
-        border = BorderStroke(1.dp, if (isSelected) Amber500 else DarkCardBorder),
+    Row(
         modifier = Modifier
             .fillMaxWidth()
+            .selectedBackground(isSelected)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(start = 16.dp, top = 12.dp, end = 8.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+        if (selectionMode) {
+            Icon(
+                imageVector = if (isSelected) Icons.Rounded.CheckCircle else Icons.Rounded.Check,
+                contentDescription = if (isSelected) "Sélectionné" else "Non sélectionné",
+                tint = if (isSelected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                },
+                modifier = Modifier.padding(end = 12.dp),
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            if (selectionMode) {
-                // Indicateur de sélection (gauche).
-                Icon(
-                    imageVector = if (isSelected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
-                    contentDescription = if (isSelected) "Sélectionné" else "Non sélectionné",
-                    tint = if (isSelected) Amber500 else DarkCardBorder,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(Modifier.width(12.dp))
-            }
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(DarkSurfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = episode.number.toString(),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-            Spacer(Modifier.width(12.dp))
             Text(
                 text = episode.label,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f)
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            if (!selectionMode) {
-                // État de téléchargement de l'épisode (droite).
-                when (dlState) {
-                    EpDl.RESOLVING -> SwiftSlateSpinner(size = 16.dp)
-                    EpDl.QUEUED, EpDl.DOWNLOADING -> {
-                        Text(
-                            text = if (dlPercent > 0f) "${dlPercent.toInt()} %" else "…",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    EpDl.DONE -> Icon(
-                        imageVector = Icons.Filled.CheckCircle,
-                        contentDescription = "Téléchargé — lecture hors-ligne",
-                        tint = MintGreen
-                    )
-                    EpDl.FAILED -> Icon(
-                        imageVector = Icons.Outlined.ErrorOutline,
-                        contentDescription = "Échec — réessayer",
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.bounceClick(onClick = onDownload)
-                    )
-                    EpDl.NONE -> Icon(
-                        imageVector = Icons.Outlined.Download,
-                        contentDescription = "Télécharger",
-                        tint = Amber500,
-                        modifier = Modifier.bounceClick(onClick = onDownload)
-                    )
-                }
-                Spacer(Modifier.width(10.dp))
-                Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = "Lire",
-                    tint = Amber500
+            if (resumeMs > 0L) {
+                Text(
+                    text = "Reprise à ${formatPosition(resumeMs)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
                 )
             }
         }
+        EpisodeDownloadIndicator(
+            state = dlState,
+            percent = dlPercent,
+            onDownload = onDownload,
+        )
     }
+}
+
+/**
+ * Indicateur de téléchargement — porté du ChapterDownloadIndicator Mihon :
+ * rien = cercle à télécharger, file = sablier, en cours = anneau de
+ * progression, fini = coche verte, échec = croix rouge.
+ */
+@Composable
+private fun EpisodeDownloadIndicator(
+    state: EpDl,
+    percent: Float,
+    onDownload: () -> Unit,
+) {
+    when (state) {
+        EpDl.RESOLVING -> SwiftSlateSpinner(size = 18.dp, modifier = Modifier.padding(8.dp))
+        EpDl.QUEUED -> Icon(
+            imageVector = Icons.Rounded.Schedule,
+            contentDescription = "En file d'attente",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .padding(8.dp)
+                .bounceClick(onClick = onDownload),
+        )
+        EpDl.DOWNLOADING -> Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(4.dp),
+        ) {
+            CircularProgressIndicator(
+                progress = { (percent / 100f).coerceIn(0f, 1f) },
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = "${percent.toInt()} %",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        EpDl.DONE -> Icon(
+            imageVector = Icons.Rounded.CheckCircle,
+            contentDescription = "Téléchargé — lecture hors-ligne",
+            tint = MaterialTheme.colorScheme.tertiary,
+            modifier = Modifier.padding(8.dp),
+        )
+        EpDl.FAILED -> Icon(
+            imageVector = Icons.Rounded.ErrorOutline,
+            contentDescription = "Échec — réessayer",
+            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier
+                .padding(8.dp)
+                .bounceClick(onClick = onDownload),
+        )
+        EpDl.NONE -> Icon(
+            imageVector = Icons.Rounded.Download,
+            contentDescription = "Télécharger",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .padding(8.dp)
+                .clip(CircleShape)
+                .bounceClick(onClick = onDownload),
+        )
+    }
+}
+
+internal fun formatPosition(ms: Long): String {
+    val totalSeconds = ms / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return "%d:%02d".format(java.util.Locale.FRENCH, minutes, seconds)
 }

@@ -21,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import dot.jcversa.novay.ui.theme.CoralRed
 
 /** État de chargement centré (spinner signature + message). */
 @Composable
@@ -56,7 +55,7 @@ fun ErrorView(message: String, onRetry: () -> Unit, modifier: Modifier = Modifie
         Icon(
             imageVector = Icons.Outlined.CloudOff,
             contentDescription = null,
-            tint = CoralRed
+            tint = MaterialTheme.colorScheme.error
         )
         Spacer(Modifier.height(14.dp))
         Text(

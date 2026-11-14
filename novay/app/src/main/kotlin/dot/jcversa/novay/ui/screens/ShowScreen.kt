@@ -1,9 +1,10 @@
 package dot.jcversa.novay.ui.screens
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,20 +14,27 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.PlayCircleOutline
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
+import androidx.compose.material3.SmallExtendedFloatingActionButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,48 +42,63 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.AnimeSource
+import dot.jcversa.novay.data.Library
+import dot.jcversa.novay.data.LibraryEntry
+import dot.jcversa.novay.data.WatchHistory
+import dot.jcversa.novay.downloads.Downloads
 import dot.jcversa.novay.ui.components.AnimateEntrance
+import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LangPill
 import dot.jcversa.novay.ui.components.LoadingView
+import dot.jcversa.novay.ui.components.NovayAppBar
+import dot.jcversa.novay.ui.components.NovayBadge
 import dot.jcversa.novay.ui.components.PosterImage
-import dot.jcversa.novay.ui.components.bounceClick
-import dot.jcversa.novay.ui.theme.Amber500
-import dot.jcversa.novay.ui.theme.DarkCardBorder
-import dot.jcversa.novay.ui.theme.DarkSurfaceCard
-import dot.jcversa.novay.ui.theme.MintGreen
-import dot.jcversa.novay.ui.theme.TextMuted
+import dot.jcversa.novay.ui.theme.header
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
- * Écran Fiche/Saisons : saisons et films de l'anime, CLASSES PAR CATÉGORIE
- * — toutes les VF d'abord, toutes les VOSTFR ensuite (jamais mélangées ;
- * cf. orderByLanguage).
- *
- * Lisibilité (retour owner 13/11 : « s1, s2, s1, s2 » paraissait non trié) :
- *  - chaque carte porte SON badge de langue (VF ambre / VOSTFR vert) ;
- *  - chaque section a une bannière colorée pleine largeur ;
- *  - l'en-tête de section est ÉPINGLÉ (sticky) : la langue courante reste
- *    visible en haut pendant le défilement.
+ * Écran Fiche (V2.4, design Mihon MangaScreen) :
+ *  - backdrop : affiche floutée 4 dp, alpha 0,2, fondu vers le fond ;
+ *  - en-tête : couverture + titre + badges de langue ;
+ *  - rangée d'actions Mihon : cœur « Ajouter à la bibliothèque » ;
+ *  - FAB « Continuer » (reprise de l'épisode en cours), qui se rétracte
+ *    au défilement (pattern animateFloatingActionButton Mihon) ;
+ *  - saisons listées comme les chapitres Mihon, CLASSÉES PAR LANGUE :
+ *    toutes les VF d'abord, toutes les VOSTFR ensuite (contrainte
+ *    permanente), en-têtes de section épinglés.
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ShowScreen(
     source: AnimeSource,
     anime: AnimeSearchResult,
     onBack: () -> Unit,
-    onOpenEpisodes: (AnimeSeason) -> Unit
+    onOpenEpisodes: (AnimeSeason) -> Unit,
+    onResume: (dot.jcversa.novay.data.WatchHistoryEntry) -> Unit
 ) {
+    val context = LocalContext.current
     var seasons by remember { mutableStateOf<List<AnimeSeason>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var retryKey by remember { mutableIntStateOf(0) }
+    var inLibrary by remember { mutableStateOf(false) }
+    var resumeEntry by remember {
+        mutableStateOf<dot.jcversa.novay.data.WatchHistoryEntry?>(null)
+    }
+    // Téléchargés par saison (badge des lignes).
+    var downloadedBySeason by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
 
     LaunchedEffect(anime.url, retryKey) {
         error = null
@@ -87,220 +110,325 @@ fun ShowScreen(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 20.dp)
-    ) {
-        Spacer(Modifier.height(12.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Retour",
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.bounceClick(onClick = onBack)
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = anime.title,
-                style = MaterialTheme.typography.headlineMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+    LaunchedEffect(anime.url) {
+        inLibrary = withContext(Dispatchers.IO) { Library.isInLibrary(context, anime.url) }
+        resumeEntry = withContext(Dispatchers.IO) {
+            WatchHistory.recent(context)
+                .firstOrNull { it.animeUrl.trimEnd('/') == anime.url.trimEnd('/') }
         }
-        Spacer(Modifier.height(16.dp))
+        downloadedBySeason = withContext(Dispatchers.IO) {
+            Downloads.snapshot(context)
+                .filter { it.isCompleted }
+                .groupBy { it.meta?.seasonUrl?.trimEnd('/') ?: "" }
+                .mapValues { it.value.size }
+        }
+    }
 
-        when {
-            error != null -> ErrorView(message = error!!, onRetry = { retryKey++ })
-            seasons == null -> LoadingView(message = "Chargement des saisons…")
-            seasons!!.isEmpty() -> Text(
-                text = "Aucune saison listée sur la page de cet anime.",
-                style = MaterialTheme.typography.bodyMedium
+    fun toggleFavorite() {
+        val entry = LibraryEntry(
+            title = anime.title,
+            url = anime.url,
+            slug = anime.slug,
+            posterUrl = anime.posterUrl,
+            languages = seasons.orEmpty().mapNotNull { it.language?.uppercase() }.distinct(),
+            addedAt = System.currentTimeMillis()
+        )
+        inLibrary = Library.toggle(context, entry)
+    }
+
+    val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
+    val listState = rememberLazyListState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            NovayAppBar(
+                titleContent = { AppBarTitle(title = anime.title) },
+                navigateUp = onBack,
+                scrollBehavior = scrollBehavior,
             )
-            else -> {
-                val vf = seasons!!.filter { it.language == "VF" }
-                val vostfr = seasons!!.filter { it.language == "VOSTFR" }
-                val others = seasons!!.filter { it.language == null }
-                LazyColumn(
+
+            when {
+                error != null -> ErrorView(message = error!!, onRetry = { retryKey++ })
+                seasons == null -> LoadingView(message = "Chargement des saisons…")
+                seasons!!.isEmpty() -> Text(
+                    text = "Aucune saison listée sur la page de cet anime.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(16.dp),
+                )
+                else -> LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // V2.1 : banniere affiche (image reelle du catalogue).
-                    item(key = "banner") {
-                        ShowBanner(anime = anime)
-                    }
-                    if (vf.isNotEmpty()) {
-                        stickyHeader(key = "header-vf") {
-                            SectionHeader(label = "VF", vf = true, count = vf.size)
+                    // ── En-tête : backdrop flouté + couverture + titres ──
+                    item(key = "header") { Header(anime = anime) }
+
+                    // ── Rangée d'actions Mihon ──
+                    item(key = "actions") {
+                        Row(
+                            modifier = Modifier.padding(start = 16.dp, top = 4.dp, end = 16.dp),
+                        ) {
+                            MangaActionButton(
+                                title = if (inLibrary) "En bibliothèque" else "Ajouter",
+                                icon = if (inLibrary) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                color = if (inLibrary) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                },
+                                onClick = { toggleFavorite() },
+                            )
+                            MangaActionButton(
+                                title = "${seasons!!.size} saison${if (seasons!!.size > 1) "s" else ""}",
+                                icon = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                                onClick = {},
+                            )
                         }
                     }
-                    itemsIndexed(vf, key = { _, s -> s.url }) { index, season ->
-                        AnimateEntrance(index = index) {
-                            SeasonCard(season = season, onClick = { onOpenEpisodes(season) })
+
+                    // ── Saisons classées par langue : VF d'abord ──
+                    val grouped = orderByLanguage(seasons!!)
+                    grouped.forEach { (lang, langSeasons) ->
+                        stickyHeader(key = "sticky_${lang}") {
+                            Text(
+                                text = lang,
+                                style = MaterialTheme.typography.header,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(MaterialTheme.colorScheme.background)
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                            )
                         }
-                    }
-                    if (vostfr.isNotEmpty()) {
-                        stickyHeader(key = "header-vostfr") {
-                            Column {
-                                if (vf.isNotEmpty()) Spacer(Modifier.height(16.dp))
-                                SectionHeader(label = "VOSTFR", vf = false, count = vostfr.size)
+                        itemsIndexed(langSeasons, key = { _, s -> s.url }) { index, season ->
+                            val dl = downloadedBySeason[season.url.trimEnd('/')] ?: 0
+                            AnimateEntrance(index = index) {
+                                SeasonRow(
+                                    season = season,
+                                    episodeCount = null,
+                                    downloaded = dl,
+                                    onClick = {
+                                        // Ouvre la saison : ses nouveaux épisodes sont vus.
+                                        scope.launch {
+                                            withContext(Dispatchers.IO) {
+                                                runCatching {
+                                                    val eps = source.episodes(season)
+                                                    Library.markSeen(context, season.url, eps.size)
+                                                }
+                                            }
+                                        }
+                                        onOpenEpisodes(season)
+                                    },
+                                )
                             }
                         }
                     }
-                    itemsIndexed(vostfr, key = { _, s -> s.url }) { index, season ->
-                        AnimateEntrance(index = index) {
-                            SeasonCard(season = season, onClick = { onOpenEpisodes(season) })
-                        }
-                    }
-                    if (others.isNotEmpty()) {
-                        stickyHeader(key = "header-others") {
-                            Column {
-                                if (vf.isNotEmpty() || vostfr.isNotEmpty()) Spacer(Modifier.height(16.dp))
-                                SectionHeader(label = "Autres", vf = false, count = others.size)
-                            }
-                        }
-                    }
-                    itemsIndexed(others, key = { _, s -> s.url }) { index, season ->
-                        AnimateEntrance(index = index) {
-                            SeasonCard(season = season, onClick = { onOpenEpisodes(season) })
-                        }
-                    }
-                    item(key = "footer") { Spacer(Modifier.height(20.dp)) }
+                    item { Spacer(Modifier.height(96.dp)) }
+                }
+            }
+        }
+
+        // ── FAB « Continuer » (se rétracte au défilement — pattern Mihon) ──
+        val fabVisible = resumeEntry != null
+        val idle by remember {
+            derivedStateOf { !listState.isScrollInProgress }
+        }
+        val fabScale by animateFloatAsState(
+            targetValue = if (fabVisible && idle) 1f else 0f,
+            animationSpec = tween(200),
+            label = "fab_visibility",
+        )
+        if (fabVisible && fabScale > 0.01f) {
+            SmallExtendedFloatingActionButton(
+                onClick = { resumeEntry?.let(onResume) },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+                    .alpha(fabScale),
+                shape = CircleShape,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.PlayArrow,
+                    contentDescription = null,
+                )
+                Text(text = "Continuer")
+            }
+        }
+    }
+}
+
+/** En-tête Mihon : backdrop flouté + couverture + titre + langues. */
+@Composable
+private fun Header(anime: AnimeSearchResult) {
+    Box(modifier = Modifier.fillMaxWidth()) {
+        // Backdrop : l'affiche floutée qui fond dans le fond (Mihon).
+        PosterImage(
+            url = anime.posterUrl,
+            contentDescription = null,
+            modifier = Modifier
+                .matchParentSize()
+                .blur(4.dp)
+                .alpha(0.2f),
+        )
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Transparent,
+                        1f to MaterialTheme.colorScheme.background,
+                    ),
+                ),
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+        ) {
+            PosterImage(
+                url = anime.posterUrl,
+                contentDescription = anime.title,
+                modifier = Modifier
+                    .size(width = 96.dp, height = 144.dp)
+                    .clip(MaterialTheme.shapes.small),
+            )
+            Spacer(Modifier.width(16.dp))
+            Column(
+                modifier = Modifier.padding(top = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = anime.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (!anime.subtitle.isNullOrBlank()) {
+                    Text(
+                        text = anime.subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                anime.language?.let { lang ->
+                    LangPill(text = lang, vf = lang.equals("VF", true))
                 }
             }
         }
     }
 }
 
-/**
- * Bannière de catégorie : pleine largeur, teintée de la couleur de la
- * langue, avec libellé explicite — impossible à manquer.
- */
+/** Bouton d'action Mihon (colonne icône + libellé). */
 @Composable
-private fun SectionHeader(label: String, vf: Boolean, count: Int) {
-    val tint = if (vf) Amber500 else MintGreen
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = tint.copy(alpha = 0.10f),
-        border = BorderStroke(1.dp, tint.copy(alpha = 0.35f))
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            LangPill(text = label, vf = vf)
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = when {
-                        vf -> "Version française"
-                        label == "VOSTFR" -> "Version originale sous-titrée"
-                        else -> "Langue du lecteur"
-                    },
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
-                    text = if (label == "Autres") {
-                        "$count entrée(s)"
-                    } else {
-                        "$count saison(s) & film(s)"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextMuted
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SeasonCard(season: AnimeSeason, onClick: () -> Unit) {
-    Surface(
+private fun MangaActionButton(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    color: Color,
+    onClick: () -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .fillMaxWidth()
-            .bounceClick(onClick = onClick),
-        shape = RoundedCornerShape(20.dp),
-        color = DarkSurfaceCard,
-        border = BorderStroke(1.dp, DarkCardBorder)
+            .padding(end = 24.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.PlayCircleOutline,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
-            )
-            Spacer(Modifier.width(12.dp))
-            Text(
-                text = season.name,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f)
-            )
-            // La langue sur CHAQUE carte : la catégorie est lisible carte
-            // par carte, pas seulement dans l'en-tête de section.
-            when (season.language) {
-                "VF" -> LangPill(text = "VF", vf = true)
-                "VOSTFR" -> LangPill(text = "VOSTFR")
-            }
-            Spacer(Modifier.width(8.dp))
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = TextMuted
-            )
-        }
-    }
-}
-
-/**
- * Bannière de la fiche anime : l'affiche réelle du catalogue en pleine
- * largeur, avec un dégradé sombre pour garder le sous-titre lisible.
- * Sans affiche : le placeholder film, même forme.
- */
-@Composable
-private fun ShowBanner(anime: AnimeSearchResult) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(210.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .border(1.dp, DarkCardBorder, RoundedCornerShape(24.dp))
-    ) {
-        PosterImage(
-            url = anime.posterUrl,
-            contentDescription = anime.title,
-            spinnerSize = 20.dp,
-            modifier = Modifier.fillMaxSize()
+        Icon(imageVector = icon, contentDescription = null, tint = color)
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelMedium,
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
-        // Dégradé bas : le sous-titre reste lisible sur n'importe quelle
-        // image (claire ou sombre).
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.Transparent,
-                            Color(0xCC000000)
-                        )
+    }
+}
+
+/** Ligne de saison style chapitre Mihon. */
+@Composable
+private fun SeasonRow(
+    season: AnimeSeason,
+    episodeCount: Int?,
+    downloaded: Int,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = season.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.width(6.dp))
+                if (downloaded > 0) {
+                    NovayBadge(
+                        text = "$downloaded",
+                        color = MaterialTheme.colorScheme.tertiary,
+                        textColor = MaterialTheme.colorScheme.onTertiary,
                     )
-                )
-        )
-        if (!anime.subtitle.isNullOrBlank()) {
-            Text(
-                text = anime.subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color.White,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(14.dp)
-            )
+                }
+            }
+            Row {
+                val subtitle = buildString {
+                    episodeCount?.let { append("$it épisodes") }
+                    season.language?.let { lang ->
+                        if (isNotEmpty()) append(" · ")
+                        append(lang.uppercase())
+                    }
+                }
+                if (subtitle.isNotEmpty()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
+        Icon(
+            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
+}
+
+/** VF d'abord, VOSTFR ensuite (contrainte permanente NoVaY). */
+internal fun orderByLanguage(seasons: List<AnimeSeason>): List<Pair<String, List<AnimeSeason>>> {
+    val groups = linkedMapOf<String, MutableList<AnimeSeason>>()
+    for (s in seasons) {
+        val lang = s.language?.uppercase() ?: when {
+            s.url.contains("/vf/") -> "VF"
+            s.url.contains("/vostfr/") -> "VOSTFR"
+            else -> "AUTRE"
+        }
+        groups.getOrPut(lang) { mutableListOf() }.add(s)
+    }
+    val ordered = groups.entries.sortedWith(
+        compareBy { (lang, _) ->
+            when (lang) {
+                "VF" -> 0
+                "VOSTFR" -> 1
+                else -> 2
+            }
+        }
+    )
+    return ordered.map { it.key to it.value.toList() }
 }

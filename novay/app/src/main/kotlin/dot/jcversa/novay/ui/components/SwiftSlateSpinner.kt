@@ -21,8 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import dot.jcversa.novay.ui.theme.Amber500
-import dot.jcversa.novay.ui.theme.MintGreen
+import androidx.compose.material3.MaterialTheme
 
 /**
  * Signature SwiftSlate multi-phase quadrant spinner (copie du panel) (◐ ◓ ◑ ◒).
@@ -32,9 +31,10 @@ import dot.jcversa.novay.ui.theme.MintGreen
 fun SwiftSlateSpinner(
     modifier: Modifier = Modifier,
     size: Dp = 24.dp,
-    tint: Color = Amber500,
+    tint: Color = Color.Unspecified,
     speedMs: Int = 1100
 ) {
+    val effectiveTint = if (tint == Color.Unspecified) MaterialTheme.colorScheme.primary else tint
     val infiniteTransition = rememberInfiniteTransition(label = "swiftslate_spinner")
 
     // Continuous 360 degree rotation
@@ -70,7 +70,7 @@ fun SwiftSlateSpinner(
 
             // Outer subtle track ring
             drawCircle(
-                color = tint.copy(alpha = 0.2f),
+                color = effectiveTint.copy(alpha = 0.2f),
                 radius = radius - 1.5.dp.toPx(),
                 center = centerOffset,
                 style = Stroke(width = 1.5.dp.toPx())
@@ -80,9 +80,9 @@ fun SwiftSlateSpinner(
             drawArc(
                 brush = Brush.sweepGradient(
                     colors = listOf(
-                        tint.copy(alpha = 0.1f),
-                        tint,
-                        MintGreen
+                        effectiveTint.copy(alpha = 0.1f),
+                        effectiveTint,
+                        MaterialTheme.colorScheme.tertiary
                     )
                 ),
                 startAngle = rotation,
