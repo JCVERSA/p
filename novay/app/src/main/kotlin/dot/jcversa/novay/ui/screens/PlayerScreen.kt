@@ -6,6 +6,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -70,7 +72,10 @@ import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LoadingView
 import dot.jcversa.novay.ui.components.bounceClick
+import dot.jcversa.novay.ui.player.DoubleTapSeekAccumulator
+import dot.jcversa.novay.ui.player.PlayerGestureMath
 import dot.jcversa.novay.ui.theme.Amber500
+import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -250,8 +255,13 @@ private fun PlayerContent(
     var positionMs by remember { mutableStateOf(0L) }
     var durationMs by remember { mutableStateOf(0L) }
     var userSeeking by remember { mutableStateOf(false) }
-    var seekFeedback by remember { mutableStateOf<Int?>(null) }
+    var seekFeedback by remember { mutableStateOf<SeekFeedback?>(null) }
     var showQualities by remember { mutableStateOf(false) }
+    // V2.2 (étape 7) : verrouillage des contrôles — les gestes et les
+    // contrôles se figent, seul un bouton déverrouille.
+    var controlsLocked by remember { mutableStateOf(false) }
+    // V2.2 : double-tap cumulatif (inspire nextplayer - comportement).
+    val doubleTapSeek = remember { DoubleTapSeekAccumulator() }
 
     // Plein écran : paysage automatique + barres système masquées.
     // Tout est restauré à la sortie (retour, ou fermeture de l'écran).
@@ -314,10 +324,11 @@ private fun PlayerContent(
         }
     }
 
-    // Le feedback de seek (±10 s) s'efface vite.
+    // Le feedback de seek s'efface 800 ms apres la derniere mise a jour
+    // (un glisse continu le garde affiche, la valeur suit le doigt).
     LaunchedEffect(seekFeedback) {
         if (seekFeedback != null) {
-            delay(700)
+            delay(800)
             seekFeedback = null
         }
     }
@@ -339,39 +350,109 @@ private fun PlayerContent(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Couche de gestes : tap = afficher/masquer les contrôles,
-        // double-tap = ±10 s (moitié gauche/droite de l'écran).
+        // Couche de gestes 1 : tap = afficher/masquer les contrôles,
+        // double-tap = ±10 s CUMULATIF (moitié gauche/droite de l'écran,
+        // tap-tap-tap à droite = +10 s, +20 s, +30 s — cf. nextplayer).
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(player, durationMs) {
+                .pointerInput(player, durationMs, controlsLocked) {
+                    if (controlsLocked) return@pointerInput
                     detectTapGestures(
                         onTap = { controlsVisible = !controlsVisible },
                         onDoubleTap = { offset ->
                             val forward = offset.x > size.width / 2
-                            val delta = if (forward) 10_000L else -10_000L
-                            val target = (player.currentPosition + delta)
+                            val inc = if (forward) {
+                                PlayerGestureMath.DOUBLE_TAP_INCREMENT_MS
+                            } else {
+                                -PlayerGestureMath.DOUBLE_TAP_INCREMENT_MS
+                            }
+                            val target = (player.currentPosition + inc)
                                 .coerceIn(0L, if (durationMs > 0) durationMs else Long.MAX_VALUE)
                             player.seekTo(target)
-                            seekFeedback = if (forward) 10 else -10
+                            // L'indicateur montre le CUMUL de la rafale.
+                            seekFeedback = SeekFeedback(
+                                deltaMs = doubleTapSeek.tap(forward),
+                                targetMs = player.currentPosition
+                            )
                         }
                     )
                 }
         )
 
-        // Feedback du double-tap : « +10 s » / « −10 s » au centre.
-        seekFeedback?.let { seconds ->
+        // Couche de gestes 2 : glissé horizontal = seek progressif
+        // (50 ms de vidéo par pixel, borné à la durée). La vidéo suit le
+        // doigt (scrubbing mode) au lieu de saccader.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(player, durationMs, controlsLocked) {
+                    if (controlsLocked) return@pointerInput
+                    val slop = viewConfiguration.pointerSlop
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        var seeking = false
+                        val startX = down.position.x
+                        val startPosition = player.currentPosition
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            if (!seeking) {
+                                val dx = change.position.x - startX
+                                val dy = change.position.y - down.position.y
+                                // Direction : horizontale seulement (les
+                                // gestes verticaux arrivent en V2.2 étape 2).
+                                if (abs(dx) > slop && abs(dx) > abs(dy)) {
+                                    seeking = true
+                                    player.isScrubbingModeEnabled = true
+                                }
+                            }
+                            if (seeking) {
+                                change.consume()
+                                val target = PlayerGestureMath.dragSeekTarget(
+                                    startPositionMs = startPosition,
+                                    startX = startX,
+                                    currentX = change.position.x,
+                                    durationMs = durationMs
+                                )
+                                player.seekTo(target)
+                                seekFeedback = SeekFeedback(
+                                    deltaMs = target - startPosition,
+                                    targetMs = target
+                                )
+                            }
+                        }
+                        if (seeking) player.isScrubbingModeEnabled = false
+                    }
+                }
+        )
+
+        // Feedback de seek : côté tapé, delta cumulé + temps cible.
+        seekFeedback?.let { fb ->
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = Color(0xB3000000),
-                modifier = Modifier.align(Alignment.Center)
+                modifier = Modifier
+                    .align(if (fb.deltaMs >= 0) Alignment.CenterEnd else Alignment.CenterStart)
+                    .padding(horizontal = 28.dp)
             ) {
-                Text(
-                    text = (if (seconds > 0) "+" else "−") + "${seconds}s",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = Color.White,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
-                )
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = (if (fb.deltaMs >= 0) "+" else "−") +
+                            "${abs(fb.deltaMs) / 1000} s",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White
+                    )
+                    Text(
+                        text = formatTime(fb.targetMs),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xCCFFFFFF)
+                    )
+                }
             }
         }
 
@@ -552,3 +633,9 @@ private fun QualityPill(label: String, selected: Boolean, onClick: () -> Unit) {
         )
     }
 }
+
+/** Feedback de seek à l'écran : delta cumulé + position cible. */
+private data class SeekFeedback(
+    val deltaMs: Long,
+    val targetMs: Long
+)
