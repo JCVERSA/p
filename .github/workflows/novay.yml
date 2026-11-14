@@ -167,29 +167,33 @@ jobs:
           done
 
           # Page d'accueil : structure pour l'onglet Catalogue (sections
-          # recents / populaires) — dump compact via notices.
+          # recents / populaires) — dump compact via notices. set +e : un
+          # grep sans match ne doit jamais couter la sonde (pipefail).
+          set +e
           curl -sS -A "$UA" --max-time 20 "$O/" -o /tmp/home.html 2>/dev/null
-          say "home size => $(wc -c < /tmp/home.html), cartes catalogue => $(grep -coE 'href="[^"]*/catalogue/[a-z0-9-]+/?"' /tmp/home.html || true)"
-          # Mots des titres de sections (populaires, derniers ajouts…).
-          grep -ioE '(populair|dernier|recent|récent|nouveaut|random|aléatoire|top)[a-zéèêà]*' /tmp/home.html | sort | uniq -c | sort -rn | head -n 6 | while IFS= read -r l; do
-            say "home mot => $l"
+          tr -d '\n\r' < /tmp/home.html > /tmp/home1.html
+          say "home size => $(wc -c < /tmp/home.html), cartes catalogue => $(grep -coE 'href=\"[^\"]*/catalogue/[a-z0-9-]+/?\"' /tmp/home1.html)"
+          # Histogramme des classes (top 20) — structure des sections/cartes.
+          grep -oE 'class=\"[a-z0-9 _-]{2,50}\"' /tmp/home1.html | sort | uniq -c | sort -rn | head -n 20 | while IFS= read -r l; do
+            say "home class => $l"
           done
-          # Titres de sections (h1..h4, texte brut).
-          grep -oE '<h[1-4][^>]*>[^<]{2,70}' /tmp/home.html | sed 's/<[^>]*>//' | head -n 14 | while IFS= read -r t; do
-            say "home h => $t"
+          # Occurrences de top/populaire & compagnie avec contexte.
+          grep -oE '.{60}(top|populair|dernier|nouveaut)[a-zéèê]*.{60}' /tmp/home1.html | head -n 6 | sed 's/"/~/g' | while IFS= read -r l; do
+            say "home motctx => $l"
           done
-          # Structure autour du premier titre de section (500 caracteres).
-          grep -oE '<h[1-4][^>]*>.{0,460}' /tmp/home.html | head -n 3 | sed 's/"/~/g' | while IFS= read -r w; do
-            echo "$w" | fold -w 200 | while IFS= read -r chunk; do say "home section => $chunk"; done
-          done
-          # Une carte d'anime complete (ancre vers catalogue + 400 caracteres).
-          grep -oE '<a [^>]*href="[^"]*/catalogue/[a-z0-9-]+/?"[^>]*>.{0,380}' /tmp/home.html | head -n 2 | sed 's/"/~/g' | while IFS= read -r c; do
+          # Contexte des 3 premiers liens catalogue (carte + section).
+          grep -oE '.{260}/catalogue/[a-z0-9-]+/?.{200}' /tmp/home1.html | head -n 3 | sed 's/"/~/g' | while IFS= read -r c; do
             echo "$c" | fold -w 200 | while IFS= read -r chunk; do say "home card => $chunk"; done
+          done
+          # Squelette textuel (sans balises) : de quoi parle la page ?
+          sed 's/<script[\s\S]*?<\/script>//g' /tmp/home1.html | sed 's/<[^>]*>/~/g' | sed 's/~~*/~/g' | head -c 1600 | fold -w 200 | while IFS= read -r chunk; do
+            say "home texte => $chunk"
           done
 
           # Page catalogue complete (liste de tous les animes).
           curl -sS -A "$UA" --max-time 20 "$O/catalogue/" -o /tmp/cat.html 2>/dev/null
-          say "catalogue size => $(wc -c < /tmp/cat.html), animes => $(grep -oE 'href="[^"]*/catalogue/[a-z0-9-]+/?"' /tmp/cat.html | sort -u | wc -l)"
-          grep -oE '<a [^>]*href="[^"]*/catalogue/[a-z0-9-]+/?"[^>]*>.{0,300}' /tmp/cat.html | head -n 1 | sed 's/"/~/g' | while IFS= read -r c; do
+          tr -d '\n\r' < /tmp/cat.html > /tmp/cat1.html
+          say "catalogue size => $(wc -c < /tmp/cat.html), animes => $(grep -oE '/catalogue/[a-z0-9-]+/?' /tmp/cat1.html | sort -u | wc -l)"
+          grep -oE '.{200}/catalogue/[a-z0-9-]+/?.{200}' /tmp/cat1.html | head -n 2 | sed 's/"/~/g' | while IFS= read -r c; do
             echo "$c" | fold -w 200 | while IFS= read -r chunk; do say "cat card => $chunk"; done
           done
