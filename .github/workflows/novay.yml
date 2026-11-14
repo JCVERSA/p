@@ -176,8 +176,32 @@ jobs:
         run: |
           set +e
           say() { echo "::notice::${1:0:240}"; }
-          sed 's/<script[\s\S]*?<\/script>//g; s/<style[\s\S]*?<\/style>//g' /tmp/home1.html | sed 's/<[^>]*>/~/g' | sed 's/~\+/~/g' | sed 's/  \+/ /g' | head -c 2200 | fold -w 230 | while IFS= read -r chunk; do
-            say "texte => $chunk"
+          perl -0777 -pe 's/<script.*?<\/script>//gs; s/<style.*?<\/style>//gs; s/<!--.*?-->//gs' /tmp/home1.html \
+            | sed 's/<[^>]*>/~/g' | sed 's/~\+/~/g' | sed 's/  \+/ /g' | grep -oE '[A-Za-zÀ-ÿ0-9][^~]{2,80}' \
+            | grep -vE '^[0-9. ]+$' | head -n 40 | while IFS= read -r t; do say "titre => $t"; done
+
+      - name: Home slide
+        run: |
+          set +e
+          say() { echo "::notice::${1:0:240}"; }
+          grep -oE '.{80}ak-slide[^"]*".{420}' /tmp/home1.html | head -n 2 | sed 's/"/~/g' | while IFS= read -r c; do
+            echo "$c" | fold -w 230 | while IFS= read -r chunk; do say "slide => $chunk"; done
+          done
+
+      - name: Home carte complete
+        run: |
+          set +e
+          say() { echo "::notice::${1:0:240}"; }
+          grep -oE '<div class="as-carte as-carte-anime".{650}' /tmp/home1.html | head -n 1 | sed 's/"/~/g' | while IFS= read -r c; do
+            echo "$c" | fold -w 230 | while IFS= read -r chunk; do say "carte => $chunk"; done
+          done
+
+      - name: Home top
+        run: |
+          set +e
+          say() { echo "::notice::${1:0:240}"; }
+          grep -ioE '.{70}top.{70}' /tmp/home1.html | grep -viE 'back|scroll|to-top|desktop|stop|laptop' | head -n 6 | sed 's/"/~/g' | while IFS= read -r l; do
+            say "top => $l"
           done
 
       - name: Catalogue page
