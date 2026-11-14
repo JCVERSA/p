@@ -1,10 +1,12 @@
 package dot.jcversa.novay.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -15,31 +17,31 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 
 /**
- * Badges et pastilles — portés de Mihon/Tachiyomi
- * (github.com/mihonapp/mihon, Apache-2.0), adaptés à NoVaY.
- *
- * Sémantique Mihon : secondary = badge « nouveaux épisodes »,
- * tertiary = badge « téléchargé ».
+ * Badges & pastilles style Aniyomi — Midnight Noir & Crimson :
+ *  - BadgeGroup fusionné (coins externes arrondis, séparation nette 1.5dp) ;
+ *  - secondary = nouveaux épisodes (or projection) ;
+ *  - tertiary  = téléchargé hors-ligne (émeraude).
  */
 
-/** Groupe de badges (coins partagés, fond uni). */
 @Composable
 fun BadgeGroup(
     modifier: Modifier = Modifier,
-    shape: Shape = MaterialTheme.shapes.extraSmall,
+    shape: Shape = RoundedCornerShape(6.dp),
     content: @Composable RowScope.() -> Unit,
 ) {
-    Row(modifier = modifier.clip(shape)) {
+    Row(
+        modifier = modifier.clip(shape),
+        horizontalArrangement = Arrangement.spacedBy(1.5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         content()
     }
 }
 
-/** Badge texte : rectangle plein, padding 3×1 dp (style Mihon). */
 @Composable
 fun NovayBadge(
     text: String,
@@ -53,46 +55,42 @@ fun NovayBadge(
         modifier = modifier
             .clip(shape)
             .background(color)
-            .padding(horizontal = 3.dp, vertical = 1.dp),
+            .padding(horizontal = 6.dp, vertical = 2.dp),
         color = textColor,
-        fontWeight = FontWeight.Medium,
         maxLines = 1,
-        style = MaterialTheme.typography.bodySmall,
+        style = MaterialTheme.typography.labelSmall,
     )
 }
 
-/** Pastille arrondie (compteur d'app bar, libellés discrets). */
 @Composable
 fun Pill(
     text: String,
     modifier: Modifier = Modifier,
     color: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
     contentColor: Color = MaterialTheme.colorScheme.onSurface,
-    fontSize: TextUnit = MaterialTheme.typography.bodySmall.fontSize,
+    fontSize: TextUnit = MaterialTheme.typography.labelSmall.fontSize,
 ) {
     Surface(
-        modifier = modifier.padding(start = 4.dp),
+        modifier = modifier.padding(start = 6.dp),
         shape = MaterialTheme.shapes.extraLarge,
         color = color,
         contentColor = contentColor,
     ) {
         Box(
-            modifier = Modifier.padding(6.dp, 1.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = text,
                 maxLines = 1,
-                fontSize = fontSize,
-                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = fontSize),
             )
         }
     }
 }
 
-/** Fond de sélection multi (Mihon : tint primaire léger, plein bloc). */
 @Composable
 fun Modifier.selectedBackground(
     selected: Boolean,
-    color: Color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+    color: Color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
 ): Modifier = if (selected) this.then(Modifier.background(color)) else this

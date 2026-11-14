@@ -16,11 +16,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -33,11 +38,12 @@ import androidx.compose.material.icons.outlined.ScreenRotation
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -55,6 +61,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -71,6 +80,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
+import dev.chrisbanes.haze.rememberHazeState
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSource
 import dot.jcversa.novay.data.AnimeSeason
@@ -82,9 +92,13 @@ import dot.jcversa.novay.downloads.Downloads
 import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LoadingView
+import dot.jcversa.novay.ui.components.NovayPlayPauseMorphIcon
 import dot.jcversa.novay.ui.components.bounceClick
+import dot.jcversa.novay.ui.components.novayCinemaGlass
+import dot.jcversa.novay.ui.components.novayHazeSource
 import dot.jcversa.novay.ui.player.DoubleTapSeekAccumulator
 import dot.jcversa.novay.ui.player.PlayerGestureMath
+import dot.jcversa.novay.ui.theme.NovayTheme
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -190,7 +204,7 @@ fun PlayerScreen(
         loading -> Column(
             Modifier
                 .fillMaxSize()
-                .background(Color.Black)
+                .background(MaterialTheme.colorScheme.background)
         ) {
             PlayerHeader(
                 title = episode.label,
@@ -202,7 +216,7 @@ fun PlayerScreen(
         error != null -> Column(
             Modifier
                 .fillMaxSize()
-                .background(Color.Black)
+                .background(MaterialTheme.colorScheme.background)
         ) {
             PlayerHeader(
                 title = episode.label,
@@ -229,26 +243,35 @@ private fun PlayerHeader(title: String, subtitle: String, onBack: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-            contentDescription = "Retour",
-            tint = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.bounceClick(onClick = onBack)
-        )
-        Spacer(Modifier.width(8.dp))
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .testTag("player_header_back_button")
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Retour",
+                tint = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        Spacer(Modifier.width(6.dp))
         Column {
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -362,8 +385,12 @@ private fun PlayerContent(
         val keepMs = player.currentPosition.coerceAtLeast(0L)
         val url = selectedQualityUrl ?: stream.url
         val mediaSource = if (offline) {
-            // V2 : cache offline d'abord, réseau en repli (jamais écrit).
-            Downloads.offlineMediaSource(context, stream)
+            // V2.5 : lecture depuis le VRAI fichier téléchargé dans le
+            // téléphone (Download/NoVaY/) — jamais le réseau en hors-ligne.
+            Downloads.offlineMediaSource(
+                context,
+                Downloads.downloadedStream(context, season.url, episode.number) ?: stream
+            )
         } else {
             val httpFactory = DefaultHttpDataSource.Factory()
                 .setUserAgent(stream.headers["User-Agent"] ?: VoiranimeParsers.UA)
@@ -458,6 +485,9 @@ private fun PlayerContent(
         }
     }
 
+    val overlays = NovayTheme.overlays
+    val hazeState = rememberHazeState()
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -472,7 +502,9 @@ private fun PlayerContent(
                 }
             },
             update = { it.player = player },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .novayHazeSource(hazeState)
         )
 
         // Couche de gestes UNIQUE : en Compose, des boîtes sœurs
@@ -622,36 +654,55 @@ private fun PlayerContent(
         )
 
         // Verrouillage actif : les gestes sont morts, seul le bouton de
-        // déverrouillage répond (en haut à droite, discret).
+        // déverrouillage répond (en haut à droite, cible tactile >=48dp + encoche).
         if (controlsLocked) {
-            Icon(
-                imageVector = Icons.Outlined.Lock,
-                contentDescription = "Déverrouiller les contrôles",
-                tint = Color(0xB3FFFFFF),
+            IconButton(
+                onClick = {
+                    controlsLocked = false
+                    controlsVisible = true
+                },
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = 12.dp, end = 16.dp)
-                    .size(30.dp)
-                    .bounceClick(onClick = {
-                        controlsLocked = false
-                        controlsVisible = true
-                    })
-            )
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .padding(top = 8.dp, end = 8.dp)
+                    .minimumInteractiveComponentSize()
+                    .novayCinemaGlass(
+                        shape = CircleShape,
+                        hazeState = hazeState,
+                        tint = overlays.glassSurface,
+                        borderColor = overlays.glassBorder,
+                        showBorder = true,
+                    )
+                    .testTag("player_unlock_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Lock,
+                    contentDescription = "Déverrouiller les contrôles",
+                    tint = overlays.videoControlsInk,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
         }
 
         // Vitesse 2× pendant l'appui long.
         if (longPressFast) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = Color(0xB3000000),
+            Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
                     .padding(top = 64.dp)
+                    .novayCinemaGlass(
+                        shape = RoundedCornerShape(16.dp),
+                        hazeState = hazeState,
+                        tint = overlays.glassSurfaceElevated,
+                        borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.65f),
+                        showBorder = true,
+                    )
             ) {
                 Text(
                     text = "2×",
                     style = MaterialTheme.typography.titleLarge,
-                    color = Color.White,
+                    color = overlays.videoControlsInk,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
                 )
             }
@@ -659,10 +710,16 @@ private fun PlayerContent(
 
         // Feedback volume / luminosité : icône + pourcentage, au centre.
         verticalFeedback?.let { vf ->
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = Color(0xB3000000),
-                modifier = Modifier.align(Alignment.Center)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .novayCinemaGlass(
+                        shape = RoundedCornerShape(16.dp),
+                        hazeState = hazeState,
+                        tint = overlays.glassSurfaceElevated,
+                        borderColor = overlays.glassBorder,
+                        showBorder = true,
+                    )
             ) {
                 Column(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
@@ -675,12 +732,12 @@ private fun PlayerContent(
                             Icons.AutoMirrored.Filled.VolumeUp
                         },
                         contentDescription = null,
-                        tint = Color.White
+                        tint = overlays.videoControlsInk
                     )
                     Text(
                         text = "${vf.percentage} %",
                         style = MaterialTheme.typography.titleMedium,
-                        color = Color.White
+                        color = overlays.videoControlsInk
                     )
                 }
             }
@@ -688,12 +745,18 @@ private fun PlayerContent(
 
         // Feedback de seek : côté tapé, delta cumulé + temps cible.
         seekFeedback?.let { fb ->
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = Color(0xB3000000),
+            Box(
                 modifier = Modifier
                     .align(if (fb.deltaMs >= 0) Alignment.CenterEnd else Alignment.CenterStart)
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
                     .padding(horizontal = 28.dp)
+                    .novayCinemaGlass(
+                        shape = RoundedCornerShape(16.dp),
+                        hazeState = hazeState,
+                        tint = overlays.glassSurfaceElevated,
+                        borderColor = overlays.glassBorder,
+                        showBorder = true,
+                    )
             ) {
                 Column(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -703,12 +766,12 @@ private fun PlayerContent(
                         text = (if (fb.deltaMs >= 0) "+" else "−") +
                             "${abs(fb.deltaMs) / 1000} s",
                         style = MaterialTheme.typography.titleLarge,
-                        color = Color.White
+                        color = overlays.videoControlsInk
                     )
                     Text(
                         text = formatTime(fb.targetMs),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xCCFFFFFF)
+                        color = overlays.videoControlsMutedInk
                     )
                 }
             }
@@ -727,115 +790,152 @@ private fun PlayerContent(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0x99000000),
+                                overlays.scrimTop,
                                 Color.Transparent,
                                 Color.Transparent,
-                                Color(0xB3000000)
+                                overlays.scrimBottom
                             )
                         )
                     )
             ) {
-                // Barre du haut : retour, titre, qualité.
+                // Barre du haut : retour, titre, verrouillage, rotation, qualité, vitesse.
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                        .windowInsetsPadding(WindowInsets.safeDrawing)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Retour",
-                        tint = Color.White,
+                    IconButton(
+                        onClick = onBack,
                         modifier = Modifier
-                            .size(28.dp)
-                            .bounceClick(onClick = onBack)
-                    )
-                    Spacer(Modifier.width(12.dp))
+                            .minimumInteractiveComponentSize()
+                            .testTag("player_back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Retour",
+                            tint = overlays.videoControlsInk
+                        )
+                    }
+                    Spacer(Modifier.width(4.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = title,
                             style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
+                            color = overlays.videoControlsInk,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = subtitle,
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xCCFFFFFF),
+                            color = overlays.videoControlsMutedInk,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    // Verrouiller : fige gestes et contrôles (regarder
-                    // dans les transports sans déclencher des seeks).
-                    Icon(
-                        imageVector = Icons.Outlined.Lock,
-                        contentDescription = "Verrouiller les contrôles",
-                        tint = Color.White,
+                    IconButton(
+                        onClick = {
+                            controlsLocked = true
+                            controlsVisible = false
+                            showQualities = false
+                            showSpeed = false
+                        },
                         modifier = Modifier
-                            .size(28.dp)
-                            .bounceClick(onClick = {
-                                controlsLocked = true
-                                controlsVisible = false
-                                showQualities = false
-                                showSpeed = false
-                            })
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    // Rotation : bascule paysage/portrait, chacun en
-                    // mode capteur (suit le sens où le téléphone est tenu).
-                    Icon(
-                        imageVector = Icons.Outlined.ScreenRotation,
-                        contentDescription = "Rotation",
-                        tint = Color.White,
-                        modifier = Modifier
-                            .size(28.dp)
-                            .bounceClick(onClick = {
-                                val activity = view.context as? Activity
-                                activity?.requestedOrientation =
-                                    if (activity?.resources?.configuration?.orientation ==
-                                        Configuration.ORIENTATION_LANDSCAPE
-                                    ) {
-                                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                                    } else {
-                                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                                    }
-                            })
-                    )
-                    if (!offline && stream.qualities.isNotEmpty()) {
-                        Spacer(Modifier.width(12.dp))
+                            .minimumInteractiveComponentSize()
+                            .testTag("player_lock_button")
+                    ) {
                         Icon(
-                            imageVector = Icons.Outlined.Tune,
-                            contentDescription = "Qualité",
-                            tint = if (showQualities) MaterialTheme.colorScheme.primary else Color.White,
-                            modifier = Modifier
-                                .size(28.dp)
-                                .bounceClick(onClick = { showQualities = !showQualities })
+                            imageVector = Icons.Outlined.Lock,
+                            contentDescription = "Verrouiller les contrôles",
+                            tint = overlays.videoControlsInk
                         )
-                        Spacer(Modifier.width(12.dp))
                     }
-                    Icon(
-                        imageVector = Icons.Outlined.Speed,
-                        contentDescription = "Vitesse de lecture",
-                        tint = if (showSpeed || playbackSpeed != 1f) MaterialTheme.colorScheme.primary else Color.White,
+                    IconButton(
+                        onClick = {
+                            val activity = view.context as? Activity
+                            activity?.requestedOrientation =
+                                if (activity?.resources?.configuration?.orientation ==
+                                    Configuration.ORIENTATION_LANDSCAPE
+                                ) {
+                                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                                } else {
+                                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                }
+                        },
                         modifier = Modifier
-                            .size(28.dp)
-                            .bounceClick(onClick = { showSpeed = !showSpeed })
-                    )
+                            .minimumInteractiveComponentSize()
+                            .testTag("player_rotate_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ScreenRotation,
+                            contentDescription = "Rotation",
+                            tint = overlays.videoControlsInk
+                        )
+                    }
+                    if (!offline && stream.qualities.isNotEmpty()) {
+                        IconButton(
+                            onClick = { showQualities = !showQualities; showSpeed = false },
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("player_quality_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Tune,
+                                contentDescription = "Qualité",
+                                tint = if (showQualities) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    overlays.videoControlsInk
+                                }
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = { showSpeed = !showSpeed; showQualities = false },
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("player_speed_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Speed,
+                            contentDescription = "Vitesse de lecture",
+                            tint = if (showSpeed || playbackSpeed != 1f) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                overlays.videoControlsInk
+                            }
+                        )
+                    }
                 }
 
-                // Lecture / pause au centre.
-                Icon(
-                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Lecture",
-                    tint = Color.White,
+                // Lecture / pause au centre (cible tactile >=64dp, verre cinéma Haze + icône morphing GPU).
+                Box(
+                    contentAlignment = Alignment.Center,
                     modifier = Modifier
                         .align(Alignment.Center)
-                        .size(64.dp)
+                        .size(72.dp)
+                        .semantics {
+                            this.contentDescription = if (isPlaying) "Pause" else "Lecture"
+                        }
+                        .novayCinemaGlass(
+                            shape = CircleShape,
+                            hazeState = hazeState,
+                            tint = overlays.glassSurface,
+                            borderColor = overlays.glassBorder,
+                            showBorder = true,
+                        )
                         .bounceClick(onClick = { if (player.isPlaying) player.pause() else player.play() })
-                )
+                        .testTag("player_play_pause_button")
+                ) {
+                    NovayPlayPauseMorphIcon(
+                        isPlaying = isPlaying,
+                        tint = overlays.videoControlsInk,
+                        size = 38.dp,
+                    )
+                }
 
                 // Choix de qualité (par-dessus la vidéo).
                 AnimatedVisibility(
@@ -844,11 +944,17 @@ private fun PlayerContent(
                     exit = fadeOut(),
                     modifier = Modifier
                         .align(Alignment.Center)
+                        .windowInsetsPadding(WindowInsets.safeDrawing)
                         .padding(horizontal = 40.dp)
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = Color(0xE6141416)
+                    Box(
+                        modifier = Modifier.novayCinemaGlass(
+                            shape = RoundedCornerShape(18.dp),
+                            hazeState = hazeState,
+                            tint = overlays.glassSurfaceElevated,
+                            borderColor = overlays.glassBorder,
+                            showBorder = true,
+                        )
                     ) {
                         Row(
                             modifier = Modifier.padding(12.dp),
@@ -885,11 +991,17 @@ private fun PlayerContent(
                     exit = fadeOut(),
                     modifier = Modifier
                         .align(Alignment.Center)
+                        .windowInsetsPadding(WindowInsets.safeDrawing)
                         .padding(horizontal = 40.dp)
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = Color(0xE6141416)
+                    Box(
+                        modifier = Modifier.novayCinemaGlass(
+                            shape = RoundedCornerShape(18.dp),
+                            hazeState = hazeState,
+                            tint = overlays.glassSurfaceElevated,
+                            borderColor = overlays.glassBorder,
+                            showBorder = true,
+                        )
                     ) {
                         Row(
                             modifier = Modifier.padding(12.dp),
@@ -922,13 +1034,14 @@ private fun PlayerContent(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
+                        .windowInsetsPadding(WindowInsets.safeDrawing)
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = formatTime(positionMs),
                         style = MaterialTheme.typography.labelMedium,
-                        color = Color.White
+                        color = overlays.videoControlsInk
                     )
                     Slider(
                         value = positionMs.toFloat(),
@@ -943,17 +1056,18 @@ private fun PlayerContent(
                         valueRange = 0f..(durationMs.coerceAtLeast(1000L)).toFloat(),
                         modifier = Modifier
                             .weight(1f)
-                            .padding(horizontal = 10.dp),
+                            .padding(horizontal = 10.dp)
+                            .testTag("player_seek_slider"),
                         colors = SliderDefaults.colors(
                             thumbColor = MaterialTheme.colorScheme.primary,
                             activeTrackColor = MaterialTheme.colorScheme.primary,
-                            inactiveTrackColor = Color(0x66FFFFFF)
+                            inactiveTrackColor = overlays.videoTrackInactive
                         )
                     )
                     Text(
                         text = formatTime(durationMs),
                         style = MaterialTheme.typography.labelMedium,
-                        color = Color.White
+                        color = overlays.videoControlsInk
                     )
                 }
             }
@@ -963,16 +1077,23 @@ private fun PlayerContent(
 
 @Composable
 private fun SelectorPill(label: String, selected: Boolean, onClick: () -> Unit) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary else Color(0x33FFFFFF),
-        modifier = Modifier.bounceClick(onClick = onClick)
+    val overlays = NovayTheme.overlays
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+            .background(
+                color = if (selected) MaterialTheme.colorScheme.primary else overlays.glassSurface,
+                shape = RoundedCornerShape(999.dp),
+            )
+            .bounceClick(onClick = onClick)
+            .semantics(mergeDescendants = true) {}
     ) {
         Text(
             text = label,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
             style = MaterialTheme.typography.labelMedium,
-            color = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White
+            color = if (selected) MaterialTheme.colorScheme.onPrimary else overlays.videoControlsInk
         )
     }
 }

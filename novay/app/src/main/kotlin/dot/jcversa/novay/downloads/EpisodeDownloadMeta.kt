@@ -19,7 +19,13 @@ data class EpisodeDownloadMeta(
     val episodeLabel: String,
     val streamUrl: String,
     val isHls: Boolean,
-    val headers: Map<String, String>
+    val headers: Map<String, String>,
+    /** V2.5 novabox : URI du fichier publié (content:// ou file://). */
+    val localUri: String? = null,
+    /** Nom du fichier publié dans Download/NoVaY/. */
+    val fileName: String? = null,
+    /** Résolution choisie (« 1080p ») — pour le nommage. */
+    val qualityLabel: String = ""
 ) {
     fun toJson(): String = JSONObject().apply {
         put("animeTitle", animeTitle)
@@ -32,18 +38,34 @@ data class EpisodeDownloadMeta(
         put("ua", headers["User-Agent"] ?: "")
         put("referer", headers["Referer"] ?: "")
         put("origin", headers["Origin"] ?: "")
+        put("localUri", localUri ?: "")
+        put("fileName", fileName ?: "")
+        put("qualityLabel", qualityLabel)
     }.toString()
 
-    fun toStream(): ResolvedStream = ResolvedStream(
-        url = streamUrl,
-        isHls = isHls,
-        headers = mapOf(
-            "User-Agent" to (headers["User-Agent"] ?: SamaParsers.UA),
-            "Referer" to (headers["Referer"] ?: ""),
-            "Origin" to (headers["Origin"] ?: "")
-        ),
-        qualities = emptyList()
-    )
+    fun toStream(): ResolvedStream {
+        // V2.5 : l'épisode téléchargé vit dans Download/NoVaY/ du
+        // téléphone — on lit LE FICHIER, jamais le réseau.
+        val local = localUri?.takeIf { it.isNotBlank() }
+        if (local != null) {
+            return ResolvedStream(
+                url = local,
+                isHls = false,
+                headers = emptyMap(),
+                qualities = emptyList()
+            )
+        }
+        return ResolvedStream(
+            url = streamUrl,
+            isHls = isHls,
+            headers = mapOf(
+                "User-Agent" to (headers["User-Agent"] ?: SamaParsers.UA),
+                "Referer" to (headers["Referer"] ?: ""),
+                "Origin" to (headers["Origin"] ?: "")
+            ),
+            qualities = emptyList()
+        )
+    }
 
     companion object {
         fun fromJson(raw: ByteArray?): EpisodeDownloadMeta? {
@@ -63,7 +85,10 @@ data class EpisodeDownloadMeta(
                     episodeLabel = o.optString("episodeLabel"),
                     streamUrl = o.optString("streamUrl"),
                     isHls = o.optBoolean("isHls"),
-                    headers = headers
+                    headers = headers,
+                    localUri = o.optString("localUri").ifEmpty { null },
+                    fileName = o.optString("fileName").ifEmpty { null },
+                    qualityLabel = o.optString("qualityLabel")
                 )
             } catch (_: Exception) {
                 null

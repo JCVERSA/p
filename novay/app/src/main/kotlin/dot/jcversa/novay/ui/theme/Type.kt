@@ -8,8 +8,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import dot.jcversa.novay.R
 
-// Polices du panel (copiées dans res/font) : Inter pour l'interface,
-// JetBrains Mono pour les libellés techniques (vitesses, codecs…).
+/**
+ * Typographie Editorial Cinema :
+ *  - Outfit         : titres expressifs, bannières héros, en-têtes d'écran ;
+ *  - Inter          : texte courant, descriptions, libellés d'action ;
+ *  - JetBrains Mono : télémétrie technique (épisodes, vitesses, codes temporels).
+ */
+val DisplayFontFamily = FontFamily(
+    Font(R.font.outfit, FontWeight.Normal),
+    Font(R.font.outfit, FontWeight.Medium),
+    Font(R.font.outfit, FontWeight.SemiBold),
+    Font(R.font.outfit, FontWeight.Bold)
+)
+
 val InterFontFamily = FontFamily(
     Font(R.font.inter, FontWeight.Normal),
     Font(R.font.inter, FontWeight.Medium),
@@ -25,60 +36,67 @@ val MonoFontFamily = FontFamily(
 
 val Typography = Typography(
     displayLarge = TextStyle(
-        fontFamily = InterFontFamily,
+        fontFamily = DisplayFontFamily,
         fontWeight = FontWeight.Bold,
         fontSize = 32.sp,
         lineHeight = 38.sp,
-        letterSpacing = (-0.5).sp,
+        letterSpacing = (-0.6).sp,
     ),
     displayMedium = TextStyle(
-        fontFamily = InterFontFamily,
+        fontFamily = DisplayFontFamily,
         fontWeight = FontWeight.Bold,
-        fontSize = 24.sp,
-        lineHeight = 30.sp,
-        letterSpacing = (-0.25).sp,
+        fontSize = 26.sp,
+        lineHeight = 32.sp,
+        letterSpacing = (-0.35).sp,
     ),
     headlineMedium = TextStyle(
-        fontFamily = InterFontFamily,
+        fontFamily = DisplayFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = (-0.15).sp,
+    ),
+    titleLarge = TextStyle(
+        fontFamily = DisplayFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 20.sp,
         lineHeight = 26.sp,
-        letterSpacing = 0.sp,
-    ),
-    titleLarge = TextStyle(
-        fontFamily = InterFontFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 18.sp,
-        lineHeight = 24.sp,
-        letterSpacing = 0.sp,
+        letterSpacing = (-0.1).sp,
     ),
     titleMedium = TextStyle(
-        fontFamily = InterFontFamily,
+        fontFamily = DisplayFontFamily,
         fontWeight = FontWeight.Medium,
         fontSize = 16.sp,
         lineHeight = 22.sp,
-        letterSpacing = 0.15.sp,
+        letterSpacing = 0.05.sp,
+    ),
+    titleSmall = TextStyle(
+        fontFamily = InterFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 14.sp,
+        lineHeight = 19.sp,
+        letterSpacing = 0.1.sp,
     ),
     bodyLarge = TextStyle(
         fontFamily = InterFontFamily,
         fontWeight = FontWeight.Normal,
         fontSize = 15.sp,
         lineHeight = 22.sp,
-        letterSpacing = 0.25.sp,
+        letterSpacing = 0.15.sp,
     ),
     bodyMedium = TextStyle(
         fontFamily = InterFontFamily,
         fontWeight = FontWeight.Normal,
         fontSize = 14.sp,
         lineHeight = 20.sp,
-        letterSpacing = 0.25.sp,
+        letterSpacing = 0.15.sp,
     ),
     bodySmall = TextStyle(
         fontFamily = InterFontFamily,
         fontWeight = FontWeight.Normal,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.4.sp,
+        letterSpacing = 0.3.sp,
     ),
     labelLarge = TextStyle(
         fontFamily = InterFontFamily,
@@ -92,12 +110,21 @@ val Typography = Typography(
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.5.sp,
-    )
+        letterSpacing = 0.4.sp,
+    ),
+    labelSmall = TextStyle(
+        fontFamily = MonoFontFamily,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 14.sp,
+        letterSpacing = 0.4.sp,
+    ),
 )
 
-// ── Extension Mihon : en-tête de section ─────────────────────────────────
-
-/** En-tête de section (Mihon Typography.header) : bodyMedium semi-bold. */
+/** En-tête de section éditorial : Display SemiBold discret. */
 val Typography.header: TextStyle
-    get() = bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+    get() = titleSmall.copy(
+        fontFamily = DisplayFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 0.4.sp,
+    )

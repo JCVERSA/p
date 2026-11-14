@@ -25,8 +25,7 @@ fun PosterImage(
     url: String?,
     modifier: Modifier = Modifier,
     contentDescription: String? = null,
-    spinnerSize: Dp = 14.dp,
-    contentScale: ContentScale = ContentScale.Crop
+    spinnerSize: Dp = 14.dp
 ) {
     if (url.isNullOrBlank()) {
         Box(
@@ -43,17 +42,13 @@ fun PosterImage(
         SubcomposeAsyncImage(
             model = url,
             contentDescription = contentDescription,
-            contentScale = contentScale,
+            contentScale = ContentScale.Crop,
             modifier = modifier,
             loading = {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center
-                ) {
-                    SwiftSlateSpinner(size = spinnerSize)
-                }
+                ShimmerBox(
+                    modifier = Modifier.fillMaxSize(),
+                    shape = MaterialTheme.shapes.extraSmall,
+                )
             },
             error = {
                 Box(

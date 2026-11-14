@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Fond de l'icone adaptive : meme noir que le theme (#0b0b0c). -->
-    <color name="ic_launcher_bg">#FF0B0B0C</color>
+    <!-- Fond Midnight Noir (#09090D) aligné sur le thème Cinema Midnight Noir. -->
+    <color name="ic_launcher_bg">#FF09090D</color>
 </resources>

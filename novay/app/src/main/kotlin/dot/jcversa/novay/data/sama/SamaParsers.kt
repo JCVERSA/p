@@ -160,6 +160,64 @@ object SamaParsers {
         return out
     }
 
+    /**
+     * Parse les cartes d'animés d'une page catalogue / accueil anime-sama
+     * (`.../catalogue/<slug>/`) pour alimenter le carrousel « À la une » réel.
+     */
+    fun parseSamaCatalogueCards(html: String, origin: String): List<AnimeSearchResult> {
+        if (html.isEmpty()) return emptyList()
+        val out = mutableListOf<AnimeSearchResult>()
+        val seen = mutableSetOf<String>()
+        val headingRe = Regex("<h[1-4]\\b[^>]*>([\\s\\S]*?)</h[1-4]>", RegexOption.IGNORE_CASE)
+        val titleClassRe = Regex(
+            "<([a-z0-9]+)\\b[^>]*class=[\"'][^\"']*(?:card-title|asn-search-result-title|titre)[^\"']*[\"'][^>]*>([\\s\\S]*?)</\\1>",
+            RegexOption.IGNORE_CASE
+        )
+        val imgRe = Regex("<img\\b([^>]*)>", RegexOption.IGNORE_CASE)
+
+        for (anchor in ANCHOR_FULL_RE.findAll(html)) {
+            val attrs = anchor.groupValues[1]
+            val body = anchor.groupValues[2]
+            val href = HREF_ATTR_RE.find(attrs)?.groupValues?.get(1) ?: continue
+            if (href.isEmpty() || !href.contains("/catalogue/", ignoreCase = true)) continue
+
+            val resolved = if (href.startsWith("http")) href else resolveUrl(href, "$origin/")
+            val clean = resolved.trimEnd('/')
+            // Garder uniquement les fiches racines `/catalogue/<slug>` (pas `/saison1/vf`)
+            val afterCat = clean.substringAfter("/catalogue/", missingDelimiterValue = "")
+            if (afterCat.isEmpty() || afterCat.contains('/')) continue
+            val url = "$clean/"
+            if (!seen.add(url)) continue
+
+            val rawTitle = titleClassRe.find(body)?.groupValues?.get(2)?.let { stripTags(it) }
+                ?: headingRe.find(body)?.groupValues?.get(1)?.let { stripTags(it) }
+                ?: stripTags(body)
+            // Entités HTML (« &#039;Tis Time… ») : décodées, jamais affichées.
+            val title = decodeHtmlEntities(rawTitle.trim())
+            if (title.length < 2) continue
+
+            val imgAttrs = imgRe.find(body)?.groupValues?.get(1)
+            val posterPath = imgAttrs?.let { ia ->
+                Regex("(?:src|data-src)\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
+                    .findAll(ia)
+                    .map { it.groupValues[1] }
+                    .firstOrNull { it.isNotBlank() && !it.startsWith("data:") }
+            }.orEmpty()
+            val posterUrl = if (posterPath.isEmpty()) null else resolveUrl(posterPath, "$origin/")
+
+            out.add(
+                AnimeSearchResult(
+                    title = title,
+                    url = url,
+                    slug = afterCat,
+                    posterUrl = posterUrl,
+                )
+            )
+            if (out.size >= 24) break
+        }
+        return out
+    }
+
     // ── Variantes de requête (portage 9.18kkk de animeSources.ts) ─────────
 
     private val QUERY_LEADING_ARTICLE_RE =
@@ -408,7 +466,6 @@ object SamaParsers {
             )
         }.sortedByDescending { it.height }
     }
-
 
     // ── Page d'accueil : À la une + derniers épisodes (V3) ───────────────
     // Structure réelle (sonde CI 14/11, home 590 Ko aplatie) :

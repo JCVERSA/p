@@ -74,6 +74,7 @@ dependencies {
   implementation(libs.okhttp)
   // V2.1 : affiches reelles du catalogue (Coil + OkHttp existant).
   implementation(libs.coil.compose)
+  implementation(libs.haze)
   implementation(libs.media3.exoplayer)
   implementation(libs.media3.exoplayer.hls)
   implementation(libs.media3.ui)

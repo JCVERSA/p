@@ -406,4 +406,44 @@ class SamaParsersTest {
     fun `liste vide, union vide`() {
         assertTrue(SamaParsers.mergePlayerQualities(emptyList()).isEmpty())
     }
+
+    // ── Cartes catalogue « À la une » (parseSamaCatalogueCards) ──────────
+
+    @Test
+    fun `parseSamaCatalogueCards extrait fiches racines, filtre sous-chemins et deduplique`() {
+        val html = """
+            <div class="grid">
+              <a href="https://anime-sama.to/catalogue/frieren/">
+                <img src="/img/frieren.webp" />
+                <h3 class="card-title">Frieren</h3>
+              </a>
+              <a href="/catalogue/frieren/saison1/vostfr/">
+                <h3>Frieren Saison 1</h3>
+              </a>
+              <a href="/catalogue/solo-leveling">
+                <img data-src="https://cdn.example/solo.webp" src="data:image/gif;base64,R0lGOD" />
+                <h4>Solo Leveling</h4>
+              </a>
+              <a href="https://anime-sama.to/catalogue/frieren/">
+                <h3>Frieren Doublon</h3>
+              </a>
+            </div>
+        """.trimIndent()
+        val cards = SamaParsers.parseSamaCatalogueCards(html, "https://anime-sama.to")
+        assertEquals(2, cards.size)
+        assertEquals("Frieren", cards[0].title)
+        assertEquals("https://anime-sama.to/catalogue/frieren/", cards[0].url)
+        assertEquals("frieren", cards[0].slug)
+        assertEquals("https://anime-sama.to/img/frieren.webp", cards[0].posterUrl)
+        assertEquals("Solo Leveling", cards[1].title)
+        assertEquals("https://anime-sama.to/catalogue/solo-leveling/", cards[1].url)
+        assertEquals("solo-leveling", cards[1].slug)
+        assertEquals("https://cdn.example/solo.webp", cards[1].posterUrl)
+    }
+
+    @Test
+    fun `parseSamaCatalogueCards ignore les entrees sans titre exploitable`() {
+        val html = """<a href="/catalogue/x/"><img src="/img/x.webp"/></a>"""
+        assertTrue(SamaParsers.parseSamaCatalogueCards(html, "https://anime-sama.to").isEmpty())
+    }
 }

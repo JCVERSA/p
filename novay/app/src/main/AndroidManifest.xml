@@ -10,10 +10,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- V2.5 : vrais fichiers dans Download/NoVaY/. Android 10+ les publie
+         via MediaStore (aucune permission) ; Android 7-9 ecrivent via
+         l'API File classique et exigent WRITE_EXTERNAL_STORAGE (accordee
+         a l'installation, revoquee par defaut des Android 10). -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:name=".NovayApp"
         android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"

@@ -110,13 +110,25 @@ class SamaSource(
         }
     }
 
-    // ── Page d'accueil (V3) ────────────────────────────────────────────────
+    // ── À la une (catalogue réel) & Recherche ─────────────────────────────
+
+    override suspend fun featured(): List<AnimeSearchResult> = withContext(Dispatchers.IO) {
+        val base = origin()
+        val catalogueHtml = runCatching { fetchBlocking("$base/catalogue/", "$base/") }.getOrNull().orEmpty()
+        val fromCatalogue = SamaParsers.parseSamaCatalogueCards(catalogueHtml, base)
+        if (fromCatalogue.isNotEmpty()) return@withContext fromCatalogue
+
+        val homeHtml = runCatching { fetchBlocking("$base/", "$base/") }.getOrNull().orEmpty()
+        SamaParsers.parseSamaCatalogueCards(homeHtml, base)
+    }
+
+    // ── Page d'accueil (home V3 : carrousel + derniers épisodes) ────────
 
     /**
      * Page d'accueil du catalogue : le carrousel « À la une » du site et
      * la grille des derniers épisodes ajoutés (l'ordre du document = le
-     * plus récent d'abord). Une home injoignable ne casse pas l'onglet :
-     * la recherche reste utilisable.
+     * plus récent d'abord). Une home injoignable remonte au caller, qui
+     * retombe sur featured() (cartes du /catalogue/).
      */
     override suspend fun home(): dot.jcversa.novay.data.CatalogHome =
         withContext(Dispatchers.IO) {

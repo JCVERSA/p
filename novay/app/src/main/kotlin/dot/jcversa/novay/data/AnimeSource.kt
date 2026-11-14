@@ -68,9 +68,9 @@ data class QualityOption(
 )
 
 /**
- * Une carte « À la une » du catalogue (carrousel de la page d'accueil,
- * V3) : l'animé mis en avant par le site, avec son synopsis et son lien
- * direct de saison.
+ * Une carte « À la une » du catalogue (carrousel de la page d'accueil) :
+ * l'animé mis en avant par le site, avec son synopsis et son lien direct
+ * de saison.
  */
 data class CatalogHero(
     val title: String,
@@ -86,8 +86,8 @@ data class CatalogHero(
 )
 
 /**
- * Un animé récemment mis à jour sur la page d'accueil du catalogue
- * (V3) : carte avec l'heure d'ajout et le lien de SA dernière saison.
+ * Un animé récemment mis à jour sur la page d'accueil du catalogue :
+ * carte avec l'heure d'ajout et le lien de SA dernière saison.
  */
 data class CatalogCard(
     val title: String,
@@ -112,6 +112,9 @@ interface AnimeSource {
     /** Nom affiché (ex. « anime-sama »). */
     val name: String
 
+    /** Sélection mise en avant du catalogue (facultatif selon la source). */
+    suspend fun featured(): List<AnimeSearchResult> = emptyList()
+
     /** Recherche et retourne les animes du catalogue. */
     suspend fun search(query: String): List<AnimeSearchResult>
 
@@ -133,9 +136,9 @@ interface AnimeSource {
         listOf(stream(episode))
 
     /**
-     * Page d'accueil du catalogue (V3) : animés à la une + derniers
-     * épisodes ajoutés. Un catalogue sans page d'accueil exploitable
-     * rend une liste vide — l'onglet retombe sur la recherche seule.
+     * Page d'accueil du catalogue : animés à la une + derniers épisodes
+     * ajoutés. Un catalogue sans page d'accueil exploitable rend une
+     * liste vide — l'onglet retombe sur [featured]/la recherche seule.
      */
     suspend fun home(): CatalogHome = CatalogHome()
 }
