@@ -102,6 +102,28 @@ anti-Cloudflare.
   - Vitesse de lecture (0,5× à 2×) + appui long = 2× le temps du doigt.
   - Bouton rotation paysage/portrait en mode capteur.
   - Verrouillage des contrôles (cadenas).
+- **V2.3** (livré) : **téléchargements niveau gestionnaire de fichiers**
+  (analyses AlirezaJavan/Downpour Apache-2.0, Jaglavak/…/Ketch et
+  simtop/TurboDownloader sans licence : comportements seulement, aucun
+  code copié — seul SpeedMeter est un portage crédité de Downpour).
+  - **La résolution, c'est toi qui la choisis** : le tap sur l'icône de
+    téléchargement analyse tous les lecteurs de l'épisode et propose
+    CHAQUE résolution disponible — aucune présélection, c'est le tap qui
+    lance. Pas de plafond imposé par l'appli.
+  - **Multi-sélection** : appui long sur un épisode → mode sélection
+    (bouton « Tout », barre « Télécharger (n) »). Le dialog de résolution
+    s'applique au lot ; si une résolution manque pour un épisode, la
+    meilleure de son lecteur est prise. Mise en file séquentielle avec
+    progression « mise en file 2/5 ».
+  - **Vitesse + temps restant** : SpeedMeter à fenêtre glissante (5 s,
+    lissage) — « 45 % · 2,4 Mo/s · 3min 05s » dans l'écran
+    Téléchargements et progression de saison « 3/12 téléchargés ».
+  - **Notification pilotable** : boutons Pause / Reprendre / Annuler
+    directement dans le tiroir de notifications.
+  - **Wi-Fi uniquement** (toggle dans Téléchargements) : pause auto en
+    4G, reprise auto en Wi-Fi, préférence persistée.
+  - **Raisons de pause explicites** : « En attente du Wi-Fi » vs « En
+    pause » vs « En file ».
 - **V3** : autres catalogues.
 
 La sonde réseau CI (job « Sonde anime-sama », push avec `[probe]` dans le
