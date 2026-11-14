@@ -19,10 +19,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.rounded.NewReleases
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -61,6 +57,7 @@ import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayBadge
+import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.RowListSkeleton
@@ -162,7 +159,7 @@ fun UpdatesScreen(
                 } else {
                     AppBarAction(
                         contentDescription = "Vérifier les nouveaux épisodes",
-                        icon = Icons.Rounded.Refresh,
+                        icon = NovayIcons.Refresh,
                         modifier = Modifier.testTag("updates_refresh_button"),
                         onClick = { checkAll() },
                     )
@@ -188,13 +185,13 @@ fun UpdatesScreen(
             when (stateKey) {
                 "loading" -> RowListSkeleton(modifier = Modifier.padding(bottom = bottomChrome))
                 "no_followed" -> EmptyScreen(
-                    icon = Icons.Rounded.NewReleases,
+                    icon = NovayIcons.UpdatesSeal,
                     headingText = "Aucun animé suivi",
                     subtitleText = "Ajoute des animés en bibliothèque depuis le catalogue pour recevoir ici les nouveaux épisodes.",
                     modifier = Modifier.padding(bottom = bottomChrome),
                 )
                 "up_to_date" -> EmptyScreen(
-                    icon = Icons.Rounded.NewReleases,
+                    icon = NovayIcons.UpdatesSeal,
                     headingText = "Tout est à jour",
                     subtitleText = if (checkError != null) {
                         "Dernière vérification incomplète : $checkError"
@@ -296,7 +293,7 @@ private fun UpdateRow(
             NovayBadge(text = "+${entry.newEpisodes}")
             Spacer(Modifier.width(8.dp))
             Icon(
-                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                imageVector = NovayIcons.ChevronRight,
                 contentDescription = "Ouvrir ${entry.title}",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )

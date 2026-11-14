@@ -3,6 +3,7 @@ package dot.jcversa.novay.data.sama
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
 import java.net.URI
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Parseurs ANIME-SAMA — structure validée E2E depuis un runner GitHub
@@ -49,6 +50,20 @@ object SamaParsers {
 
     private val ANCHOR_OPEN_RE = Regex("<a\\b([^>]*)>", RegexOption.IGNORE_CASE)
     private val HREF_ATTR_RE = Regex("href\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
+    private val BTN_PRIMARY_CLASS_RE = Regex("class\\s*=\\s*[\"'][^\"']*btn-primary")
+    private val TAGS_RE = Regex("<[^>]*>")
+    private val MULTI_SPACE_RE = Regex("\\s+")
+    private val SEARCH_RESULT_CLASS_RE = Regex("class\\s*=\\s*[\"'][^\"']*asn-search-result")
+    private val HEADING_RE = Regex("<h[1-4]\\b[^>]*>([\\s\\S]*?)</h[1-4]>", RegexOption.IGNORE_CASE)
+    private val TITLE_CLASS_RE = Regex(
+        "<([a-z0-9]+)\\b[^>]*class=[\"'][^\"']*(?:card-title|asn-search-result-title|titre)[^\"']*[\"'][^>]*>([\\s\\S]*?)</\\1>",
+        RegexOption.IGNORE_CASE
+    )
+    private val IMG_RE = Regex("<img\\b([^>]*)>", RegexOption.IGNORE_CASE)
+    private val IMG_SRC_RE = Regex("(?:src|data-src)\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
+    private val classTextRegexCache = ConcurrentHashMap<String, Regex>()
+    private val classTagRegexCache = ConcurrentHashMap<String, Regex>()
+    private val attrRegexCache = ConcurrentHashMap<String, Regex>()
 
     /**
      * Pur : extrait l'origine du bouton lanceur (`.btn-primary`) d'une page.
@@ -56,7 +71,7 @@ object SamaParsers {
     fun parseLauncherOrigin(html: String, baseUrl: String): String? {
         for (anchor in ANCHOR_OPEN_RE.findAll(html)) {
             val attrs = anchor.groupValues[1]
-            if (!Regex("class\\s*=\\s*[\"'][^\"']*btn-primary").containsMatchIn(attrs)) continue
+            if (!BTN_PRIMARY_CLASS_RE.containsMatchIn(attrs)) continue
             val href = HREF_ATTR_RE.find(attrs)?.groupValues?.get(1) ?: continue
             if (href.isEmpty()) continue
             val abs = try {
@@ -78,15 +93,17 @@ object SamaParsers {
         // Structure réelle (sonde 13/11) : le titre est un <h3>, le
         // sous-titre un <p>, le contenu un <div> — on accepte TOUTE balise
         // (backreference sur la balise ouvrante/fermante).
-        val re = Regex(
-            "<([a-z0-9]+)\\b[^>]*class=[\"'][^\"']*$className[^\"']*[\"'][^>]*>([\\s\\S]*?)</\\1>",
-            RegexOption.IGNORE_CASE
-        )
+        val re = classTextRegexCache.getOrPut(className) {
+            Regex(
+                "<([a-z0-9]+)\\b[^>]*class=[\"'][^\"']*$className[^\"']*[\"'][^>]*>([\\s\\S]*?)</\\1>",
+                RegexOption.IGNORE_CASE
+            )
+        }
         return re.find(html)?.groupValues?.get(2)?.let { stripTags(it) } ?: ""
     }
 
     private fun stripTags(html: String): String =
-        html.replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ").trim()
+        html.replace(TAGS_RE, " ").replace(MULTI_SPACE_RE, " ").trim()
 
     /**
      * Attribut d'une balise SANS fermeture (img, source…) repérée par sa
@@ -94,14 +111,18 @@ object SamaParsers {
      * dans l'ordre (src puis data-src : certains sites lazy-loadent).
      */
     private fun classTagAttr(html: String, className: String, vararg attrs: String): String {
-        val re = Regex(
-            "<([a-z0-9]+)\\b[^>]*class=[\"'][^\"']*$className[^\"']*[\"'][^>]*>",
-            RegexOption.IGNORE_CASE
-        )
+        val re = classTagRegexCache.getOrPut(className) {
+            Regex(
+                "<([a-z0-9]+)\\b[^>]*class=[\"'][^\"']*$className[^\"']*[\"'][^>]*>",
+                RegexOption.IGNORE_CASE
+            )
+        }
         val tag = re.find(html)?.value ?: return ""
         for (attr in attrs) {
-            val v = Regex("$attr\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
-                .find(tag)?.groupValues?.get(1) ?: continue
+            val attrRe = attrRegexCache.getOrPut(attr) {
+                Regex("$attr\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
+            }
+            val v = attrRe.find(tag)?.groupValues?.get(1) ?: continue
             // Un placeholder de lazy-loading (src="data:image/gif;base64…")
             // n'est PAS l'affiche : le vrai chemin vit dans data-src.
             if (v.isNotEmpty() && !v.startsWith("data:")) return v
@@ -120,7 +141,7 @@ object SamaParsers {
         val seen = mutableSetOf<String>()
         for (anchor in ANCHOR_FULL_RE.findAll(html)) {
             val attrs = anchor.groupValues[1]
-            if (!Regex("class\\s*=\\s*[\"'][^\"']*asn-search-result").containsMatchIn(attrs)) continue
+            if (!SEARCH_RESULT_CLASS_RE.containsMatchIn(attrs)) continue
             val href = HREF_ATTR_RE.find(attrs)?.groupValues?.get(1) ?: continue
             if (href.isEmpty()) continue
             val url = if (href.startsWith("http")) href else try {
@@ -168,12 +189,6 @@ object SamaParsers {
         if (html.isEmpty()) return emptyList()
         val out = mutableListOf<AnimeSearchResult>()
         val seen = mutableSetOf<String>()
-        val headingRe = Regex("<h[1-4]\\b[^>]*>([\\s\\S]*?)</h[1-4]>", RegexOption.IGNORE_CASE)
-        val titleClassRe = Regex(
-            "<([a-z0-9]+)\\b[^>]*class=[\"'][^\"']*(?:card-title|asn-search-result-title|titre)[^\"']*[\"'][^>]*>([\\s\\S]*?)</\\1>",
-            RegexOption.IGNORE_CASE
-        )
-        val imgRe = Regex("<img\\b([^>]*)>", RegexOption.IGNORE_CASE)
 
         for (anchor in ANCHOR_FULL_RE.findAll(html)) {
             val attrs = anchor.groupValues[1]
@@ -189,16 +204,15 @@ object SamaParsers {
             val url = "$clean/"
             if (!seen.add(url)) continue
 
-            val rawTitle = titleClassRe.find(body)?.groupValues?.get(2)?.let { stripTags(it) }
-                ?: headingRe.find(body)?.groupValues?.get(1)?.let { stripTags(it) }
+            val rawTitle = TITLE_CLASS_RE.find(body)?.groupValues?.get(2)?.let { stripTags(it) }
+                ?: HEADING_RE.find(body)?.groupValues?.get(1)?.let { stripTags(it) }
                 ?: stripTags(body)
-            // Entités HTML (« &#039;Tis Time… ») : décodées, jamais affichées.
             val title = decodeHtmlEntities(rawTitle.trim())
             if (title.length < 2) continue
 
-            val imgAttrs = imgRe.find(body)?.groupValues?.get(1)
+            val imgAttrs = IMG_RE.find(body)?.groupValues?.get(1)
             val posterPath = imgAttrs?.let { ia ->
-                Regex("(?:src|data-src)\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
+                IMG_SRC_RE
                     .findAll(ia)
                     .map { it.groupValues[1] }
                     .firstOrNull { it.isNotBlank() && !it.startsWith("data:") }
@@ -226,6 +240,7 @@ object SamaParsers {
         "the", "le", "la", "les", "l", "un", "une", "des", "a", "an", "of", "de", "du",
         "et", "and", "no", "not", "in", "en", "to", "au", "aux", "dans", "sur", "for"
     )
+    private val RE_ZERO_RE = Regex("^re[a-z]{4,}$", RegexOption.IGNORE_CASE)
 
     /**
      * Variantes de requête : l'originale TOUJOURS en premier, puis sans
@@ -234,23 +249,23 @@ object SamaParsers {
      * vides). Dédupliquée, bornée à 4.
      */
     fun searchQueryVariants(query: String): List<String> {
-        val q = query.trim().replace(Regex("\\s+"), " ")
+        val q = query.trim().replace(MULTI_SPACE_RE, " ")
         if (q.isEmpty()) return emptyList()
         val variants = mutableListOf(q)
         fun push(v: String) {
-            val t = v.trim().replace(Regex("\\s+"), " ")
+            val t = v.trim().replace(MULTI_SPACE_RE, " ")
             if (t.isNotEmpty() && !variants.contains(t)) variants.add(t)
         }
         val bare = QUERY_LEADING_ARTICLE_RE.replace(q, "").trim()
         if (bare.isNotEmpty()) push(bare)
-        if (Regex("^re[a-z]{4,}$", RegexOption.IGNORE_CASE).matches(q)) push("re " + q.substring(2))
+        if (RE_ZERO_RE.matches(q)) push("re " + q.substring(2))
         val words = (if (bare.isNotEmpty()) bare else q).split(" ")
         fun inflectable(w: String) = w.length >= 4 && !QUERY_NO_INFLECT.contains(w.lowercase())
         push(
             words.joinToString(" ") { w ->
                 val lower = w.lowercase()
                 if (inflectable(w) && lower.endsWith("s") &&
-                    !listOf("ss", "us", "is").any { lower.endsWith(it) }
+                    !(lower.endsWith("ss") || lower.endsWith("us") || lower.endsWith("is"))
                 ) w.dropLast(1) else w
             }
         )
@@ -266,6 +281,8 @@ object SamaParsers {
 
     private val PANNEAU_RE =
         Regex("panneauAnime\\s*\\(\\s*[\"']([^\"']+)[\"']\\s*,\\s*[\"']([^\"']+)[\"']\\s*\\)")
+    private val VOSTFR_PATH_RE = Regex("(^|[-/_])vost(?:fr)?([-/_]|$)")
+    private val VF_PATH_RE = Regex("(^|[-/_])vf([-/_]|$)")
 
     /**
      * Langue encodée dans un sous-chemin (« saison1/vostfr » → VOSTFR).
@@ -273,8 +290,8 @@ object SamaParsers {
      */
     fun samaSubPathLanguage(subPath: String): String? {
         val s = subPath.lowercase()
-        if (Regex("(^|[-/_])vost(?:fr)?([-/_]|$)").containsMatchIn(s)) return "VOSTFR"
-        if (Regex("(^|[-/_])vf([-/_]|$)").containsMatchIn(s)) return "VF"
+        if (VOSTFR_PATH_RE.containsMatchIn(s)) return "VOSTFR"
+        if (VF_PATH_RE.containsMatchIn(s)) return "VF"
         return null
     }
 
@@ -364,14 +381,16 @@ object SamaParsers {
         return out
     }
 
+    private val EPS_META_START_RE = Regex("epsMeta\\s*=\\s*\\{")
     private val EPS_META_ENTRY_RE = Regex("\"(\\d+)\"\\s*:\\s*\\[([^]]*)\\]")
+    private val LIEN_API_U_RE = Regex("\"u\"\\s*:\\s*\"([^\"]+)\"")
 
     /**
      * epsMeta = {"186672":["ansembed.net"], …} : hôtes disponibles par
      * identifiant de lien (pour étiqueter les lecteurs).
      */
     fun parseEpsMeta(html: String): Map<String, List<String>> {
-        val start = Regex("epsMeta\\s*=\\s*\\{").find(html)?.range?.last ?: return emptyMap()
+        val start = EPS_META_START_RE.find(html)?.range?.last ?: return emptyMap()
         val end = html.indexOf('}', start)
         if (end < 0) return emptyMap()
         val body = html.substring(start + 1, end)
@@ -399,7 +418,7 @@ object SamaParsers {
      * Une erreur de jeton ({"erreur":"jeton"}) donne null.
      */
     fun parseLienApiResponse(json: String): String? {
-        val m = Regex("\"u\"\\s*:\\s*\"([^\"]+)\"").find(json) ?: return null
+        val m = LIEN_API_U_RE.find(json) ?: return null
         return m.groupValues[1].replace("\\/", "/")
     }
 
@@ -617,7 +636,7 @@ object SamaParsers {
     private val DATA_URL_ATTR_RE = Regex("data-url\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
     private val DATA_NOM_ATTR_RE = Regex("data-nom\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
 
-    fun resolveUrl(url: String, base: String): String = try {
+        fun resolveUrl(url: String, base: String): String = try {
         URI(base).resolve(url).toString()
     } catch (_: Exception) {
         url

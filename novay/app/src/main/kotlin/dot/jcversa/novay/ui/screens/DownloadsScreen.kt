@@ -24,12 +24,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.DownloadDone
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -71,12 +65,12 @@ import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
+import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.SlateMotion
 import dot.jcversa.novay.ui.state.DownloadSection
 import dot.jcversa.novay.ui.theme.header
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -101,28 +95,15 @@ fun DownloadsScreen(
     var paused by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            wifiOnly = Downloads.isWifiOnly(context)
-            runCatching { paused = Downloads.manager(context).downloadsPaused }
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            var snapshot = emptyList<Downloads.DownloadInfo>()
-            var isPaused = false
-            withContext(Dispatchers.IO) {
-                snapshot = runCatching { Downloads.snapshot(context) }.getOrDefault(emptyList())
-                runCatching { isPaused = Downloads.manager(context).downloadsPaused }
-            }
-            infos = snapshot
-            paused = isPaused
-            speeds = infos.filter { it.isActive }.associate { info ->
+    LaunchedEffect(context) {
+        wifiOnly = withContext(Dispatchers.IO) { Downloads.isWifiOnly(context) }
+        Downloads.observeQueue(context).collect { queue ->
+            infos = queue.items
+            paused = queue.paused
+            speeds = queue.items.filter { it.isActive }.associate { info ->
                 val meter = meters.getOrPut(info.id) { SpeedMeter() }
                 info.id to meter.sample(info.bytesDownloaded, info.totalBytes)
             }
-            delay(1000)
         }
     }
 
@@ -219,7 +200,7 @@ fun DownloadsScreen(
             ) { isEmpty ->
                 if (isEmpty) {
                     EmptyScreen(
-                        icon = Icons.Rounded.DownloadDone,
+                        icon = NovayIcons.DownloadDone,
                         headingText = "Aucun téléchargement",
                         subtitleText = "Ouvre une saison et touche l'icône de téléchargement sur un épisode pour choisir sa résolution hors-ligne.",
                         modifier = Modifier.padding(bottom = bottomChrome),
@@ -327,7 +308,7 @@ fun DownloadsScreen(
                 contentColor = MaterialTheme.colorScheme.onPrimary,
             ) {
                 Icon(
-                    imageVector = if (paused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                    imageVector = if (paused) NovayIcons.Play else NovayIcons.Pause,
                     contentDescription = null,
                 )
                 Spacer(Modifier.width(6.dp))
@@ -416,7 +397,7 @@ private fun DownloadRow(
                             .testTag("download_play_button"),
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.PlayCircleOutline,
+                            imageVector = NovayIcons.PlayCircle,
                             contentDescription = "Lire hors-ligne",
                             tint = MaterialTheme.colorScheme.tertiary,
                         )
@@ -429,7 +410,7 @@ private fun DownloadRow(
                         .testTag("download_remove_button"),
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.DeleteOutline,
+                        imageVector = NovayIcons.DeleteTrash,
                         contentDescription = "Supprimer le téléchargement",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

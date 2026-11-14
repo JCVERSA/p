@@ -9,7 +9,11 @@ import dot.jcversa.novay.data.StreamQuality
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,38 +34,89 @@ import java.util.concurrent.TimeUnit
  * domaine codé en dur autre que le repli.
  */
 class SamaSource(
-    private val http: OkHttpClient = defaultClient()
+    private val http: OkHttpClient = defaultClient(),
+    private val clockMs: () -> Long = System::currentTimeMillis
 ) : AnimeSource {
 
     override val name: String = "anime-sama"
 
     companion object {
         const val ORIGIN_TTL_MS = 24L * 60 * 60 * 1000
+        private const val HOME_TTL_MS = 10L * 60 * 1000
+        private const val FEATURED_TTL_MS = 10L * 60 * 1000
+        private const val SEARCH_TTL_MS = 3L * 60 * 1000
+        private const val SEASONS_TTL_MS = 10L * 60 * 1000
+        private const val EPISODES_TTL_MS = 5L * 60 * 1000
+        private val EPS_DECL_RE = Regex("eps\\d+\\s*=")
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(12, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .followRedirects(true)
             .build()
     }
 
-    private var cachedOrigin: String? = null
-    private var cachedAt = 0L
+    private class LruTtlCache<K, V>(
+        private val maxEntries: Int,
+        private val ttlMs: Long,
+        private val clockMs: () -> Long
+    ) {
+        private data class Entry<V>(val value: V, val expiresAtMs: Long)
+
+        private val map = object : LinkedHashMap<K, Entry<V>>(maxEntries + 1, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, Entry<V>>?): Boolean =
+                size > maxEntries
+        }
+
+        @Synchronized
+        fun get(key: K): V? {
+            val e = map[key] ?: return null
+            if (clockMs() >= e.expiresAtMs) {
+                map.remove(key)
+                return null
+            }
+            return e.value
+        }
+
+        @Synchronized
+        fun put(key: K, value: V) {
+            map[key] = Entry(value, clockMs() + ttlMs)
+        }
+    }
+
+    private val originMutex = Mutex()
+    @Volatile private var cachedOrigin: String? = null
+    @Volatile private var cachedAt = 0L
+
+    private var cachedFeatured: Pair<List<AnimeSearchResult>, Long>? = null
+
+
+    private var cachedHome: Pair<dot.jcversa.novay.data.CatalogHome, Long>? = null
+    private val searchCache = LruTtlCache<String, List<AnimeSearchResult>>(24, SEARCH_TTL_MS, clockMs)
+    private val seasonsCache = LruTtlCache<String, List<AnimeSeason>>(32, SEASONS_TTL_MS, clockMs)
+    private val episodesCache = LruTtlCache<String, List<AnimeEpisode>>(32, EPISODES_TTL_MS, clockMs)
 
     // ── Origine dynamique ─────────────────────────────────────────────────
 
     private suspend fun origin(): String = withContext(Dispatchers.IO) {
         cachedOrigin?.let { cached ->
-            if (System.currentTimeMillis() - cachedAt < ORIGIN_TTL_MS) return@withContext cached
+            if (clockMs() - cachedAt < ORIGIN_TTL_MS) return@withContext cached
         }
-        val resolved = runCatching { resolveOriginFromLauncher() }.getOrNull()
-        if (resolved != null) {
-            cachedOrigin = resolved
-            cachedAt = System.currentTimeMillis()
-            return@withContext resolved
+        originMutex.withLock {
+            cachedOrigin?.let { cached ->
+                if (clockMs() - cachedAt < ORIGIN_TTL_MS) return@withLock cached
+            }
+            val resolved = runCatching { resolveOriginFromLauncher() }.getOrNull()
+            if (resolved != null) {
+                cachedOrigin = resolved
+                cachedAt = clockMs()
+                return@withLock resolved
+            }
+            // Lanceur muet : dernier domaine connu, sinon repli validé.
+            cachedOrigin ?: SamaParsers.FALLBACK_ORIGIN
         }
-        // Lanceur muet : dernier domaine connu, sinon repli validé.
-        cachedOrigin ?: SamaParsers.FALLBACK_ORIGIN
     }
 
     private fun resolveOriginFromLauncher(): String? {
@@ -112,37 +167,54 @@ class SamaSource(
 
     // ── À la une (catalogue réel) & Recherche ─────────────────────────────
 
+
+    // ── Page d'accueil (V3) : À la une + derniers épisodes ─────────────
+    // Même politique de cache que featured() : 10 minutes en mémoire.
+    override suspend fun home(): dot.jcversa.novay.data.CatalogHome = withContext(Dispatchers.IO) {
+        val now = clockMs()
+        cachedHome?.let { (home, expiresAt) ->
+            if (now < expiresAt && (home.heroes.isNotEmpty() || home.cards.isNotEmpty())) {
+                return@withContext home
+            }
+        }
+        val base = origin()
+        val html = fetchBlocking("$base/", "$base/")
+        val home = dot.jcversa.novay.data.CatalogHome(
+            heroes = SamaParsers.parseHeroSlides(html, base),
+            cards = SamaParsers.parseHomeCards(html, base)
+        )
+        if (home.heroes.isNotEmpty() || home.cards.isNotEmpty()) {
+            cachedHome = home to (clockMs() + HOME_TTL_MS)
+        }
+        home
+    }
+
     override suspend fun featured(): List<AnimeSearchResult> = withContext(Dispatchers.IO) {
+        val now = clockMs()
+        cachedFeatured?.let { (items, expiresAt) ->
+            if (now < expiresAt && items.isNotEmpty()) return@withContext items
+        }
         val base = origin()
         val catalogueHtml = runCatching { fetchBlocking("$base/catalogue/", "$base/") }.getOrNull().orEmpty()
         val fromCatalogue = SamaParsers.parseSamaCatalogueCards(catalogueHtml, base)
-        if (fromCatalogue.isNotEmpty()) return@withContext fromCatalogue
-
-        val homeHtml = runCatching { fetchBlocking("$base/", "$base/") }.getOrNull().orEmpty()
-        SamaParsers.parseSamaCatalogueCards(homeHtml, base)
-    }
-
-    // ── Page d'accueil (home V3 : carrousel + derniers épisodes) ────────
-
-    /**
-     * Page d'accueil du catalogue : le carrousel « À la une » du site et
-     * la grille des derniers épisodes ajoutés (l'ordre du document = le
-     * plus récent d'abord). Une home injoignable remonte au caller, qui
-     * retombe sur featured() (cartes du /catalogue/).
-     */
-    override suspend fun home(): dot.jcversa.novay.data.CatalogHome =
-        withContext(Dispatchers.IO) {
-            val base = origin()
-            val html = fetchBlocking(base, "$base/")
-            dot.jcversa.novay.data.CatalogHome(
-                heroes = SamaParsers.parseHeroSlides(html, base),
-                cards = SamaParsers.parseHomeCards(html, base)
-            )
+        val result = if (fromCatalogue.isNotEmpty()) {
+            fromCatalogue
+        } else {
+            val homeHtml = runCatching { fetchBlocking("$base/", "$base/") }.getOrNull().orEmpty()
+            SamaParsers.parseSamaCatalogueCards(homeHtml, base)
         }
+        if (result.isNotEmpty()) {
+            cachedFeatured = result to (clockMs() + FEATURED_TTL_MS)
+        }
+        result
+    }
 
     // ── Recherche ─────────────────────────────────────────────────────────
 
     override suspend fun search(query: String): List<AnimeSearchResult> = withContext(Dispatchers.IO) {
+        val cacheKey = query.trim().lowercase()
+        searchCache.get(cacheKey)?.let { return@withContext it }
+
         val base = origin()
         var networkFailure: Exception? = null
         // Variantes de requête (portage 9.18kkk) : une faute de frappe proche
@@ -155,7 +227,10 @@ class SamaSource(
                     "$base/"
                 )
                 val results = SamaParsers.parseSamaSearch(html, base)
-                if (results.isNotEmpty()) return@withContext results
+                if (results.isNotEmpty()) {
+                    searchCache.put(cacheKey, results)
+                    return@withContext results
+                }
             } catch (e: Exception) {
                 networkFailure = e
             }
@@ -171,6 +246,9 @@ class SamaSource(
 
     override suspend fun seasons(anime: AnimeSearchResult): List<AnimeSeason> =
         withContext(Dispatchers.IO) {
+            val cacheKey = anime.url.trimEnd('/')
+            seasonsCache.get(cacheKey)?.let { return@withContext it }
+
             val base = origin()
             val html = fetchBlocking(anime.url, "$base/")
             val panels = SamaParsers.parsePanneauSeasons(html, anime.url)
@@ -209,7 +287,9 @@ class SamaSource(
             // Assemblage : panneaux listés + miroirs réels, PUIS classement
             // par catégorie — toutes les VF, puis toutes les VOSTFR (jamais
             // mélangées, cf. orderByLanguage).
-            SamaParsers.orderByLanguage(panels + mirrors)
+            val ordered = SamaParsers.orderByLanguage(panels + mirrors)
+            if (ordered.isNotEmpty()) seasonsCache.put(cacheKey, ordered)
+            ordered
         }
 
     /**
@@ -218,7 +298,7 @@ class SamaSource(
      */
     private fun isRealSeasonPage(url: String, base: String): Boolean = try {
         val html = fetchBlocking(url, "$base/")
-        html.contains("epsJeton") || Regex("eps\\d+\\s*=").containsMatchIn(html)
+        html.contains("epsJeton") || EPS_DECL_RE.containsMatchIn(html)
     } catch (_: Exception) {
         false
     }
@@ -227,13 +307,16 @@ class SamaSource(
 
     override suspend fun episodes(season: AnimeSeason): List<AnimeEpisode> =
         withContext(Dispatchers.IO) {
+            val cacheKey = season.url.trimEnd('/')
+            episodesCache.get(cacheKey)?.let { return@withContext it }
+
             val base = origin()
             val html = fetchBlocking(season.url, "$base/")
             val lists = SamaParsers.parseEpsArrays(html)
             val jeton = SamaParsers.parseEpsJeton(html) ?: ""
             val total = lists.values.maxOfOrNull { it.size } ?: 0
             // Positionnel : épisode N = index N-1 de chaque liste (lecteur).
-            (1..total).map { n ->
+            val result = (1..total).map { n ->
                 val ids = lists.toSortedMap().values
                     .mapNotNull { it.getOrNull(n - 1) }
                     .filter { it.isNotBlank() }
@@ -245,6 +328,8 @@ class SamaSource(
                     jeton = jeton
                 )
             }
+            if (result.isNotEmpty()) episodesCache.put(cacheKey, result)
+            result
         }
 
     // ── Flux (api/lien.php → page lecteur → m3u8) ─────────────────────────
@@ -294,27 +379,25 @@ class SamaSource(
             if (episode.lienIds.isEmpty()) {
                 throw IOException("Aucun lecteur enregistré pour cet épisode")
             }
-            // Un jeton frais partagé par tous les lecteurs (le même pour
-            // toute la page de saison).
-            var jeton = episode.jeton
-            val playerUrls: List<String> = episode.lienIds.mapNotNull { id ->
-                if (id.startsWith("lien:")) {
-                    fetchLienUrl(base, id.removePrefix("lien:"), jeton)
-                        ?: run {
-                            // Une seule tentative de rafraîchissement du jeton.
-                            val fresh = runCatching {
-                                fetchBlocking(episode.url, "$base/")
-                            }.getOrNull()
-                            val newJeton = fresh?.let { SamaParsers.parseEpsJeton(it) }
-                            if (newJeton != null) {
-                                jeton = newJeton
-                                fetchLienUrl(base, id.removePrefix("lien:"), jeton)
-                            } else {
-                                null
-                            }
+            suspend fun resolveLienUrls(jeton: String): List<String?> = coroutineScope {
+                episode.lienIds.map { id ->
+                    async {
+                        if (id.startsWith("lien:")) {
+                            fetchLienUrl(base, id.removePrefix("lien:"), jeton)
+                        } else {
+                            id
                         }
-                } else {
-                    id
+                    }
+                }.awaitAll()
+            }
+
+            var playerUrls = resolveLienUrls(episode.jeton).filterNotNull()
+            // Si aucun lien n'a répondu, rafraîchir le jeton UNE seule fois et relancer en parallèle.
+            if (playerUrls.isEmpty() && episode.lienIds.any { it.startsWith("lien:") }) {
+                val fresh = runCatching { fetchBlocking(episode.url, "$base/") }.getOrNull()
+                val newJeton = fresh?.let { SamaParsers.parseEpsJeton(it) }
+                if (!newJeton.isNullOrEmpty() && newJeton != episode.jeton) {
+                    playerUrls = resolveLienUrls(newJeton).filterNotNull()
                 }
             }
             if (playerUrls.isEmpty()) {

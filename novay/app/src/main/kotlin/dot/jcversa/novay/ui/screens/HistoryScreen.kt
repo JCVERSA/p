@@ -19,10 +19,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.History
-import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -61,6 +57,7 @@ import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
+import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.RowListSkeleton
@@ -119,7 +116,7 @@ fun HistoryScreen(
                 if (!entries.orEmpty().isEmpty()) {
                     AppBarAction(
                         contentDescription = "Effacer tout l'historique",
-                        icon = Icons.Rounded.DeleteOutline,
+                        icon = NovayIcons.DeleteTrash,
                         modifier = Modifier.testTag("history_clear_button"),
                         onClick = { confirmClear = true },
                     )
@@ -144,7 +141,7 @@ fun HistoryScreen(
             when (stateKey) {
                 "loading" -> RowListSkeleton(modifier = Modifier.padding(bottom = bottomChrome))
                 "empty" -> EmptyScreen(
-                    icon = Icons.Rounded.History,
+                    icon = NovayIcons.HistoryClock,
                     headingText = "Aucun historique",
                     subtitleText = "Les épisodes que tu lances s'affichent ici avec ta position exacte pour reprendre instantanément.",
                     modifier = Modifier.padding(bottom = bottomChrome),
@@ -324,7 +321,7 @@ private fun HistoryRow(
                     .testTag("history_resume_button"),
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.PlayCircleOutline,
+                    imageVector = NovayIcons.PlayCircle,
                     contentDescription = "Reprendre ${entry.episodeLabel}",
                     tint = MaterialTheme.colorScheme.primary,
                 )
@@ -336,7 +333,7 @@ private fun HistoryRow(
                     .testTag("history_remove_button"),
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.DeleteOutline,
+                    imageVector = NovayIcons.DeleteTrash,
                     contentDescription = "Supprimer de l'historique",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

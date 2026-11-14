@@ -4,7 +4,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -43,13 +43,15 @@ fun NovayTabMorphIcon(
     onTint: Color = Color.Black.copy(alpha = 0.85f),
 ) {
     val motion = LocalSlateMotion.current
-    val progress by animateFloatAsState(
+    val progressState = animateFloatAsState(
         targetValue = if (selected) 1f else 0f,
         animationSpec = motion.morphFloatSpec(),
         label = "tab_morph_${kind.name}",
     )
+    val reusablePath = remember { Path() }
 
     Canvas(modifier = modifier.size(size)) {
+        val progress = progressState.value
         val w = this.size.width
         val h = this.size.height
         val strokeWidth = lerp(1.9.dp.toPx(), 1.5.dp.toPx(), progress)
@@ -108,7 +110,8 @@ fun NovayTabMorphIcon(
                 val outerR = w * lerp(0.36f, 0.39f, progress)
                 val innerR = w * lerp(0.28f, 0.31f, progress)
                 val points = 8
-                val path = Path().apply {
+                val path = reusablePath.apply {
+                    rewind()
                     for (i in 0 until points * 2) {
                         val angle = (i * Math.PI / points) - Math.PI / 2.0
                         val radius = if (i % 2 == 0) outerR else innerR
@@ -219,7 +222,8 @@ fun NovayTabMorphIcon(
                 val needleColor = lerp(tint, onTint, progress)
                 val needleLen = radius * 0.62f
                 val needleW = radius * 0.26f
-                val needle = Path().apply {
+                val needle = reusablePath.apply {
+                    rewind()
                     moveTo(center.x, center.y - needleLen)
                     lineTo(center.x + needleW, center.y)
                     lineTo(center.x, center.y + needleLen)
@@ -238,13 +242,17 @@ fun NovayTabMorphIcon(
             MorphTabKind.MORE -> {
                 // Style Aniyomi anim_more : trois pastilles horizontales qui s'étirent en grille/capsule.
                 val cy = h / 2f
-                val xs = listOf(w * 0.24f, w * 0.50f, w * 0.76f)
                 val dotRadius = lerp(2.2.dp.toPx(), 2.8.dp.toPx(), progress)
                 val pillHeight = dotRadius * 2f
-                xs.forEachIndexed { idx, cx ->
+                val rectW = dotRadius * 2f
+                for (idx in 0 until 3) {
+                    val cx = when (idx) {
+                        0 -> w * 0.24f
+                        1 -> w * 0.50f
+                        else -> w * 0.76f
+                    }
                     val extraH = if (idx == 1) lerp(0f, 5.dp.toPx(), progress) else lerp(0f, 2.dp.toPx(), progress)
                     val rectH = pillHeight + extraH
-                    val rectW = dotRadius * 2f
                     if (fillAlpha > 0.05f) {
                         drawRoundRect(
                             color = tint,
@@ -310,13 +318,16 @@ fun NovayPlayPauseMorphIcon(
     size: Dp = 32.dp,
 ) {
     val motion = LocalSlateMotion.current
-    val t by animateFloatAsState(
+    val tState = animateFloatAsState(
         targetValue = if (isPlaying) 1f else 0f,
         animationSpec = motion.morphFloatSpec(),
         label = "play_pause_morph",
     )
+    val leftHalf = remember { Path() }
+    val rightHalf = remember { Path() }
 
     Canvas(modifier = modifier.size(size)) {
+        val t = tState.value
         val w = this.size.width
         val h = this.size.height
 
@@ -328,13 +339,12 @@ fun NovayPlayPauseMorphIcon(
         val midTopY = lerp(h * 0.35f, h * 0.22f, t)
         val midBottomY = lerp(h * 0.65f, h * 0.78f, t)
 
-        val leftHalf = Path().apply {
-            moveTo(leftX, leftTopY)
-            lineTo(midX, midTopY)
-            lineTo(midX, midBottomY)
-            lineTo(leftX, leftBottomY)
-            close()
-        }
+        leftHalf.rewind()
+        leftHalf.moveTo(leftX, leftTopY)
+        leftHalf.lineTo(midX, midTopY)
+        leftHalf.lineTo(midX, midBottomY)
+        leftHalf.lineTo(leftX, leftBottomY)
+        leftHalf.close()
 
         // Moitié droite : pointe du triangle -> barre droite de Pause
         val rightStartX = lerp(w * 0.54f, w * 0.58f, t)
@@ -344,13 +354,12 @@ fun NovayPlayPauseMorphIcon(
         val tipTopY = lerp(h * 0.50f, h * 0.22f, t)
         val tipBottomY = lerp(h * 0.50f, h * 0.78f, t)
 
-        val rightHalf = Path().apply {
-            moveTo(rightStartX, rightStartTopY)
-            lineTo(rightEndX, tipTopY)
-            lineTo(rightEndX, tipBottomY)
-            lineTo(rightStartX, rightStartBottomY)
-            close()
-        }
+        rightHalf.rewind()
+        rightHalf.moveTo(rightStartX, rightStartTopY)
+        rightHalf.lineTo(rightEndX, tipTopY)
+        rightHalf.lineTo(rightEndX, tipBottomY)
+        rightHalf.lineTo(rightStartX, rightStartBottomY)
+        rightHalf.close()
 
         drawPath(leftHalf, color = tint)
         drawPath(rightHalf, color = tint)
@@ -368,46 +377,47 @@ fun NovayFavoriteMorphIcon(
     size: Dp = 20.dp,
 ) {
     val motion = LocalSlateMotion.current
-    val fillProgress by animateFloatAsState(
+    val fillProgressState = animateFloatAsState(
         targetValue = if (inLibrary) 1f else 0f,
         animationSpec = motion.morphFloatSpec(),
         label = "favorite_fill",
     )
+    val heart = remember { Path() }
 
     Canvas(modifier = modifier.size(size)) {
+        val fillProgress = fillProgressState.value
         val w = this.size.width
         val h = this.size.height
         val s = lerp(0.92f, 1.04f, fillProgress)
         val cx = w / 2f
         val cy = h / 2f
-        val heart = Path().apply {
-            val scaleW = w * s
-            val scaleH = h * s
-            val ox = cx - scaleW / 2f
-            val oy = cy - scaleH / 2f
-            moveTo(ox + scaleW * 0.5f, oy + scaleH * 0.84f)
-            cubicTo(
-                ox + scaleW * 0.12f, oy + scaleH * 0.60f,
-                ox + scaleW * 0.08f, oy + scaleH * 0.28f,
-                ox + scaleW * 0.30f, oy + scaleH * 0.18f,
-            )
-            cubicTo(
-                ox + scaleW * 0.42f, oy + scaleH * 0.13f,
-                ox + scaleW * 0.48f, oy + scaleH * 0.22f,
-                ox + scaleW * 0.50f, oy + scaleH * 0.27f,
-            )
-            cubicTo(
-                ox + scaleW * 0.52f, oy + scaleH * 0.22f,
-                ox + scaleW * 0.58f, oy + scaleH * 0.13f,
-                ox + scaleW * 0.70f, oy + scaleH * 0.18f,
-            )
-            cubicTo(
-                ox + scaleW * 0.92f, oy + scaleH * 0.28f,
-                ox + scaleW * 0.88f, oy + scaleH * 0.60f,
-                ox + scaleW * 0.50f, oy + scaleH * 0.84f,
-            )
-            close()
-        }
+        val scaleW = w * s
+        val scaleH = h * s
+        val ox = cx - scaleW / 2f
+        val oy = cy - scaleH / 2f
+        heart.rewind()
+        heart.moveTo(ox + scaleW * 0.5f, oy + scaleH * 0.84f)
+        heart.cubicTo(
+            ox + scaleW * 0.12f, oy + scaleH * 0.60f,
+            ox + scaleW * 0.08f, oy + scaleH * 0.28f,
+            ox + scaleW * 0.30f, oy + scaleH * 0.18f,
+        )
+        heart.cubicTo(
+            ox + scaleW * 0.42f, oy + scaleH * 0.13f,
+            ox + scaleW * 0.48f, oy + scaleH * 0.22f,
+            ox + scaleW * 0.50f, oy + scaleH * 0.27f,
+        )
+        heart.cubicTo(
+            ox + scaleW * 0.52f, oy + scaleH * 0.22f,
+            ox + scaleW * 0.58f, oy + scaleH * 0.13f,
+            ox + scaleW * 0.70f, oy + scaleH * 0.18f,
+        )
+        heart.cubicTo(
+            ox + scaleW * 0.92f, oy + scaleH * 0.28f,
+            ox + scaleW * 0.88f, oy + scaleH * 0.60f,
+            ox + scaleW * 0.50f, oy + scaleH * 0.84f,
+        )
+        heart.close()
         if (fillProgress > 0.02f) {
             drawPath(heart, color = tint.copy(alpha = fillProgress))
         }

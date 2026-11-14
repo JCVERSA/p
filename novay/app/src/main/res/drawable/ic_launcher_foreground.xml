@@ -1,24 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- NoVaY — monogramme N Cinema Crimson (#E11D48 / #FB7185) dans la zone sûre 66dp. -->
+<!-- NoVaY — monogramme N japonais modernisé (lames katana, découpes optiques et sceau hanko) dans la zone sûre 66dp. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Barre gauche -->
+    <!-- Arcs brisés du sceau hanko / diaphragme cinéma -->
+    <path
+        android:fillColor="#BE123C"
+        android:pathData="M65.84,24.70 A31.6,31.6 0 0 1 79.56,72.57 L77.46,71.05 A29,29 0 0 0 64.86,27.11 Z" />
+    <path
+        android:fillColor="#BE123C"
+        android:pathData="M42.16,83.30 A31.6,31.6 0 0 1 28.44,35.43 L30.54,36.95 A29,29 0 0 0 43.14,80.89 Z" />
+    <!-- Pilier gauche biseauté katana -->
     <path
         android:fillColor="#E11D48"
-        android:pathData="M34,32 L43,32 L43,76 L34,76 Z" />
-    <!-- Barre droite -->
+        android:pathData="M34.5,33 L42.5,33 L42.5,70.5 L34.5,75 Z" />
+    <!-- Pilier droit biseauté katana -->
     <path
         android:fillColor="#E11D48"
-        android:pathData="M65,32 L74,32 L74,76 L65,76 Z" />
-    <!-- Diagonale cinema crimson lumineuse -->
+        android:pathData="M65.5,37.5 L73.5,33 L73.5,75 L65.5,75 Z" />
+    <!-- Ruban diagonal cinéma crimson avec fentes optiques -->
     <path
         android:fillColor="#FB3758"
-        android:pathData="M34,32 L43,32 L74,67 L74,76 L65,76 L34,41 Z" />
-    <!-- Liseré supérieur discret -->
+        android:pathData="M44.7,33 L51.8,33 L63.3,60.2 L63.3,75 L56.2,75 L44.7,47.8 Z" />
+    <!-- Éclat sakura sur les crêtes supérieures -->
     <path
         android:fillColor="#FDA4AF"
-        android:pathData="M34,32 L43,32 L43,34 L34,34 Z" />
+        android:pathData="M34.5,33 L42.5,33 L42.5,34.8 L34.5,34.8 Z M65.5,37.5 L73.5,33 L73.5,35.1 L65.5,39.6 Z" />
 </vector>

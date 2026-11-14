@@ -29,17 +29,6 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Sort
-import androidx.compose.material.icons.automirrored.rounded.ViewList
-import androidx.compose.material.icons.rounded.Apps
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.GridView
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -92,6 +81,7 @@ import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
+import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.PosterGridSkeleton
 import dot.jcversa.novay.ui.components.PosterImage
@@ -143,11 +133,22 @@ fun LibraryScreen(
             val history = WatchHistory.recent(context)
             val libUrls = lib.map { it.url.trimEnd('/') }.toSet()
             val latest = history.firstOrNull { it.animeUrl.trimEnd('/') in libUrls } ?: history.firstOrNull()
+            val completedByTitle = downloads.asSequence()
+                .filter { it.isCompleted }
+                .mapNotNull { it.meta?.animeTitle }
+                .groupingBy { it }
+                .eachCount()
+            val resumeByUrl = buildMap(history.size) {
+                for (h in history) {
+                    putIfAbsent(h.animeUrl.trimEnd('/'), h)
+                }
+            }
             val items = lib.map { entry ->
+                val normalized = entry.url.trimEnd('/')
                 LibraryItemUi(
                     entry = entry,
-                    downloadedCount = downloads.count { it.meta?.animeTitle == entry.title && it.isCompleted },
-                    resume = history.firstOrNull { it.animeUrl.trimEnd('/') == entry.url.trimEnd('/') },
+                    downloadedCount = completedByTitle[entry.title] ?: 0,
+                    resume = resumeByUrl[normalized],
                 )
             }
             LibraryUiState(
@@ -204,7 +205,7 @@ fun LibraryScreen(
                 actions = {
                     AppBarAction(
                         contentDescription = "Affichage et tri",
-                        icon = Icons.Rounded.Tune,
+                        icon = NovayIcons.QualitySliders,
                         modifier = Modifier.testTag("library_display_sheet_button"),
                         onClick = { showDisplaySheet = true },
                     )
@@ -215,9 +216,9 @@ fun LibraryScreen(
                             LibraryDisplay.COMPACT_GRID -> "Passer en grille confortable"
                         },
                         icon = when (display) {
-                            LibraryDisplay.COMPACT_GRID -> Icons.Rounded.Apps
-                            LibraryDisplay.COMFORTABLE_GRID -> Icons.Rounded.GridView
-                            LibraryDisplay.LIST -> Icons.AutoMirrored.Rounded.ViewList
+                            LibraryDisplay.COMPACT_GRID -> NovayIcons.GridCompact
+                            LibraryDisplay.COMFORTABLE_GRID -> NovayIcons.GridComfortable
+                            LibraryDisplay.LIST -> NovayIcons.ViewList
                         },
                         modifier = Modifier.testTag("library_display_toggle"),
                         onClick = {
@@ -288,13 +289,13 @@ fun LibraryScreen(
                         }
                     }
                     stateKey == "empty" -> EmptyScreen(
-                        icon = Icons.Rounded.VideoLibrary,
+                        icon = NovayIcons.LibraryShelf,
                         headingText = "Ta bibliothèque t'attend",
                         subtitleText = "Explore le catalogue et touche le cœur sur un anime pour le suivre ici et détecter ses nouveaux épisodes.",
                         modifier = Modifier.padding(bottom = bottomChrome),
                     )
                     stateKey.startsWith("filter_empty_") -> EmptyScreen(
-                        icon = Icons.Rounded.VideoLibrary,
+                        icon = NovayIcons.LibraryShelf,
                         headingText = "Aucun anime en ${filter.label}",
                         subtitleText = "Change de filtre de langue pour afficher tes autres animés suivis.",
                         modifier = Modifier.padding(bottom = bottomChrome),
@@ -302,7 +303,6 @@ fun LibraryScreen(
                     else -> {
                         val grid = display != LibraryDisplay.LIST
                         val cellSize = if (display == LibraryDisplay.COMPACT_GRID) 104.dp else 140.dp
-                        val itemAnimMod = if (motion.reduceMotion) Modifier else Modifier
                         val selectionBarClearance = if (selectionMode) 68.dp else 0.dp
                         if (grid) {
                             LazyVerticalGrid(
@@ -334,7 +334,7 @@ fun LibraryScreen(
                                     key = { it.entry.url },
                                     contentType = { display.name },
                                 ) { holder ->
-                                    val placedMod = if (motion.reduceMotion) itemAnimMod else Modifier.animateItem()
+                                    val placedMod = if (motion.reduceMotion) Modifier else Modifier.animateItem()
                                     if (display == LibraryDisplay.COMPACT_GRID) {
                                         AnimeCompactGridItem(
                                             title = holder.entry.title,
@@ -504,7 +504,7 @@ fun LibraryScreen(
                                 .testTag("library_delete_selected_button"),
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.Delete,
+                                imageVector = NovayIcons.DeleteTrash,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp),
                             )
@@ -520,7 +520,7 @@ fun LibraryScreen(
                             modifier = Modifier.minimumInteractiveComponentSize(),
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.Close,
+                                imageVector = NovayIcons.Close,
                                 contentDescription = "Fermer la sélection",
                             )
                         }
@@ -589,7 +589,7 @@ fun LibraryScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.Sort,
+                        imageVector = NovayIcons.Sort,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(18.dp),
@@ -634,7 +634,7 @@ fun LibraryScreen(
                         )
                         if (active) {
                             Icon(
-                                imageVector = Icons.Rounded.Check,
+                                imageVector = NovayIcons.Check,
                                 contentDescription = "Actif",
                                 tint = MaterialTheme.colorScheme.primary,
                             )
@@ -746,7 +746,7 @@ private fun ResumeCinemaBanner(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.PlayArrow,
+                        imageVector = NovayIcons.Play,
                         contentDescription = "Reprendre ${entry.episodeLabel}",
                     )
                 }

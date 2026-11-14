@@ -153,39 +153,63 @@ object Library {
         return map
     }
 
-    // ── Persistance (SharedPreferences) ───────────────────────────────────
+    // ── Persistance (SharedPreferences + cache mémoire) ───────────────────
+
+    @Volatile private var cachedEntries: List<LibraryEntry>? = null
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    fun all(context: Context): List<LibraryEntry> = decode(prefs(context).getString(KEY, null))
+    fun all(context: Context): List<LibraryEntry> {
+        cachedEntries?.let { return it }
+        return synchronized(this) {
+            cachedEntries ?: decode(prefs(context).getString(KEY, null)).also {
+                cachedEntries = it
+            }
+        }
+    }
 
     fun save(context: Context, entries: List<LibraryEntry>) {
-        prefs(context).edit().putString(KEY, encode(entries)).apply()
+        synchronized(this) {
+            if (cachedEntries == entries) return
+            cachedEntries = entries
+            prefs(context).edit().putString(KEY, encode(entries)).apply()
+        }
     }
 
     /** Ajoute/enlève un anime ; retourne true s'il est DANS la bibliothèque. */
     fun toggle(
         context: Context,
         entry: LibraryEntry
-    ): Boolean {
+    ): Boolean = synchronized(this) {
         val current = all(context)
-        val inLibrary = current.any { it.url.trimEnd('/') == entry.url.trimEnd('/') }
+        val normalized = entry.url.trimEnd('/')
+        val inLibrary = current.any { it.url.trimEnd('/') == normalized }
         val next = if (inLibrary) remove(current, entry.url) else upsert(current, entry)
         save(context, next)
-        return !inLibrary
+        !inLibrary
     }
 
-    fun isInLibrary(context: Context, url: String): Boolean =
-        all(context).any { it.url.trimEnd('/') == url.trimEnd('/') }
+    fun isInLibrary(context: Context, url: String): Boolean {
+        val normalized = url.trimEnd('/')
+        return all(context).any { it.url.trimEnd('/') == normalized }
+    }
 
     /** Enregistre un comptage réseau pour un anime suivi. */
     fun recordCounts(context: Context, url: String, counts: Map<String, Int>) {
-        save(context, withCounts(all(context), url, counts))
+        synchronized(this) {
+            val current = all(context)
+            val next = withCounts(current, url, counts)
+            if (next != current) save(context, next)
+        }
     }
 
     /** La saison a été ouverte : ses nouveaux épisodes sont consommés. */
     fun markSeen(context: Context, seasonUrl: String, count: Int) {
-        save(context, markSeasonSeen(all(context), seasonUrl, count))
+        synchronized(this) {
+            val current = all(context)
+            val next = markSeasonSeen(current, seasonUrl, count)
+            if (next != current) save(context, next)
+        }
     }
 }

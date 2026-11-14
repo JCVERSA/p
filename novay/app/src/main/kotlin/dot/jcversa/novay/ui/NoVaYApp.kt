@@ -52,16 +52,22 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,7 +81,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected as semanticsSelected
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.rememberHazeState
@@ -90,12 +95,20 @@ import dot.jcversa.novay.ui.components.LocalAnimatedVisibilityScope
 import dot.jcversa.novay.ui.components.LocalNovayHazeState
 import dot.jcversa.novay.ui.components.LocalSharedTransitionScope
 import dot.jcversa.novay.ui.components.LocalSlateMotion
+import dot.jcversa.novay.ui.components.NovayBrandSeal
 import dot.jcversa.novay.ui.components.NovayTabMorphIcon
 import dot.jcversa.novay.ui.components.PredictiveBackContainer
 import dot.jcversa.novay.ui.components.SlateMotion
 import dot.jcversa.novay.ui.components.SlateMotionProvider
 import dot.jcversa.novay.ui.components.novayCinemaGlass
 import dot.jcversa.novay.ui.components.novayHazeSource
+import dot.jcversa.novay.ui.player.FloatingMiniPlayer
+import dot.jcversa.novay.ui.player.FullscreenPlayerOverlay
+import dot.jcversa.novay.ui.player.PlayerOrientationController
+import dot.jcversa.novay.ui.player.PlayerPresentationMode
+import dot.jcversa.novay.ui.player.PlayerSession
+import dot.jcversa.novay.ui.player.PlayerStateManager
+import dot.jcversa.novay.ui.player.SinglePlayerViewHost
 import dot.jcversa.novay.ui.screens.BrowseScreen
 import dot.jcversa.novay.ui.screens.DownloadsScreen
 import dot.jcversa.novay.ui.screens.EpisodesScreen
@@ -130,7 +143,8 @@ sealed class Destination {
     data class Episodes(
         val animeTitle: String,
         val posterUrl: String?,
-        val season: AnimeSeason
+        val season: AnimeSeason,
+        val anime: AnimeSearchResult? = null,
     ) : Destination()
 
     data class Player(
@@ -139,7 +153,8 @@ sealed class Destination {
         val animeTitle: String,
         val posterUrl: String?,
         /** Flux déjà résolu (lecture hors-ligne) : null = résoudre en ligne. */
-        val initialStream: ResolvedStream? = null
+        val initialStream: ResolvedStream? = null,
+        val anime: AnimeSearchResult? = null,
     ) : Destination()
 }
 
@@ -238,6 +253,21 @@ class NovayAppState(
             stack.add(dest)
         }
     }
+
+    fun restoreWatchFromSession(session: PlayerSession) {
+        if (stack.lastOrNull() is Destination.Player) return
+        stack.removeAll { it is Destination.Player }
+        stack.add(
+            Destination.Player(
+                season = session.season,
+                episode = session.episode,
+                animeTitle = session.animeTitle,
+                posterUrl = session.posterUrl,
+                initialStream = session.initialStream,
+                anime = session.anime,
+            ),
+        )
+    }
 }
 
 @Composable
@@ -257,8 +287,44 @@ fun NoVaYApp() {
     val source = remember { SamaSource() }
     val context = LocalContext.current
     val appState = rememberNovayAppState()
+    val playerScope = rememberCoroutineScope()
+    val playerManager = remember(context) { PlayerStateManager(context.applicationContext, playerScope) }
+    val singleVideoSurface = remember(playerManager) {
+        movableContentOf { SinglePlayerViewHost(playerManager) }
+    }
 
-    BackHandler(enabled = appState.canNavigateBack && !appState.isSecondaryScreen) {
+    val isFullscreen = playerManager.presentationMode == PlayerPresentationMode.FULLSCREEN_LANDSCAPE
+    val keepScreenOn = playerManager.hasActiveSession && (playerManager.isPlaying || isFullscreen)
+
+    PlayerOrientationController(
+        isFullscreen = isFullscreen,
+        keepScreenOn = keepScreenOn,
+    )
+
+    val isWatchDestination = appState.currentDestination is Destination.Player
+    LaunchedEffect(isWatchDestination) {
+        if (!isWatchDestination) {
+            playerManager.markWatchRouteExited()
+        }
+    }
+
+    DisposableEffect(context, playerManager) {
+        val lifecycleOwner = context as? LifecycleOwner
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> playerManager.onAppBackgrounded()
+                Lifecycle.Event.ON_START -> playerManager.onAppForegrounded()
+                else -> Unit
+            }
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose {
+            lifecycleOwner?.lifecycle?.removeObserver(observer)
+            playerManager.release()
+        }
+    }
+
+    BackHandler(enabled = !isFullscreen && appState.canNavigateBack && !appState.isSecondaryScreen) {
         appState.back()
     }
 
@@ -284,8 +350,9 @@ fun NoVaYApp() {
         ) {
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val useRail = maxWidth >= 600.dp
+                val showAppChrome = appState.showChrome && !isFullscreen
                 val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-                val bottomChromePadding = if (appState.showChrome && !useRail) {
+                val bottomChromePadding = if (showAppChrome && !useRail) {
                     DOCK_CONTENT_HEIGHT + navBarBottomInset
                 } else {
                     0.dp
@@ -297,7 +364,7 @@ fun NoVaYApp() {
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Row(modifier = Modifier.fillMaxSize()) {
-                            if (appState.showChrome && useRail) {
+                            if (showAppChrome && useRail) {
                                 NavigationRail(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                                     contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -305,12 +372,11 @@ fun NoVaYApp() {
                                         .fillMaxHeight()
                                         .windowInsetsPadding(WindowInsets.safeDrawing),
                                     header = {
-                                        Text(
-                                            text = "NV",
-                                            style = MaterialTheme.typography.titleLarge,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(vertical = 14.dp),
+                                        NovayBrandSeal(
+                                            size = 40.dp,
+                                            modifier = Modifier
+                                                .padding(vertical = 10.dp)
+                                                .testTag("nav_rail_brand_logo"),
                                         )
                                     },
                                 ) {
@@ -453,7 +519,8 @@ fun NoVaYApp() {
                                                                         Destination.Episodes(
                                                                             animeTitle = screen.anime.title,
                                                                             posterUrl = screen.anime.posterUrl,
-                                                                            season = season
+                                                                            season = season,
+                                                                            anime = screen.anime,
                                                                         )
                                                                     )
                                                                 },
@@ -464,11 +531,12 @@ fun NoVaYApp() {
                                                                             episode = episode,
                                                                             animeTitle = screen.anime.title,
                                                                             posterUrl = screen.anime.posterUrl,
-                                                                            initialStream = offlineStream
+                                                                            initialStream = offlineStream,
+                                                                            anime = screen.anime,
                                                                         )
                                                                     )
                                                                 },
-                                                                onResume = { entry -> appState.open(playerDestination(entry)) }
+                                                                onResume = { entry -> appState.open(playerDestination(entry, screen.anime)) }
                                                             )
                                                             is Destination.Episodes -> EpisodesScreen(
                                                                 source = source,
@@ -482,19 +550,26 @@ fun NoVaYApp() {
                                                                             episode = episode,
                                                                             animeTitle = screen.animeTitle,
                                                                             posterUrl = screen.posterUrl,
-                                                                            initialStream = offlineStream
+                                                                            initialStream = offlineStream,
+                                                                            anime = screen.anime,
                                                                         )
                                                                     )
                                                                 }
                                                             )
                                                             is Destination.Player -> PlayerScreen(
+                                                                playerManager = playerManager,
                                                                 source = source,
                                                                 season = screen.season,
                                                                 episode = screen.episode,
                                                                 animeTitle = screen.animeTitle,
                                                                 posterUrl = screen.posterUrl,
+                                                                anime = screen.anime,
                                                                 initialStream = screen.initialStream,
-                                                                onBack = appState::back
+                                                                videoSurfaceSlot = singleVideoSurface,
+                                                                onOpenShow = { targetAnime ->
+                                                                    appState.open(Destination.Show(targetAnime))
+                                                                },
+                                                                onBack = appState::back,
                                                             )
                                                         }
                                                     }
@@ -506,7 +581,7 @@ fun NoVaYApp() {
                             }
                         }
 
-                        if (appState.showChrome && !useRail) {
+                        if (showAppChrome && !useRail) {
                             AniyomiIconOnlyDock(
                                 current = appState.currentTopLevel,
                                 updatesBadge = updatesBadge,
@@ -518,6 +593,30 @@ fun NoVaYApp() {
                                         hazeState = shellHazeState,
                                         tint = NovayTheme.overlays.glassSurface,
                                     ),
+                            )
+                        }
+
+                        if (playerManager.presentationMode == PlayerPresentationMode.FLOATING_MINI) {
+                            FloatingMiniPlayer(
+                                playerManager = playerManager,
+                                videoSurfaceSlot = singleVideoSurface,
+                                bottomDockClearance = bottomChromePadding,
+                                leftRailClearance = if (showAppChrome && useRail) 80.dp else 0.dp,
+                                onExpandToWatch = {
+                                    val activeSession = playerManager.session ?: return@FloatingMiniPlayer
+                                    if (appState.currentDestination is Destination.Player) {
+                                        playerManager.requestRestoreToEmbedded()
+                                    } else {
+                                        appState.restoreWatchFromSession(activeSession)
+                                    }
+                                },
+                            )
+                        }
+
+                        if (isFullscreen) {
+                            FullscreenPlayerOverlay(
+                                playerManager = playerManager,
+                                videoSurfaceSlot = singleVideoSurface,
                             )
                         }
                     }
@@ -541,7 +640,7 @@ private fun AniyomiIconOnlyDock(
     val motion = LocalSlateMotion.current
     val destinations = TopLevelDestination.entries
     val selectedIndex = destinations.indexOf(current).coerceAtLeast(0)
-    val animatedIndex by animateFloatAsState(
+    val animatedIndexState = animateFloatAsState(
         targetValue = selectedIndex.toFloat(),
         animationSpec = motion.dockIndicatorSpec(),
         label = "dock_pill_index",
@@ -564,13 +663,13 @@ private fun AniyomiIconOnlyDock(
             val count = destinations.size
             val slotWidthPx = with(density) { (maxWidth / count).toPx() }
             val pillWidthPx = with(density) { pillWidth.toPx() }
-            val indicatorOffsetX = (slotWidthPx * animatedIndex) + ((slotWidthPx - pillWidthPx) / 2f)
 
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
                     .graphicsLayer {
-                        translationX = indicatorOffsetX
+                        translationX = (slotWidthPx * animatedIndexState.value) +
+                            ((slotWidthPx - pillWidthPx) / 2f)
                     }
                     .size(width = pillWidth, height = pillHeight)
                     .clip(CircleShape)
@@ -667,7 +766,10 @@ private fun TabMorphIconWithBadge(
     }
 }
 
-private fun playerDestination(entry: WatchHistoryEntry) = Destination.Player(
+private fun playerDestination(
+    entry: WatchHistoryEntry,
+    anime: AnimeSearchResult? = null,
+) = Destination.Player(
     season = AnimeSeason(name = entry.seasonName, url = entry.seasonUrl),
     episode = AnimeEpisode(
         number = entry.episodeNumber,
@@ -678,5 +780,6 @@ private fun playerDestination(entry: WatchHistoryEntry) = Destination.Player(
     ),
     animeTitle = entry.animeTitle,
     posterUrl = entry.posterUrl,
-    initialStream = null
+    initialStream = null,
+    anime = anime,
 )

@@ -1,8 +1,15 @@
 package dot.jcversa.novay.ui.screens
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -30,12 +37,6 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.rounded.DoneAll
-import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.MovieFilter
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -96,8 +97,10 @@ import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayBadge
 import dot.jcversa.novay.ui.components.NovayFavoriteMorphIcon
+import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.ShowScreenSkeleton
+import dot.jcversa.novay.ui.components.SlateMotion
 import dot.jcversa.novay.ui.components.novaySharedPoster
 import dot.jcversa.novay.ui.theme.NovayTheme
 import dot.jcversa.novay.ui.theme.header
@@ -187,7 +190,7 @@ fun ShowScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    val headerParallaxOffset by remember {
+    val headerParallaxOffsetState = remember(listState, motion.reduceMotion) {
         derivedStateOf {
             if (motion.reduceMotion || listState.firstVisibleItemIndex > 0) {
                 0f
@@ -195,6 +198,9 @@ fun ShowScreen(
                 listState.firstVisibleItemScrollOffset.toFloat() * 0.25f
             }
         }
+    }
+    val headerParallaxProvider = remember(headerParallaxOffsetState) {
+        { headerParallaxOffsetState.value }
     }
 
     val markSeasonSeen: (AnimeSeason) -> Unit = { season ->
@@ -224,7 +230,7 @@ fun ShowScreen(
                     if (!seasons.isNullOrEmpty()) {
                         AppBarAction(
                             contentDescription = "Actions rapides",
-                            icon = Icons.Rounded.MoreVert,
+                            icon = NovayIcons.Overflow,
                             modifier = Modifier.testTag("show_actions_sheet_button"),
                             onClick = { showActionsSheet = true },
                         )
@@ -260,7 +266,7 @@ fun ShowScreen(
                         ShowScreenSkeleton()
                     }
                     "empty" -> EmptyScreen(
-                        icon = Icons.Rounded.MovieFilter,
+                        icon = NovayIcons.SeasonReel,
                         headingText = "Aucune saison disponible",
                         subtitleText = "Aucune saison n'est listée pour cet animé pour le moment.",
                         modifier = Modifier.padding(bottom = bottomChrome),
@@ -284,7 +290,7 @@ fun ShowScreen(
                                         inLibrary = inLibrary,
                                         downloadedBySeason = downloadedBySeason,
                                         activeSeasonUrl = selectedSeason?.url,
-                                        parallaxOffsetPx = headerParallaxOffset,
+                                        parallaxOffsetProvider = headerParallaxProvider,
                                         animateItems = !motion.reduceMotion,
                                         onResume = onResume,
                                         onToggleFavorite = ::toggleFavorite,
@@ -335,7 +341,7 @@ fun ShowScreen(
                                         inLibrary = inLibrary,
                                         downloadedBySeason = downloadedBySeason,
                                         activeSeasonUrl = null,
-                                        parallaxOffsetPx = headerParallaxOffset,
+                                        parallaxOffsetProvider = headerParallaxProvider,
                                         animateItems = !motion.reduceMotion,
                                         onResume = onResume,
                                         onToggleFavorite = ::toggleFavorite,
@@ -354,30 +360,37 @@ fun ShowScreen(
 
         val fabVisible = resumeEntry != null && !isSplitPane
         val idle by remember { derivedStateOf { !listState.isScrollInProgress } }
-        val fabScale by animateFloatAsState(
-            targetValue = if (fabVisible && idle) 1f else 0f,
-            animationSpec = motion.dockIndicatorSpec(),
-            label = "fab_visibility",
-        )
-        if (fabVisible && fabScale > 0.05f) {
+        AnimatedVisibility(
+            visible = fabVisible && idle,
+            enter = if (motion.reduceMotion) {
+                EnterTransition.None
+            } else {
+                fadeIn(tween(190, easing = SlateMotion.EaseOutExpo)) +
+                    scaleIn(
+                        initialScale = 0.88f,
+                        animationSpec = tween(200, easing = SlateMotion.EaseOutExpo),
+                    )
+            },
+            exit = if (motion.reduceMotion) {
+                ExitTransition.None
+            } else {
+                fadeOut(tween(120, easing = SlateMotion.FastOutExit)) +
+                    scaleOut(targetScale = 0.88f, animationSpec = tween(120, easing = SlateMotion.FastOutExit))
+            },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .then(if (bottomChrome == 0.dp) Modifier.navigationBarsPadding() else Modifier)
+                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp + bottomChrome),
+        ) {
             ExtendedFloatingActionButton(
                 onClick = { resumeEntry?.let(onResume) },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .then(if (bottomChrome == 0.dp) Modifier.navigationBarsPadding() else Modifier)
-                    .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp + bottomChrome)
-                    .graphicsLayer {
-                        scaleX = fabScale
-                        scaleY = fabScale
-                        alpha = fabScale.coerceIn(0f, 1f)
-                    }
-                    .testTag("show_resume_fab"),
+                modifier = Modifier.testTag("show_resume_fab"),
                 shape = CircleShape,
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.PlayArrow,
+                    imageVector = NovayIcons.Play,
                     contentDescription = null,
                 )
                 Spacer(Modifier.width(6.dp))
@@ -414,7 +427,7 @@ fun ShowScreen(
                 )
                 ShowSheetActionRow(
                     label = if (inLibrary) "Retirer de la bibliothèque" else "Ajouter à la bibliothèque",
-                    icon = Icons.Rounded.PlayArrow,
+                    icon = NovayIcons.Play,
                     customLeading = {
                         NovayFavoriteMorphIcon(
                             inLibrary = inLibrary,
@@ -433,7 +446,7 @@ fun ShowScreen(
                         } else {
                             "Ouvrir ${first.name}"
                         },
-                        icon = Icons.Rounded.PlayArrow,
+                        icon = NovayIcons.Play,
                         onClick = {
                             showActionsSheet = false
                             if (resumeEntry != null) {
@@ -447,7 +460,7 @@ fun ShowScreen(
                 if (seasons.orEmpty().isNotEmpty()) {
                     ShowSheetActionRow(
                         label = "Marquer les saisons comme vues",
-                        icon = Icons.Rounded.DoneAll,
+                        icon = NovayIcons.MarkAllSeen,
                         onClick = {
                             showActionsSheet = false
                             seasons.orEmpty().forEach(markSeasonSeen)
@@ -504,7 +517,7 @@ private fun LazyListScope.showOverviewAndSeasons(
     inLibrary: Boolean,
     downloadedBySeason: Map<String, Int>,
     activeSeasonUrl: String?,
-    parallaxOffsetPx: Float,
+    parallaxOffsetProvider: () -> Float,
     animateItems: Boolean,
     onResume: (WatchHistoryEntry) -> Unit,
     onToggleFavorite: () -> Unit,
@@ -515,7 +528,7 @@ private fun LazyListScope.showOverviewAndSeasons(
             anime = anime,
             seasonCount = seasons.size,
             languages = grouped.map { it.first },
-            parallaxOffsetPx = parallaxOffsetPx,
+            parallaxOffsetProvider = parallaxOffsetProvider,
         )
     }
 
@@ -545,7 +558,7 @@ private fun LazyListScope.showOverviewAndSeasons(
                     .testTag("show_primary_cta"),
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.PlayArrow,
+                    imageVector = NovayIcons.Play,
                     contentDescription = null,
                     modifier = Modifier.size(20.dp),
                 )
@@ -658,7 +671,7 @@ private fun CinemaShowHeader(
     anime: AnimeSearchResult,
     seasonCount: Int,
     languages: List<String>,
-    parallaxOffsetPx: Float,
+    parallaxOffsetProvider: () -> Float,
 ) {
     val posterShape = MaterialTheme.shapes.medium
     val overlays = NovayTheme.overlays
@@ -671,7 +684,7 @@ private fun CinemaShowHeader(
                 .graphicsLayer {
                     scaleX = 1.08f
                     scaleY = 1.08f
-                    translationY = parallaxOffsetPx
+                    translationY = parallaxOffsetProvider()
                 }
                 .blur(16.dp)
                 .alpha(0.28f),
@@ -817,7 +830,7 @@ private fun SeasonRow(
                 }
             }
             Icon(
-                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                imageVector = NovayIcons.ChevronRight,
                 contentDescription = "Voir les épisodes de ${season.name}",
                 tint = if (isActive) {
                     MaterialTheme.colorScheme.primary

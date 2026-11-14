@@ -26,13 +26,17 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -40,43 +44,62 @@ import androidx.compose.ui.unit.dp
 import dot.jcversa.novay.ui.theme.NovayTheme
 
 /**
- * Squelettes de chargement animés (Shimmer) — respectent intégralement
- * reduceMotion en basculant vers une surface statique douce.
+ * Squelettes de chargement animés (Shimmer) — zéro recomposition et zéro
+ * allocation par image : la progression (0f..1f) est lue exclusivement en
+ * phase Draw (`drawWithCache` + `translate`) et partagée au sein d'un même
+ * squelette. Respectent intégralement `reduceMotion`.
  */
 @Composable
-fun rememberShimmerBrush(): Brush {
+fun rememberShimmerProgress(): () -> Float {
     val motion = LocalSlateMotion.current
-    val base = NovayTheme.overlays.shimmerBase
-    val highlight = NovayTheme.overlays.shimmerHighlight
     if (motion.reduceMotion) {
-        return Brush.linearGradient(colors = listOf(base, base))
+        return remember { { -1f } }
     }
     val transition = rememberInfiniteTransition(label = "novay_shimmer")
-    val shift by transition.animateFloat(
-        initialValue = -400f,
-        targetValue = 1200f,
+    val progressState = transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 1250, easing = LinearEasing),
             repeatMode = RepeatMode.Restart,
         ),
-        label = "novay_shimmer_shift",
+        label = "novay_shimmer_progress",
     )
-    return Brush.linearGradient(
-        colors = listOf(base, highlight, base),
-        start = Offset(shift, 0f),
-        end = Offset(shift + 360f, 220f),
-    )
+    return remember(progressState) { { progressState.value } }
 }
 
 @Composable
 fun ShimmerBox(
     modifier: Modifier = Modifier,
     shape: Shape = MaterialTheme.shapes.small,
+    progressProvider: (() -> Float)? = null,
 ) {
+    val resolvedProvider = progressProvider ?: rememberShimmerProgress()
+    val base = NovayTheme.overlays.shimmerBase
+    val highlight = NovayTheme.overlays.shimmerHighlight
     Box(
         modifier = modifier
             .clip(shape)
-            .background(rememberShimmerBrush()),
+            .drawWithCache {
+                val shimmerWidth = (size.width * 0.7f).coerceAtLeast(180f)
+                val gradient = Brush.linearGradient(
+                    colors = listOf(Color.Transparent, highlight, Color.Transparent),
+                    start = Offset.Zero,
+                    end = Offset(shimmerWidth, size.height * 0.45f),
+                )
+                val bandSize = Size(shimmerWidth, size.height)
+                onDrawBehind {
+                    drawRect(color = base)
+                    val progress = resolvedProvider()
+                    if (progress >= 0f) {
+                        val totalSpan = size.width + shimmerWidth
+                        val dx = -shimmerWidth + progress * totalSpan
+                        translate(left = dx) {
+                            drawRect(brush = gradient, size = bandSize)
+                        }
+                    }
+                }
+            },
     )
 }
 
@@ -87,6 +110,7 @@ fun PosterGridSkeleton(
     itemCount: Int = 9,
     compact: Boolean = false,
 ) {
+    val shimmerProgress = rememberShimmerProgress()
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minCellSize),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 28.dp),
@@ -104,6 +128,7 @@ fun PosterGridSkeleton(
                         .fillMaxWidth()
                         .aspectRatio(2f / 3f),
                     shape = MaterialTheme.shapes.small,
+                    progressProvider = shimmerProgress,
                 )
                 if (!compact) {
                     ShimmerBox(
@@ -111,6 +136,7 @@ fun PosterGridSkeleton(
                             .fillMaxWidth(0.78f)
                             .height(14.dp),
                         shape = MaterialTheme.shapes.extraSmall,
+                        progressProvider = shimmerProgress,
                     )
                 }
             }
@@ -123,6 +149,7 @@ fun RowListSkeleton(
     modifier: Modifier = Modifier,
     itemCount: Int = 6,
 ) {
+    val shimmerProgress = rememberShimmerProgress()
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -149,6 +176,7 @@ fun RowListSkeleton(
                     ShimmerBox(
                         modifier = Modifier.size(width = 58.dp, height = 84.dp),
                         shape = MaterialTheme.shapes.extraSmall,
+                        progressProvider = shimmerProgress,
                     )
                     Spacer(Modifier.width(14.dp))
                     Column(
@@ -160,12 +188,14 @@ fun RowListSkeleton(
                                 .fillMaxWidth(0.7f)
                                 .height(16.dp),
                             shape = MaterialTheme.shapes.extraSmall,
+                            progressProvider = shimmerProgress,
                         )
                         ShimmerBox(
                             modifier = Modifier
                                 .fillMaxWidth(0.45f)
                                 .height(12.dp),
                             shape = MaterialTheme.shapes.extraSmall,
+                            progressProvider = shimmerProgress,
                         )
                     }
                 }
@@ -176,6 +206,7 @@ fun RowListSkeleton(
 
 @Composable
 fun ShowScreenSkeleton(modifier: Modifier = Modifier) {
+    val shimmerProgress = rememberShimmerProgress()
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -191,15 +222,25 @@ fun ShowScreenSkeleton(modifier: Modifier = Modifier) {
             ShimmerBox(
                 modifier = Modifier.size(width = 112.dp, height = 168.dp),
                 shape = MaterialTheme.shapes.medium,
+                progressProvider = shimmerProgress,
             )
             Spacer(Modifier.width(16.dp))
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                ShimmerBox(modifier = Modifier.fillMaxWidth(0.85f).height(26.dp))
-                ShimmerBox(modifier = Modifier.fillMaxWidth(0.55f).height(16.dp))
-                ShimmerBox(modifier = Modifier.width(88.dp).height(22.dp))
+                ShimmerBox(
+                    modifier = Modifier.fillMaxWidth(0.85f).height(26.dp),
+                    progressProvider = shimmerProgress,
+                )
+                ShimmerBox(
+                    modifier = Modifier.fillMaxWidth(0.55f).height(16.dp),
+                    progressProvider = shimmerProgress,
+                )
+                ShimmerBox(
+                    modifier = Modifier.width(88.dp).height(22.dp),
+                    progressProvider = shimmerProgress,
+                )
             }
         }
         Row(
@@ -211,12 +252,14 @@ fun ShowScreenSkeleton(modifier: Modifier = Modifier) {
                     .weight(1f)
                     .height(48.dp),
                 shape = MaterialTheme.shapes.extraLarge,
+                progressProvider = shimmerProgress,
             )
             ShimmerBox(
                 modifier = Modifier
                     .width(110.dp)
                     .height(48.dp),
                 shape = MaterialTheme.shapes.extraLarge,
+                progressProvider = shimmerProgress,
             )
         }
         repeat(4) {
@@ -225,6 +268,7 @@ fun ShowScreenSkeleton(modifier: Modifier = Modifier) {
                     .fillMaxWidth()
                     .height(62.dp),
                 shape = MaterialTheme.shapes.medium,
+                progressProvider = shimmerProgress,
             )
         }
     }
@@ -235,6 +279,7 @@ fun EpisodesListSkeleton(
     modifier: Modifier = Modifier,
     itemCount: Int = 8,
 ) {
+    val shimmerProgress = rememberShimmerProgress()
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -255,6 +300,7 @@ fun EpisodesListSkeleton(
                 ShimmerBox(
                     modifier = Modifier.size(width = 48.dp, height = 22.dp),
                     shape = MaterialTheme.shapes.extraSmall,
+                    progressProvider = shimmerProgress,
                 )
                 Spacer(Modifier.width(12.dp))
                 ShimmerBox(
@@ -262,11 +308,13 @@ fun EpisodesListSkeleton(
                         .weight(1f)
                         .height(16.dp),
                     shape = MaterialTheme.shapes.extraSmall,
+                    progressProvider = shimmerProgress,
                 )
                 Spacer(Modifier.width(16.dp))
                 ShimmerBox(
                     modifier = Modifier.size(24.dp),
                     shape = MaterialTheme.shapes.extraLarge,
+                    progressProvider = shimmerProgress,
                 )
             }
         }

@@ -16,6 +16,9 @@ import android.os.Environment
 import android.provider.MediaStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
@@ -88,6 +91,15 @@ object FileDownloadEngine {
 
     /** Listener de notification (le service s'y branche). */
     @Volatile var onNotification: (() -> Unit)? = null
+
+    /** Flux réactif des changements d'état (file réactive des écrans). */
+    private val changeEvents = MutableSharedFlow<Unit>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
+    fun changes() = changeEvents.asSharedFlow()
 
     // ── Cycle de vie ─────────────────────────────────────────────────────
 
@@ -406,23 +418,38 @@ object FileDownloadEngine {
             }
             if (trackMap.isEmpty()) return false
             muxer.start()
-            val buffer = ByteBuffer.allocateDirect(1 shl 20)
+            // V2.6 — ENTRELACEMENT (la leçon novabox/ffmpeg -c copy) :
+            // toutes les pistes sont sélectionnées ENSEMBLE, et MediaExtractor
+            // délivre alors les échantillons dans l'ORDRE DU FICHIER —
+            // l'alternance audio/vidéo naturelle du flux HLS. Chaque
+            // échantillon part vers sa piste via sampleTrackIndex et le MP4
+            // sort alterné image/son, exactement comme la sortie ffmpeg du
+            // bot. L'ancienne version écrivait toute une piste puis l'autre :
+            // le lecteur devait sauter en permanence entre deux zones
+            // éloignées du fichier — saccades vidéo ET son, et refus pur et
+            // simple du lecteur intégré.
+            trackMap.keys.forEach { extractor.selectTrack(it) }
+            val maxSample = trackMap.keys.maxOf { i ->
+                runCatching {
+                    extractor.getTrackFormat(i).getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
+                }.getOrDefault(0).coerceAtLeast(0)
+            }.coerceAtLeast(1 shl 20)
+            val buffer = ByteBuffer.allocateDirect(maxSample)
             val info = MediaCodec.BufferInfo()
-            for ((srcTrack, dstTrack) in trackMap) {
-                extractor.selectTrack(srcTrack)
-                while (true) {
-                    val size = extractor.readSampleData(buffer, 0)
-                    if (size < 0) break
-                    info.offset = 0
-                    info.size = size
-                    info.presentationTimeUs = extractor.sampleTime
-                    info.flags = extractor.sampleFlags and MediaCodec.BUFFER_FLAG_KEY_FRAME
-                    if (info.presentationTimeUs >= 0) {
-                        muxer.writeSampleData(dstTrack, buffer, info)
-                    }
-                    extractor.advance()
+            while (true) {
+                info.offset = 0
+                val size = extractor.readSampleData(buffer, 0)
+                if (size < 0) break
+                info.size = size
+                val dstTrack = trackMap[extractor.sampleTrackIndex]
+                val timeUs = extractor.sampleTime
+                val flags = extractor.sampleFlags and MediaCodec.BUFFER_FLAG_KEY_FRAME
+                if (dstTrack != null && timeUs >= 0) {
+                    info.presentationTimeUs = timeUs
+                    info.flags = flags
+                    muxer.writeSampleData(dstTrack, buffer, info)
                 }
-                extractor.unselectTrack(srcTrack)
+                extractor.advance()
             }
             muxer.stop()
             true
@@ -554,6 +581,7 @@ object FileDownloadEngine {
     }
 
     private fun notifyUpdate() {
+        changeEvents.tryEmit(Unit)
         onNotification?.invoke()
     }
 }

@@ -10,8 +10,17 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import dot.jcversa.novay.data.DownloadChoice
 import dot.jcversa.novay.data.ResolvedStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withTimeoutOrNull
 import dot.jcversa.novay.data.sama.SamaParsers
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -52,6 +61,33 @@ object Downloads {
         val isActive: Boolean
             get() = state == STATE_RUNNING || state == STATE_QUEUED
     }
+
+    /**
+     * File réactive (V2.6, architecture owner) : émise à chaque changement
+     * du moteur ; rafraîchie toutes les 750 ms uniquement pendant qu'un
+     * téléchargement est actif — zéro polling quand tout est calme.
+     */
+    data class QueueSnapshot(
+        val items: List<DownloadInfo>,
+        val paused: Boolean
+    )
+
+    fun observeQueue(context: Context): Flow<QueueSnapshot> = flow {
+        val appCtx = context.applicationContext
+        while (true) {
+            val items = snapshot(appCtx)
+            val isPaused = FileDownloadEngine.downloadsPaused()
+            emit(QueueSnapshot(items = items, paused = isPaused))
+            if (items.any { it.isActive }) {
+                withTimeoutOrNull(750L) { FileDownloadEngine.changes().first() }
+            } else {
+                FileDownloadEngine.changes().first()
+            }
+        }
+    }.distinctUntilChanged().flowOn(Dispatchers.IO)
+
+    fun observeSnapshots(context: Context): Flow<List<DownloadInfo>> =
+        observeQueue(context).map { it.items }.distinctUntilChanged()
 
     /** Vue « manager » (compatibilité écrans V2.4 : downloadsPaused). */
     class ManagerView(context: Context) {
@@ -103,10 +139,22 @@ object Downloads {
      */
     fun downloadedStream(context: Context, seasonUrl: String, episodeNumber: Int): ResolvedStream? {
         FileDownloadEngine.init(context)
-        return FileDownloadEngine.find(downloadId(seasonUrl, episodeNumber))
+        val stream = FileDownloadEngine.find(downloadId(seasonUrl, episodeNumber))
             ?.takeIf { it.isCompleted }
             ?.meta
             ?.toStream()
+            ?: return null
+        // Le fichier a pu être supprimé depuis Fichiers/VLC : on ne renvoie
+        // un flux local que s'il est réellement lisible (sinon repli réseau).
+        val readable = runCatching {
+            val uri = android.net.Uri.parse(stream.url)
+            when (uri.scheme) {
+                "file" -> java.io.File(uri.path ?: "").exists()
+                "content" -> context.contentResolver.openInputStream(uri)?.close() != null
+                else -> false
+            }
+        }.getOrDefault(false)
+        return if (readable) stream else null
     }
 
     /**
@@ -216,8 +264,16 @@ object Downloads {
                 .setAllowCrossProtocolRedirects(true)
             DefaultDataSource.Factory(context, httpFactory)
         }
+        // Type explicite : le lecteur intégré n'a pas à deviner le
+        // conteneur d'un fichier local (MP4 remuxé ou repli TS).
+        val item = MediaItem.Builder().setUri(url).apply {
+            when {
+                url.endsWith(".mp4", true) -> setMimeType(MimeTypes.VIDEO_MP4)
+                url.endsWith(".ts", true) -> setMimeType(MimeTypes.VIDEO_MP2T)
+            }
+        }.build()
         return ProgressiveMediaSource.Factory(factory)
-            .createMediaSource(MediaItem.fromUri(url))
+            .createMediaSource(item)
     }
 
     // ── Notification pilotable (V2.3, inspiration Ketch) ──────────────────

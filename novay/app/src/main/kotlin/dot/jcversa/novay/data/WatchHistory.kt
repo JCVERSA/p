@@ -133,40 +133,52 @@ object WatchHistory {
             ?.positionMs ?: 0L
     }
 
-    // ── Persistance (SharedPreferences) ───────────────────────────────────
+    // ── Persistance (SharedPreferences + cache mémoire) ───────────────────
+
+    @Volatile private var cachedEntries: List<WatchHistoryEntry>? = null
+
+    private fun prefs(context: Context) =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun record(context: Context, entry: WatchHistoryEntry) {
-        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString(KEY, encode(upsert(decode(prefs.getString(KEY, null)), entry)))
-            .apply()
+        synchronized(this) {
+            val next = upsert(recent(context), entry)
+            cachedEntries = next
+            prefs(context).edit().putString(KEY, encode(next)).apply()
+        }
     }
 
     /** Entrées récentes (la plus fraîche en tête). */
-    fun recent(context: Context): List<WatchHistoryEntry> =
-        decode(
-            context.applicationContext
-                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY, null)
-        )
+    fun recent(context: Context): List<WatchHistoryEntry> {
+        cachedEntries?.let { return it }
+        return synchronized(this) {
+            cachedEntries ?: decode(prefs(context).getString(KEY, null)).also {
+                cachedEntries = it
+            }
+        }
+    }
 
     /** Supprime UNE entrée (bouton corbeille de l'historique). */
     fun remove(context: Context, seasonUrl: String, episodeNumber: Int) {
-        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val key = entryKey(seasonUrl, episodeNumber)
-        val kept = decode(prefs.getString(KEY, null))
-            .filter { entryKey(it.seasonUrl, it.episodeNumber) != key }
-        prefs.edit().putString(KEY, encode(kept)).apply()
+        synchronized(this) {
+            val key = entryKey(seasonUrl, episodeNumber)
+            val kept = recent(context).filter { entryKey(it.seasonUrl, it.episodeNumber) != key }
+            cachedEntries = kept
+            prefs(context).edit().putString(KEY, encode(kept)).apply()
+        }
     }
 
     fun clear(context: Context) {
-        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().remove(KEY).apply()
+        synchronized(this) {
+            cachedEntries = emptyList()
+            prefs(context).edit().remove(KEY).apply()
+        }
     }
 
     /**
      * Enregistre la position de lecture d'un épisode (appelé toutes les
-     * 5 s par le lecteur + à sa fermeture).
+     * 5 s par le lecteur + à sa fermeture). Évite les écritures redondantes
+     * si la position a bougé de moins d'une seconde.
      */
     fun recordPosition(
         context: Context,
@@ -175,13 +187,21 @@ object WatchHistory {
         positionMs: Long,
         durationMs: Long
     ) {
-        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString(
-                KEY,
-                encode(withPosition(decode(prefs.getString(KEY, null)), seasonUrl, episodeNumber, positionMs, durationMs))
-            )
-            .apply()
+        synchronized(this) {
+            val current = recent(context)
+            val key = entryKey(seasonUrl, episodeNumber)
+            val existing = current.firstOrNull { entryKey(it.seasonUrl, it.episodeNumber) == key }
+                ?: return
+            if (positionMs != 0L &&
+                existing.durationMs == durationMs &&
+                kotlin.math.abs(existing.positionMs - positionMs) < 1000L
+            ) {
+                return
+            }
+            val next = withPosition(current, seasonUrl, episodeNumber, positionMs, durationMs)
+            cachedEntries = next
+            prefs(context).edit().putString(KEY, encode(next)).apply()
+        }
     }
 
     /** Position enregistrée d'un épisode (0 si absent). */

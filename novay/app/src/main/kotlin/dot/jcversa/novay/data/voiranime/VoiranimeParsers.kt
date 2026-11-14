@@ -4,7 +4,8 @@ import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.StreamQuality
 import java.net.URI
-import java.util.Base64
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 /** Une entrée organisée (saison déduite, null pour les films). */
 data class FranchiseEntry(
@@ -323,11 +324,12 @@ object VoiranimeParsers {
     )
 
     /** Décodeur base64 tolérant URL-safe (identique b64UrlSafeDecode du bot). */
+    @OptIn(ExperimentalEncodingApi::class)
     private fun b64UrlSafeDecode(s: String): ByteArray {
-        var t = s.replace("-", "+").replace("_", "/")
+        var t = s.filterNot { it.isWhitespace() }.replace("-", "+").replace("_", "/")
         val r = t.length % 4
         if (r != 0) t += "=".repeat(4 - r)
-        return Base64.getDecoder().decode(t)
+        return Base64.decode(t)
     }
 
     private fun rot13(s: String): String {

@@ -56,13 +56,14 @@ fun Modifier.bounceClick(
         isHovered && enabled -> 1.015f
         else -> 1f
     }
-    val scale by animateFloatAsState(
+    val scaleState = animateFloatAsState(
         targetValue = targetScale,
         animationSpec = motion.effectFloatSpec(),
         label = "press_scale"
     )
     return this
         .graphicsLayer {
+            val scale = scaleState.value
             scaleX = scale
             scaleY = scale
         }
@@ -150,11 +151,11 @@ fun PredictiveBackContainer(
         }
     }
 
-    val activeProgress = if (motion.reduceMotion) 0f else animatedProgress.value
     Box(
         modifier = modifier
             .fillMaxSize()
             .graphicsLayer {
+                val activeProgress = if (motion.reduceMotion) 0f else animatedProgress.value
                 if (activeProgress > 0f) {
                     val scale = 1f - (0.085f * activeProgress)
                     val direction = if (swipeEdge == BackEventCompat.EDGE_RIGHT) -1f else 1f

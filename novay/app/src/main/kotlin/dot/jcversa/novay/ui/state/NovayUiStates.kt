@@ -95,6 +95,57 @@ sealed interface BrowseSearchState {
     data class Results(val results: List<AnimeSearchResult>) : BrowseSearchState
 }
 
+enum class BrowseSearchDisplay {
+    SpotlightIdle,
+    FocusedEmptySuggestions,
+    TypingSuggestions,
+    LoadingResults,
+    Results,
+    EmptyResults,
+    Error,
+}
+
+enum class SuggestionQuerySource {
+    RECENT,
+    POPULAR,
+}
+
+enum class AnimeSuggestionOrigin(val label: String) {
+    LIBRARY("Bibliothèque"),
+    HISTORY("Historique"),
+    FEATURED("À la une"),
+    LIVE_CATALOG("Catalogue"),
+}
+
+@Immutable
+data class HighlightSpan(
+    val start: Int,
+    val endExclusive: Int,
+)
+
+@Immutable
+data class QuerySuggestionUi(
+    val query: String,
+    val source: SuggestionQuerySource,
+    val spans: List<HighlightSpan> = emptyList(),
+)
+
+@Immutable
+data class AnimeSuggestionUi(
+    val anime: AnimeSearchResult,
+    val origin: AnimeSuggestionOrigin,
+    val spans: List<HighlightSpan> = emptyList(),
+)
+
+@Immutable
+data class SmartSearchSuggestionsUi(
+    val querySuggestions: List<QuerySuggestionUi> = emptyList(),
+    val localAnime: List<AnimeSuggestionUi> = emptyList(),
+    val liveAnime: List<AnimeSuggestionUi> = emptyList(),
+    val popularTags: List<String> = emptyList(),
+    val isLiveLoading: Boolean = false,
+)
+
 @Immutable
 data class HistoryDayGroup(
     val dayLabel: String,

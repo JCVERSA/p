@@ -37,13 +37,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.ErrorOutline
-import androidx.compose.material.icons.rounded.Movie
-import androidx.compose.material.icons.rounded.RadioButtonUnchecked
-import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -95,6 +88,7 @@ import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LangPill
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
+import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.SlateMotion
 import dot.jcversa.novay.ui.components.SwiftSlateSpinner
@@ -125,21 +119,8 @@ fun EpisodesScreen(
     onBack: () -> Unit,
     onOpenPlayer: (episode: AnimeEpisode, offlineStream: ResolvedStream?) -> Unit
 ) {
-    val context = LocalContext.current
     var seasonTotal by remember(season.url) { mutableStateOf<Int?>(null) }
     var doneCount by remember(season.url) { mutableIntStateOf(0) }
-
-    LaunchedEffect(season.url) {
-        val seasonUrl = season.url.trimEnd('/')
-        while (true) {
-            doneCount = withContext(Dispatchers.IO) {
-                runCatching { Downloads.snapshot(context) }
-                    .getOrDefault(emptyList())
-                    .count { it.meta?.seasonUrl?.trimEnd('/') == seasonUrl && it.isCompleted }
-            }
-            delay(1500)
-        }
-    }
 
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
 
@@ -169,6 +150,7 @@ fun EpisodesScreen(
             season = season,
             onOpenPlayer = onOpenPlayer,
             onLoadedCount = { seasonTotal = it },
+            onDoneCountChange = { doneCount = it },
             showSeasonHeader = false,
             modifier = Modifier
                 .weight(1f)
@@ -191,6 +173,7 @@ fun EpisodesPane(
     modifier: Modifier = Modifier,
     showSeasonHeader: Boolean = false,
     onLoadedCount: (Int) -> Unit = {},
+    onDoneCountChange: (Int) -> Unit = {},
 ) {
     val context = LocalContext.current
     val bottomChrome = LocalBottomChromePadding.current
@@ -241,13 +224,8 @@ fun EpisodesPane(
         }
     }
 
-    LaunchedEffect(season.url) {
-        while (true) {
-            infos = withContext(Dispatchers.IO) {
-                runCatching { Downloads.snapshot(context) }.getOrDefault(emptyList())
-            }
-            delay(1000)
-        }
+    LaunchedEffect(context) {
+        Downloads.observeSnapshots(context).collect { infos = it }
     }
 
     val motion = LocalSlateMotion.current
@@ -270,8 +248,8 @@ fun EpisodesPane(
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         // Android 7-9 : vrais fichiers dans Download/NoVaY/ -> permission
-        // de stockage demandee au premier telechargement (mutuellement
-        // exclusif avec le bloc ci-dessus, SDK different).
+        // de stockage demandee au premier telechargement (SDK different du
+        // bloc notifications ci-dessus, jamais les deux en meme temps).
         if (Build.VERSION.SDK_INT <= 28 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
             PackageManager.PERMISSION_GRANTED
@@ -355,6 +333,7 @@ fun EpisodesPane(
     }
 
     val done = remember(seasonInfos) { seasonInfos.count { it.isCompleted } }
+    LaunchedEffect(done) { onDoneCountChange(done) }
 
     Column(modifier = modifier) {
         if (showSeasonHeader) {
@@ -451,7 +430,7 @@ fun EpisodesPane(
                     EpisodesListSkeleton()
                 }
                 "empty" -> EmptyScreen(
-                    icon = Icons.Rounded.Movie,
+                    icon = NovayIcons.ClapperFilm,
                     headingText = "Aucun épisode",
                     subtitleText = "Aucun épisode n'est encore disponible pour cette saison.",
                     modifier = Modifier.padding(bottom = bottomChrome),
@@ -693,9 +672,9 @@ private fun EpisodeRow(
             if (selectionMode) {
                 Icon(
                     imageVector = if (isSelected) {
-                        Icons.Rounded.CheckCircle
+                        NovayIcons.CheckCircle
                     } else {
-                        Icons.Rounded.RadioButtonUnchecked
+                        NovayIcons.UncheckedCircle
                     },
                     contentDescription = if (isSelected) "Sélectionné" else "Non sélectionné",
                     tint = if (isSelected) {
@@ -765,7 +744,7 @@ private fun EpisodeDownloadIndicator(
             modifier = Modifier.minimumInteractiveComponentSize(),
         ) {
             Icon(
-                imageVector = Icons.Rounded.Schedule,
+                imageVector = NovayIcons.QueuedClock,
                 contentDescription = "En file d'attente",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -793,7 +772,7 @@ private fun EpisodeDownloadIndicator(
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                imageVector = Icons.Rounded.CheckCircle,
+                imageVector = NovayIcons.CheckCircle,
                 contentDescription = "Téléchargé — lecture hors-ligne",
                 tint = MaterialTheme.colorScheme.tertiary,
             )
@@ -803,7 +782,7 @@ private fun EpisodeDownloadIndicator(
             modifier = Modifier.minimumInteractiveComponentSize(),
         ) {
             Icon(
-                imageVector = Icons.Rounded.ErrorOutline,
+                imageVector = NovayIcons.ErrorSeal,
                 contentDescription = "Échec — réessayer le téléchargement",
                 tint = MaterialTheme.colorScheme.error,
             )
@@ -816,7 +795,7 @@ private fun EpisodeDownloadIndicator(
                 .testTag("episode_download_button"),
         ) {
             Icon(
-                imageVector = Icons.Rounded.Download,
+                imageVector = NovayIcons.Download,
                 contentDescription = "Télécharger l'épisode",
                 tint = MaterialTheme.colorScheme.primary,
             )

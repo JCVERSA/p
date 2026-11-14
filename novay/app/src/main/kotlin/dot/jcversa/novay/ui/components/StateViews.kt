@@ -11,9 +11,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CloudOff
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -70,7 +67,7 @@ fun ErrorView(message: String, onRetry: () -> Unit, modifier: Modifier = Modifie
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = Icons.Outlined.CloudOff,
+                        imageVector = NovayIcons.OfflineCloud,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(30.dp),
@@ -103,7 +100,7 @@ fun ErrorView(message: String, onRetry: () -> Unit, modifier: Modifier = Modifie
                     .testTag("error_retry_button"),
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.Refresh,
+                    imageVector = NovayIcons.Refresh,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp),
                 )
