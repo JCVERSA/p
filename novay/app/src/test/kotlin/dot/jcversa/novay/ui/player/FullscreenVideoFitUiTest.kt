@@ -12,7 +12,8 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -39,7 +40,9 @@ import org.robolectric.annotation.Config
 class FullscreenVideoFitUiTest {
 
     @get:Rule
-    val composeRule = createComposeRule()
+    // ComponentActivity est declaree par ui-test-manifest : createComposeRule
+    // seul ne trouve pas d'activité lançable sous Robolectric.
+    val composeRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
     fun `fullscreen_video_fitted_box centre et encadre sans rognage 16_9, 4_3 et portrait 9_16 en paysage`() {
