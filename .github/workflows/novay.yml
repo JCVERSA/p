@@ -142,58 +142,49 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[probe]'))
     runs-on: ubuntu-24.04
     steps:
-      - name: Sonde
+      - name: Preparation
         run: |
-          say() { echo "::notice::${1:0:240}"; }
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           O="https://anime-sama.to"
-
-          # TOUS les panneaux de naruto et solo-leveling (paires nom:sous-chemin)
-          for slug in naruto solo-leveling; do
-            curl -sS -A "$UA" --max-time 20 "$O/catalogue/$slug/" -o /tmp/a.html 2>/dev/null
-            pairs=$(grep -oE 'panneauAnime\("[^"]+", *"[^"]+"\)' /tmp/a.html | sed 's/panneauAnime(//;s/"//g;s/, */:/' | tr '\n' '|')
-            say "$slug total => $(echo "$pairs" | grep -o '|' | wc -l) panneaux"
-            echo "$pairs" | tr '|' '\n' | grep -v '^$' | paste -sd '|' - | fold -w 210 | while IFS= read -r chunk; do
-              say "$slug panneaux => $chunk"
-            done
-            # selecteur de langue dans la page
-            say "$slug selector => $(grep -oE '<(select|button|label|a|div) [^>]{0,90}(langue|vf|vostfr)[^>]{0,90}' /tmp/a.html | grep -viE 'panneau|saison' | head -n 3 | tr '\n\r' '||')"
-          done
-
-          # Les pages de saison VF existent-elles directement ?
-          for u in "catalogue/naruto/saison1/vf/" "catalogue/solo-leveling/saison1/vf/"; do
-            c=$(curl -sS -o /tmp/v.html --max-time 15 -A "$UA" -w '%{http_code} %{size_download}' "$O/$u" 2>/dev/null)
-            say "vf $u => $c, eps arrays => $(grep -cE 'eps[0-9]+ *=' /tmp/v.html || true), jeton => $(grep -c epsJeton /tmp/v.html || true)"
-          done
-
-          # Page d'accueil : structure pour l'onglet Catalogue (sections
-          # recents / populaires) — dump compact via notices. set +e : un
-          # grep sans match ne doit jamais couter la sonde (pipefail).
           set +e
-          curl -sS -A "$UA" --max-time 20 "$O/" -o /tmp/home.html 2>/dev/null
+          curl -sS -A "$UA" --max-time 25 "$O/" -o /tmp/home.html 2>/dev/null
           tr -d '\n\r' < /tmp/home.html > /tmp/home1.html
-          say "home size => $(wc -c < /tmp/home.html), cartes catalogue => $(grep -coE 'href=\"[^\"]*/catalogue/[a-z0-9-]+/?\"' /tmp/home1.html)"
-          # Histogramme des classes (top 20) — structure des sections/cartes.
-          grep -oE 'class=\"[a-z0-9 _-]{2,50}\"' /tmp/home1.html | sort | uniq -c | sort -rn | head -n 20 | while IFS= read -r l; do
+          curl -sS -A "$UA" --max-time 25 "$O/catalogue/" -o /tmp/cat.html 2>/dev/null
+          tr -d '\n\r' < /tmp/cat.html > /tmp/cat1.html
+          echo "UA=$UA" >> "$GITHUB_ENV"
+          echo "O=$O" >> "$GITHUB_ENV"
+
+      # ── 10 notices max par step (plafond GitHub) ──
+      - name: Home classes
+        run: |
+          set +e
+          say() { echo "::notice::${1:0:240}"; }
+          say "home size => $(wc -c < /tmp/home1.html), liens catalogue => $(grep -oE '/catalogue/[a-z0-9-]+/?' /tmp/home1.html | sort -u | wc -l)"
+          grep -oE 'class="[a-z0-9 _-]{2,50}"' /tmp/home1.html | sort | uniq -c | sort -rn | head -n 9 | while IFS= read -r l; do
             say "home class => $l"
           done
-          # Occurrences de top/populaire & compagnie avec contexte.
-          grep -oE '.{60}(top|populair|dernier|nouveaut)[a-zéèê]*.{60}' /tmp/home1.html | head -n 6 | sed 's/"/~/g' | while IFS= read -r l; do
-            say "home motctx => $l"
-          done
-          # Contexte des 3 premiers liens catalogue (carte + section).
-          grep -oE '.{260}/catalogue/[a-z0-9-]+/?.{200}' /tmp/home1.html | head -n 3 | sed 's/"/~/g' | while IFS= read -r c; do
-            echo "$c" | fold -w 200 | while IFS= read -r chunk; do say "home card => $chunk"; done
-          done
-          # Squelette textuel (sans balises) : de quoi parle la page ?
-          sed 's/<script[\s\S]*?<\/script>//g' /tmp/home1.html | sed 's/<[^>]*>/~/g' | sed 's/~~*/~/g' | head -c 1600 | fold -w 200 | while IFS= read -r chunk; do
-            say "home texte => $chunk"
+
+      - name: Home cartes
+        run: |
+          set +e
+          say() { echo "::notice::${1:0:240}"; }
+          grep -oE '.{300}/catalogue/[a-z0-9-]+/?.{150}' /tmp/home1.html | head -n 8 | sed 's/"/~/g' | while IFS= read -r c; do
+            echo "$c" | fold -w 230 | while IFS= read -r chunk; do say "card => $chunk"; done
           done
 
-          # Page catalogue complete (liste de tous les animes).
-          curl -sS -A "$UA" --max-time 20 "$O/catalogue/" -o /tmp/cat.html 2>/dev/null
-          tr -d '\n\r' < /tmp/cat.html > /tmp/cat1.html
-          say "catalogue size => $(wc -c < /tmp/cat.html), animes => $(grep -oE '/catalogue/[a-z0-9-]+/?' /tmp/cat1.html | sort -u | wc -l)"
-          grep -oE '.{200}/catalogue/[a-z0-9-]+/?.{200}' /tmp/cat1.html | head -n 2 | sed 's/"/~/g' | while IFS= read -r c; do
-            echo "$c" | fold -w 200 | while IFS= read -r chunk; do say "cat card => $chunk"; done
+      - name: Home texte
+        run: |
+          set +e
+          say() { echo "::notice::${1:0:240}"; }
+          sed 's/<script[\s\S]*?<\/script>//g; s/<style[\s\S]*?<\/style>//g' /tmp/home1.html | sed 's/<[^>]*>/~/g' | sed 's/~\+/~/g' | sed 's/  \+/ /g' | head -c 2200 | fold -w 230 | while IFS= read -r chunk; do
+            say "texte => $chunk"
+          done
+
+      - name: Catalogue page
+        run: |
+          set +e
+          say() { echo "::notice::${1:0:240}"; }
+          say "cat size => $(wc -c < /tmp/cat1.html), animes => $(grep -oE '/catalogue/[a-z0-9-]+/?' /tmp/cat1.html | sort -u | wc -l)"
+          grep -oE '.{250}/catalogue/[a-z0-9-]+/?.{150}' /tmp/cat1.html | head -n 6 | sed 's/"/~/g' | while IFS= read -r c; do
+            echo "$c" | fold -w 230 | while IFS= read -r chunk; do say "cat card => $chunk"; done
           done
