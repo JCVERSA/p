@@ -10,7 +10,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarColors
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
@@ -21,16 +20,6 @@ import androidx.compose.ui.text.style.TextOverflow
  * Barre d'app — portée de Mihon/Tachiyomi (Apache-2.0) : titre libre,
  * flèche retour, actions à droite, comportement de scroll M3.
  */
-object AppBar {
-    val defaultColors: TopAppBarColors
-        @Composable
-        @OptIn(ExperimentalMaterial3Api::class)
-        get() = TopAppBarDefaults.topAppBarColors(
-            containerColor = MaterialTheme.colorScheme.background,
-            scrolledContainerColor = MaterialTheme.colorScheme.surface,
-        )
-}
-
 /** Barre supérieure standard (pinned). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,7 +44,10 @@ fun NovayAppBar(
             }
         },
         actions = actions,
-        colors = AppBar.defaultColors,
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.background,
+            scrolledContainerColor = MaterialTheme.colorScheme.surface,
+        ),
         scrollBehavior = scrollBehavior,
     )
 }
