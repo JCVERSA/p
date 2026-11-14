@@ -31,7 +31,7 @@ import com.airbnb.lottie.compose.rememberLottieDynamicProperty
  *
  * Le dessin des icônes est monochrome (traits et remplissages) : les
  * propriétés dynamiques STROKE_COLOR/FILL_COLOR sur le sélecteur "**"
- *appliquent la teinte à toutes les couches.
+ * appliquent la teinte à toutes les couches.
  *
  * @param restartKey change la valeur pour rejouer l'animation (morphs
  *   play/pause, plein écran, sélection…).
@@ -59,7 +59,7 @@ fun NovayLottieIcon(
     val argb = effectiveTint.toArgb()
     val dynamicProperties = rememberLottieDynamicProperties(
         rememberLottieDynamicProperty(LottieProperty.STROKE_COLOR, argb, "**"),
-        rememberLottieDynamicProperty(LottieProperty.FILL_COLOR, argb, "**"),
+        rememberLottieDynamicProperty(LottieProperty.COLOR, argb, "**"),
     )
     val sized = if (size == Dp.Unspecified) modifier else modifier.size(size)
     Box(
