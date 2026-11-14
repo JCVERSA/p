@@ -33,7 +33,9 @@ import org.robolectric.annotation.Config
  * et que les modes portrait intégré et mini-lecteur flottant restent conformes.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+// SDK 35 : les sandbox Robolectric 36+ exigent Java 21, la CI construit
+// en JDK 17 - le cadrage video ne depend pas du niveau d API.
+@Config(sdk = [35])
 class FullscreenVideoFitUiTest {
 
     @get:Rule
