@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.BrightnessMedium
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.ScreenRotation
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Tune
@@ -602,6 +603,24 @@ private fun PlayerContent(
                 }
         )
 
+        // Verrouillage actif : les gestes sont morts, seul le bouton de
+        // déverrouillage répond (en haut à droite, discret).
+        if (controlsLocked) {
+            Icon(
+                imageVector = Icons.Outlined.Lock,
+                contentDescription = "Déverrouiller les contrôles",
+                tint = Color(0xB3FFFFFF),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 12.dp, end = 16.dp)
+                    .size(30.dp)
+                    .bounceClick(onClick = {
+                        controlsLocked = false
+                        controlsVisible = true
+                    })
+            )
+        }
+
         // Vitesse 2× pendant l'appui long.
         if (longPressFast) {
             Surface(
@@ -731,6 +750,22 @@ private fun PlayerContent(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                    // Verrouiller : fige gestes et contrôles (regarder
+                    // dans les transports sans déclencher des seeks).
+                    Icon(
+                        imageVector = Icons.Outlined.Lock,
+                        contentDescription = "Verrouiller les contrôles",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .bounceClick(onClick = {
+                                controlsLocked = true
+                                controlsVisible = false
+                                showQualities = false
+                                showSpeed = false
+                            })
+                    )
+                    Spacer(Modifier.width(12.dp))
                     // Rotation : bascule paysage/portrait, chacun en
                     // mode capteur (suit le sens où le téléphone est tenu).
                     Icon(
