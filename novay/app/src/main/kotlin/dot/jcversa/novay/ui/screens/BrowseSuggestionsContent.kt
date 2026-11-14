@@ -50,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.LocalSlateMotion
@@ -250,6 +251,7 @@ internal fun BrowseSuggestionsContent(
                 item(key = "typing_empty_hint", contentType = "typing_empty") {
                     EmptyScreen(
                         icon = NovayIcons.Search,
+                        lottieRes = R.raw.lottie_explore,
                         headingText = if (query.trim().length < 2) {
                             "Continue à taper…"
                         } else {

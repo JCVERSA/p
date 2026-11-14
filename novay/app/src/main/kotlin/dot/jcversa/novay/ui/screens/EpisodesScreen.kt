@@ -72,6 +72,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.AnimeSource
@@ -82,6 +83,7 @@ import dot.jcversa.novay.data.sama.SamaParsers
 import dot.jcversa.novay.downloads.Downloads
 import dot.jcversa.novay.ui.LocalBottomChromePadding
 import dot.jcversa.novay.ui.components.AppBarTitle
+import dot.jcversa.novay.ui.components.NovayLottieIcon
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.EpisodesListSkeleton
 import dot.jcversa.novay.ui.components.ErrorView
@@ -431,6 +433,7 @@ fun EpisodesPane(
                 }
                 "empty" -> EmptyScreen(
                     icon = NovayIcons.ClapperFilm,
+                    lottieRes = R.raw.lottie_film,
                     headingText = "Aucun épisode",
                     subtitleText = "Aucun épisode n'est encore disponible pour cette saison.",
                     modifier = Modifier.padding(bottom = bottomChrome),
@@ -670,18 +673,15 @@ private fun EpisodeRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (selectionMode) {
-                Icon(
-                    imageVector = if (isSelected) {
-                        NovayIcons.CheckCircle
-                    } else {
-                        NovayIcons.UncheckedCircle
-                    },
+                NovayLottieIcon(
+                    res = R.raw.lottie_checkbox,
                     contentDescription = if (isSelected) "Sélectionné" else "Non sélectionné",
                     tint = if (isSelected) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
+                    restartKey = isSelected,
                     modifier = Modifier.padding(end = 10.dp),
                 )
             }
@@ -743,8 +743,8 @@ private fun EpisodeDownloadIndicator(
             onClick = onDownload,
             modifier = Modifier.minimumInteractiveComponentSize(),
         ) {
-            Icon(
-                imageVector = NovayIcons.QueuedClock,
+            NovayLottieIcon(
+                res = R.raw.lottie_clock,
                 contentDescription = "En file d'attente",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -771,8 +771,8 @@ private fun EpisodeDownloadIndicator(
             modifier = Modifier.minimumInteractiveComponentSize(),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                imageVector = NovayIcons.CheckCircle,
+            NovayLottieIcon(
+                res = R.raw.lottie_checkcircle,
                 contentDescription = "Téléchargé — lecture hors-ligne",
                 tint = MaterialTheme.colorScheme.tertiary,
             )
@@ -781,8 +781,8 @@ private fun EpisodeDownloadIndicator(
             onClick = onDownload,
             modifier = Modifier.minimumInteractiveComponentSize(),
         ) {
-            Icon(
-                imageVector = NovayIcons.ErrorSeal,
+            NovayLottieIcon(
+                res = R.raw.lottie_alertcircle,
                 contentDescription = "Échec — réessayer le téléchargement",
                 tint = MaterialTheme.colorScheme.error,
             )
@@ -794,8 +794,8 @@ private fun EpisodeDownloadIndicator(
                 .minimumInteractiveComponentSize()
                 .testTag("episode_download_button"),
         ) {
-            Icon(
-                imageVector = NovayIcons.Download,
+            NovayLottieIcon(
+                res = R.raw.lottie_download,
                 contentDescription = "Télécharger l'épisode",
                 tint = MaterialTheme.colorScheme.primary,
             )

@@ -49,6 +49,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.R
 import dot.jcversa.novay.data.WatchHistory
 import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.ui.LocalBottomChromePadding
@@ -142,6 +143,7 @@ fun HistoryScreen(
                 "loading" -> RowListSkeleton(modifier = Modifier.padding(bottom = bottomChrome))
                 "empty" -> EmptyScreen(
                     icon = NovayIcons.HistoryClock,
+                    lottieRes = R.raw.lottie_clock,
                     headingText = "Aucun historique",
                     subtitleText = "Les épisodes que tu lances s'affichent ici avec ta position exacte pour reprendre instantanément.",
                     modifier = Modifier.padding(bottom = bottomChrome),

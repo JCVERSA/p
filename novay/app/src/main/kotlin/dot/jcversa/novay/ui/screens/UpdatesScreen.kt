@@ -45,6 +45,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSource
 import dot.jcversa.novay.data.Library
@@ -186,12 +187,14 @@ fun UpdatesScreen(
                 "loading" -> RowListSkeleton(modifier = Modifier.padding(bottom = bottomChrome))
                 "no_followed" -> EmptyScreen(
                     icon = NovayIcons.UpdatesSeal,
+                    lottieRes = R.raw.lottie_notification,
                     headingText = "Aucun animé suivi",
                     subtitleText = "Ajoute des animés en bibliothèque depuis le catalogue pour recevoir ici les nouveaux épisodes.",
                     modifier = Modifier.padding(bottom = bottomChrome),
                 )
                 "up_to_date" -> EmptyScreen(
                     icon = NovayIcons.UpdatesSeal,
+                    lottieRes = R.raw.lottie_notification,
                     headingText = "Tout est à jour",
                     subtitleText = if (checkError != null) {
                         "Dernière vérification incomplète : $checkError"

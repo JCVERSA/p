@@ -55,6 +55,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import dot.jcversa.novay.ui.components.LocalSlateMotion
+import dot.jcversa.novay.ui.components.NovayLottieIcon
+import dot.jcversa.novay.R
 import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.NovayPlayPauseMorphIcon
 import dot.jcversa.novay.ui.components.SwiftSlateSpinner
@@ -281,8 +283,8 @@ fun FloatingMiniPlayer(
                         onClick = onExpandToWatch,
                         testTag = "mini_player_expand_button",
                     ) {
-                        Icon(
-                            imageVector = NovayIcons.FullscreenEnter,
+                        NovayLottieIcon(
+                            res = R.raw.lottie_maximizeminimize,
                             contentDescription = null,
                             tint = overlays.videoControlsInk,
                             modifier = Modifier.size(16.dp),
@@ -313,10 +315,12 @@ fun FloatingMiniPlayer(
                         onClick = { playerManager.togglePlayPause() },
                         testTag = "mini_player_play_pause_button",
                     ) {
-                        NovayPlayPauseMorphIcon(
-                            isPlaying = playerManager.isPlaying,
+NovayLottieIcon(
+                            res = R.raw.lottie_playpause,
+                            contentDescription = if (playerManager.isPlaying) "Pause" else "Lecture",
                             tint = overlays.videoControlsInk,
                             size = 18.dp,
+                            restartKey = playerManager.isPlaying,
                         )
                     }
                 }

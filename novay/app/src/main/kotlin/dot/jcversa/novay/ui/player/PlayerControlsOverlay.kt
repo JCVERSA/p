@@ -61,6 +61,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import dev.chrisbanes.haze.rememberHazeState
 import dot.jcversa.novay.ui.components.AnimateEntrance
+import dot.jcversa.novay.ui.components.NovayLottieIcon
+import dot.jcversa.novay.R
 import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.NovayPlayPauseMorphIcon
 import dot.jcversa.novay.ui.components.SwiftSlateSpinner
@@ -471,8 +473,8 @@ fun EmbeddedVideoPlayer(
                                 .minimumInteractiveComponentSize()
                                 .testTag("embedded_quality_button"),
                         ) {
-                            Icon(
-                                imageVector = NovayIcons.QualitySliders,
+                            NovayLottieIcon(
+                                res = R.raw.lottie_settings2,
                                 contentDescription = "Qualité vidéo",
                                 tint = if (activeSheet == SelectorSheet.QUALITY) {
                                     MaterialTheme.colorScheme.primary
@@ -508,8 +510,8 @@ fun EmbeddedVideoPlayer(
                             .minimumInteractiveComponentSize()
                             .testTag("embedded_minimize_button"),
                     ) {
-                        Icon(
-                            imageVector = NovayIcons.MinimizePlayer,
+                        NovayLottieIcon(
+                            res = R.raw.lottie_minimize2,
                             contentDescription = "Réduire en mini-lecteur",
                             tint = overlays.videoControlsInk,
                             modifier = Modifier.size(20.dp),
@@ -537,10 +539,12 @@ fun EmbeddedVideoPlayer(
                             .bounceClick(onClick = { playerManager.togglePlayPause() })
                             .testTag("embedded_play_pause_button"),
                     ) {
-                        NovayPlayPauseMorphIcon(
-                            isPlaying = playerManager.isPlaying,
+                        NovayLottieIcon(
+                            res = R.raw.lottie_playpause,
+                            contentDescription = if (playerManager.isPlaying) "Pause" else "Lecture",
                             tint = overlays.videoControlsInk,
                             size = 30.dp,
+                            restartKey = playerManager.isPlaying,
                         )
                     }
                 }
@@ -598,8 +602,8 @@ fun EmbeddedVideoPlayer(
                             .minimumInteractiveComponentSize()
                             .testTag("player_fullscreen_button"),
                     ) {
-                        Icon(
-                            imageVector = NovayIcons.FullscreenEnter,
+                        NovayLottieIcon(
+                            res = R.raw.lottie_maximizeminimize,
                             contentDescription = "Plein écran paysage",
                             tint = overlays.videoControlsInk,
                             modifier = Modifier.size(20.dp),
@@ -850,8 +854,8 @@ fun FullscreenPlayerOverlay(
                     )
                     .testTag("player_unlock_button"),
             ) {
-                Icon(
-                    imageVector = NovayIcons.Lock,
+                NovayLottieIcon(
+                    res = R.raw.lottie_lock,
                     contentDescription = "Déverrouiller les contrôles",
                     tint = overlays.videoControlsInk,
                     modifier = Modifier.size(24.dp),
@@ -898,10 +902,11 @@ fun FullscreenPlayerOverlay(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Icon(
-                        imageVector = if (vf.isBrightness) NovayIcons.Brightness else NovayIcons.Volume,
+                    NovayLottieIcon(
+                        res = if (vf.isBrightness) R.raw.lottie_sun else R.raw.lottie_volume,
                         contentDescription = null,
                         tint = overlays.videoControlsInk,
+                        loop = true,
                     )
                     Text(
                         text = "${vf.percentage} %",
@@ -1025,8 +1030,8 @@ fun FullscreenPlayerOverlay(
                             .minimumInteractiveComponentSize()
                             .testTag("player_lock_button"),
                     ) {
-                        Icon(
-                            imageVector = NovayIcons.Lock,
+                        NovayLottieIcon(
+                            res = R.raw.lottie_lock,
                             contentDescription = "Verrouiller les contrôles",
                             tint = overlays.videoControlsInk,
                         )
@@ -1060,8 +1065,8 @@ fun FullscreenPlayerOverlay(
                                 .minimumInteractiveComponentSize()
                                 .testTag("player_quality_button"),
                         ) {
-                            Icon(
-                                imageVector = NovayIcons.QualitySliders,
+                            NovayLottieIcon(
+                                res = R.raw.lottie_settings2,
                                 contentDescription = "Qualité",
                                 tint = if (activeSheet == SelectorSheet.QUALITY) {
                                     MaterialTheme.colorScheme.primary
@@ -1110,10 +1115,12 @@ fun FullscreenPlayerOverlay(
                             .bounceClick(onClick = { playerManager.togglePlayPause() })
                             .testTag("player_play_pause_button"),
                     ) {
-                        NovayPlayPauseMorphIcon(
-                            isPlaying = playerManager.isPlaying,
+                        NovayLottieIcon(
+                            res = R.raw.lottie_playpause,
+                            contentDescription = if (playerManager.isPlaying) "Pause" else "Lecture",
                             tint = overlays.videoControlsInk,
                             size = 38.dp,
+                            restartKey = playerManager.isPlaying,
                         )
                     }
                 }
@@ -1169,8 +1176,8 @@ fun FullscreenPlayerOverlay(
                             .minimumInteractiveComponentSize()
                             .testTag("fullscreen_exit_button"),
                     ) {
-                        Icon(
-                            imageVector = NovayIcons.FullscreenExit,
+                        NovayLottieIcon(
+                            res = R.raw.lottie_maximizeminimize,
                             contentDescription = "Sortir du plein écran",
                             tint = overlays.videoControlsInk,
                         )

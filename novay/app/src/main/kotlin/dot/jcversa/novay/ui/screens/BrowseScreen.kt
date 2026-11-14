@@ -71,6 +71,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.AnimeSource
@@ -400,6 +401,7 @@ fun BrowseScreen(
 
                 BrowseSearchDisplay.EmptyResults -> EmptyScreen(
                     icon = NovayIcons.Search,
+                    lottieRes = R.raw.lottie_explore,
                     headingText = "Aucun résultat",
                     subtitleText = "Rien trouvé pour « ${controller.trimmedQuery} » — vérifie l'orthographe ou essaie un mot-clé plus court.",
                     modifier = Modifier.padding(bottom = bottomChrome),
@@ -531,6 +533,7 @@ private fun IdleBrowseSpotlight(
                 item(key = "idle_empty", contentType = "empty") {
                     EmptyScreen(
                         icon = NovayIcons.Search,
+                        lottieRes = R.raw.lottie_explore,
                         headingText = "Explore le catalogue",
                         subtitleText = "Saisis au moins 2 lettres ou choisis un thème ci-dessus — la recherche gère automatiquement les variantes.",
                     )

@@ -53,6 +53,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.ResolvedStream
@@ -62,6 +63,7 @@ import dot.jcversa.novay.downloads.formatEta
 import dot.jcversa.novay.downloads.formatSpeed
 import dot.jcversa.novay.ui.LocalBottomChromePadding
 import dot.jcversa.novay.ui.components.AppBarTitle
+import dot.jcversa.novay.ui.components.NovayLottieIcon
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
@@ -201,6 +203,7 @@ fun DownloadsScreen(
                 if (isEmpty) {
                     EmptyScreen(
                         icon = NovayIcons.DownloadDone,
+                        lottieRes = R.raw.lottie_download,
                         headingText = "Aucun téléchargement",
                         subtitleText = "Ouvre une saison et touche l'icône de téléchargement sur un épisode pour choisir sa résolution hors-ligne.",
                         modifier = Modifier.padding(bottom = bottomChrome),
@@ -307,9 +310,10 @@ fun DownloadsScreen(
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
             ) {
-                Icon(
-                    imageVector = if (paused) NovayIcons.Play else NovayIcons.Pause,
+                NovayLottieIcon(
+                    res = R.raw.lottie_playpause,
                     contentDescription = null,
+                    restartKey = paused,
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(text = if (paused) "Reprendre" else "Mettre en pause")
@@ -396,8 +400,8 @@ private fun DownloadRow(
                             .minimumInteractiveComponentSize()
                             .testTag("download_play_button"),
                     ) {
-                        Icon(
-                            imageVector = NovayIcons.PlayCircle,
+                        NovayLottieIcon(
+                            res = R.raw.lottie_playpausecircle,
                             contentDescription = "Lire hors-ligne",
                             tint = MaterialTheme.colorScheme.tertiary,
                         )
@@ -409,8 +413,8 @@ private fun DownloadRow(
                         .minimumInteractiveComponentSize()
                         .testTag("download_remove_button"),
                 ) {
-                    Icon(
-                        imageVector = NovayIcons.DeleteTrash,
+                    NovayLottieIcon(
+                        res = R.raw.lottie_trash2,
                         contentDescription = "Supprimer le téléchargement",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

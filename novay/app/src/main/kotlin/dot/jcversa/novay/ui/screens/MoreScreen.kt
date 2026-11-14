@@ -41,9 +41,11 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.R
 import dot.jcversa.novay.downloads.Downloads
 import dot.jcversa.novay.ui.LocalBottomChromePadding
 import dot.jcversa.novay.ui.components.AppBarTitle
+import dot.jcversa.novay.ui.components.NovayLottieIcon
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayBrandEditorialHeader
 import dot.jcversa.novay.ui.components.NovayIcons
@@ -121,6 +123,7 @@ fun MoreScreen(
                             else -> "Aucun téléchargement actif"
                         },
                         icon = NovayIcons.Download,
+                        lottieRes = R.raw.lottie_download,
                         modifier = Modifier.testTag("more_open_downloads"),
                         onPreferenceClick = onOpenDownloads,
                     )
@@ -153,6 +156,7 @@ fun MoreScreen(
                             title = "Wi-Fi uniquement",
                             subtitle = "Met en pause en 4G/5G et reprend automatiquement en Wi-Fi.",
                             icon = NovayIcons.WifiSignal,
+                            lottieRes = R.raw.lottie_wifi,
                             checked = wifiOnly,
                             testTagName = "more_wifi_switch",
                             onCheckedChanged = { checked ->
@@ -208,6 +212,8 @@ private fun TextPreferenceWidget(
     subtitle: String,
     icon: ImageVector,
     modifier: Modifier = Modifier,
+    // V2.7 : icône animée Lottie en lieu et place de l'ImageVector.
+    lottieRes: Int? = null,
     onPreferenceClick: () -> Unit,
 ) {
     Row(
@@ -219,11 +225,19 @@ private fun TextPreferenceWidget(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-        )
+        if (lottieRes != null) {
+            NovayLottieIcon(
+                res = lottieRes,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
         Spacer(Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(text = title, style = MaterialTheme.typography.bodyLarge)
@@ -248,6 +262,8 @@ private fun SwitchPreferenceWidget(
     icon: ImageVector,
     checked: Boolean,
     testTagName: String,
+    // V2.7 : icône animée Lottie en lieu et place de l'ImageVector.
+    lottieRes: Int? = null,
     onCheckedChanged: (Boolean) -> Unit,
 ) {
     Row(
@@ -258,11 +274,19 @@ private fun SwitchPreferenceWidget(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-        )
+        if (lottieRes != null) {
+            NovayLottieIcon(
+                res = lottieRes,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
         Spacer(Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(text = title, style = MaterialTheme.typography.bodyLarge)

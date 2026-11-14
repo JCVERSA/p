@@ -67,6 +67,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.Library
 import dot.jcversa.novay.data.WatchHistory
@@ -290,12 +291,14 @@ fun LibraryScreen(
                     }
                     stateKey == "empty" -> EmptyScreen(
                         icon = NovayIcons.LibraryShelf,
+                        lottieRes = R.raw.lottie_bookmark,
                         headingText = "Ta bibliothèque t'attend",
                         subtitleText = "Explore le catalogue et touche le cœur sur un anime pour le suivre ici et détecter ses nouveaux épisodes.",
                         modifier = Modifier.padding(bottom = bottomChrome),
                     )
                     stateKey.startsWith("filter_empty_") -> EmptyScreen(
                         icon = NovayIcons.LibraryShelf,
+                        lottieRes = R.raw.lottie_bookmark,
                         headingText = "Aucun anime en ${filter.label}",
                         subtitleText = "Change de filtre de langue pour afficher tes autres animés suivis.",
                         modifier = Modifier.padding(bottom = bottomChrome),

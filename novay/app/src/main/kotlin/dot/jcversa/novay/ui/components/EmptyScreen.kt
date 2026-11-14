@@ -34,6 +34,8 @@ fun EmptyScreen(
     headingText: String,
     subtitleText: String,
     modifier: Modifier = Modifier,
+    // V2.7 : icône animée Lottie en lieu et place de l'ImageVector.
+    lottieRes: Int? = null,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val surfaceHigh = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -71,12 +73,22 @@ fun EmptyScreen(
                     modifier = Modifier.size(72.dp),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(34.dp),
-                            tint = primary,
-                        )
+                        if (lottieRes != null) {
+                            NovayLottieIcon(
+                                res = lottieRes,
+                                contentDescription = null,
+                                size = 34.dp,
+                                tint = primary,
+                                loop = true,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                modifier = Modifier.size(34.dp),
+                                tint = primary,
+                            )
+                        }
                     }
                 }
             }
