@@ -1,0 +1,19 @@
+# Build
+build/
+.gradle/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Signature (cree par la CI, jamais commité)
+debug.keystore
+*.jks
+*.keystore
+
+# Divers
+.DS_Store
+captures/
+.cxx/

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- V1 : scrape des catalogues + streaming HLS depuis le telephone. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- V2 : telechargements en arriere-plan (service foreground dataSync
+         + notification de progression, rejet possible sur Android 13+ sans
+         interrompre les telechargements). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- V2.5 : vrais fichiers dans Download/NoVaY/. Android 10+ les publie
+         via MediaStore (aucune permission) ; Android 7-9 ecrivent via
+         l'API File classique et exigent WRITE_EXTERNAL_STORAGE (accordee
+         a l'installation, revoquee par defaut des Android 10). -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <application
+        android:name=".NovayApp"
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.NoVaY">
+        <!-- Lecteur video : la rotation (paysage force par le lecteur) ne
+             doit JAMAIS recree l activite - Compose recompose
+             naturellement, la lecture continue et la pile de navigation
+             survit (sinon : retour immediate a l accueil). -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|keyboard|keyboardHidden|navigation"
+            android:theme="@style/Theme.NoVaY">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- V2 : telechargements en arriere-plan (progression en
+             notification, reprise apres redemarrage). -->
+        <service
+            android:name=".downloads.NovayDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+
+</manifest>

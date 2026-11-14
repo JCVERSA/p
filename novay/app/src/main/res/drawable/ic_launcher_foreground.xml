@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- NoVaY — monogramme N Cinema Crimson (#E11D48 / #FB7185) dans la zone sûre 66dp. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Barre gauche -->
+    <path
+        android:fillColor="#E11D48"
+        android:pathData="M34,32 L43,32 L43,76 L34,76 Z" />
+    <!-- Barre droite -->
+    <path
+        android:fillColor="#E11D48"
+        android:pathData="M65,32 L74,32 L74,76 L65,76 Z" />
+    <!-- Diagonale cinema crimson lumineuse -->
+    <path
+        android:fillColor="#FB3758"
+        android:pathData="M34,32 L43,32 L74,67 L74,76 L65,76 L34,41 Z" />
+    <!-- Liseré supérieur discret -->
+    <path
+        android:fillColor="#FDA4AF"
+        android:pathData="M34,32 L43,32 L43,34 L34,34 Z" />
+</vector>
