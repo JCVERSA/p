@@ -555,7 +555,8 @@ object SamaParsers {
 
     private val DATA_URL_ATTR_RE = Regex("data-url\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
     private val DATA_NOM_ATTR_RE = Regex("data-nom\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
-\n    fun resolveUrl(url: String, base: String): String = try {
+
+    fun resolveUrl(url: String, base: String): String = try {
         URI(base).resolve(url).toString()
     } catch (_: Exception) {
         url

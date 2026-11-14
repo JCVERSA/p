@@ -64,6 +64,7 @@ import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LoadingView
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.PosterImage
+import dot.jcversa.novay.ui.theme.header
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Random
@@ -322,7 +323,7 @@ private fun HeroPager(
     // Défilement auto, en boucle, tant que l'utilisateur ne touche pas.
     LaunchedEffect(pagerState) {
         while (true) {
-            delay(6000)
+            delay(6000L)
             if (!pagerState.isScrollInProgress && pagerState.pageCount > 1) {
                 pagerState.animateScrollToPage((pagerState.currentPage + 1) % pagerState.pageCount)
             }
