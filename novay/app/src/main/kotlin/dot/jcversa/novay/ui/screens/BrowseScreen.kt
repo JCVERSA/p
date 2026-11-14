@@ -236,7 +236,7 @@ private fun HomeContent(
     val recent = home.cards.take(RECENT_LIMIT)
     val random = remember(randomSeed, home) {
         if (home.cards.isEmpty()) emptyList()
-        else home.cards.shuffled(Random(randomSeed)).take(RANDOM_COUNT)
+        else home.cards.shuffled(Random(randomSeed.toLong())).take(RANDOM_COUNT)
     }
 
     LazyVerticalGrid(
