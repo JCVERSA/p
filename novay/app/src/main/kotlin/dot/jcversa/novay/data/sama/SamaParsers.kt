@@ -426,15 +426,19 @@ object SamaParsers {
             "amp" to "&", "lt" to "<", "gt" to ">", "quot" to "\"",
             "apos" to "'", "nbsp" to " ", "#039" to "'", "#39" to "'"
         )
-        return Regex("&(#x?[0-9a-zA-Z]+);").replace(input) { m ->
+        return Regex("&(#?x?[0-9a-zA-Z]+);").replace(input) { m ->
             val key = m.groupValues[1]
-            named[key] ?: when {
-                key.startsWith("x") -> key.substring(1).toIntOrNull(16)
-                    ?.toChar()?.toString()
-                key.startsWith("#") -> key.substring(1).toIntOrNull()
-                    ?.toChar()?.toString()
-                else -> null
-            } ?: m.value
+            val known = named[key]
+            if (known != null) {
+                known
+            } else {
+                // Numérique : #123 (décimal) ou #x1F (hexa).
+                val body = key.removePrefix("#")
+                val isHex = body.startsWith("x")
+                val digits = if (isHex) body.substring(1) else body
+                val code = digits.toIntOrNull(if (isHex) 16 else 10)
+                if (code != null) code.toChar().toString() else m.value
+            }
         }
     }
 
@@ -461,7 +465,7 @@ object SamaParsers {
         val seen = mutableSetOf<String>()
         // Découpe sur l'ouverture des slides ; le 1er morceau précède le
         // carrousel et est ignoré.
-        val chunks = html.split(Regex("<div class=\"ak-slide\\b"))
+        val chunks = html.split(Regex("<div class=\"ak-slide\""))
         for (chunk in chunks.drop(1)) {
             val head = chunk.substringBefore(">")
             if (head.contains("aria-hidden")) continue
