@@ -42,6 +42,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,6 +84,7 @@ import dot.jcversa.novay.ui.theme.Amber500
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -110,6 +113,23 @@ fun PlayerScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(initialStream == null) }
     var retryKey by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
+
+    // V2.2 : reprise a la position exacte ou l episode s etait arrete
+    // (index SharedPreferences, hors du thread principal).
+    var resumePositionMs by remember(episode.url, episode.number) { mutableStateOf(0L) }
+    LaunchedEffect(episode.url, episode.number) {
+        resumePositionMs = withContext(Dispatchers.IO) {
+            WatchHistory.positionOf(context, season.url, episode.number)
+        }
+    }
+
+    // Enregistrement de la position (periodique + fermeture du lecteur).
+    val recordProgress: (Long, Long) -> Unit = { pos, dur ->
+        scope.launch(Dispatchers.IO) {
+            WatchHistory.recordPosition(context, season.url, episode.number, pos, dur)
+        }
+    }
 
     LaunchedEffect(episode.url, retryKey) {
         if (initialStream == null) {
@@ -191,6 +211,8 @@ fun PlayerScreen(
             offline = offline,
             title = episode.label,
             subtitle = season.name + if (offline) " · hors-ligne" else "",
+            resumePositionMs = resumePositionMs,
+            onProgress = recordProgress,
             onBack = onBack
         )
     }
@@ -245,6 +267,8 @@ private fun PlayerContent(
     offline: Boolean,
     title: String,
     subtitle: String,
+    resumePositionMs: Long = 0L,
+    onProgress: (positionMs: Long, durationMs: Long) -> Unit = { _, _ -> },
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -270,6 +294,8 @@ private fun PlayerContent(
     val audioManager = remember {
         context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     }
+    // Position : callback toujours frais dans les effets (polling/dispose).
+    val currentOnProgress by rememberUpdatedState(onProgress)
     val window = (context as? Activity)?.window
 
     fun applyVolume(percent: Int) {
@@ -306,6 +332,9 @@ private fun PlayerContent(
     }
 
     LaunchedEffect(stream, selectedQualityUrl, offline) {
+        // Changement de qualite en cours de lecture : on conserve la
+        // position (0 au premier chargement, rien a restaurer).
+        val keepMs = player.currentPosition.coerceAtLeast(0L)
         val url = selectedQualityUrl ?: stream.url
         val mediaSource = if (offline) {
             // V2 : cache offline d'abord, réseau en repli (jamais écrit).
@@ -327,6 +356,47 @@ private fun PlayerContent(
         player.setMediaSource(mediaSource)
         player.prepare()
         player.playWhenReady = true
+        if (keepMs > 0L) player.seekTo(keepMs)
+    }
+
+    // V2.2 : reprise a la position exacte - des que la duree est connue
+    // (média préparé), on saute a la position enregistree. Une seule fois.
+    var resumed by remember { mutableStateOf(false) }
+    LaunchedEffect(resumePositionMs, player) {
+        if (resumePositionMs <= 0L || resumed) return@LaunchedEffect
+        while (player.duration <= 0L) delay(200)
+        player.seekTo(resumePositionMs)
+        resumed = true
+    }
+
+    // Enregistrement de la position : toutes les 5 s pendant la lecture
+    // (une coupure brutale ne perd que 5 s max). Plus de 95 % parcouru =
+    // episode fini : on reprendra du debut la prochaine fois.
+    LaunchedEffect(player) {
+        while (true) {
+            delay(5000)
+            if (!player.isPlaying) continue
+            val pos = player.currentPosition
+            val dur = player.duration
+            if (dur > 0L && pos > 3000L) {
+                val effective = if (pos > dur * 95L / 100L) 0L else pos
+                currentOnProgress(effective, dur)
+            }
+        }
+    }
+
+    // ... et la position finale a la fermeture du lecteur. Déclaré APRÈS
+    // le DisposableEffect du plein ecran (ordre LIFO : ce dispose-la
+    // s execute AVANT le release du player).
+    DisposableEffect(player) {
+        onDispose {
+            val pos = player.currentPosition
+            val dur = player.duration
+            if (dur > 0L && pos > 3000L) {
+                val effective = if (pos > dur * 95L / 100L) 0L else pos
+                currentOnProgress(effective, dur)
+            }
+        }
     }
 
     // Progression + état de lecture (polling léger, 2 fois par seconde).

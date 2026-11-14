@@ -133,6 +133,17 @@ class PlayerGestureMathTest {
     }
 
     @Test
+    fun `horloge qui demarre a zero, le cumul n est pas remis a zero`() {
+        // Non-regression : lastTapAt == 0 est une horloge valable (tests),
+        // pas une sentinel "jamais tape" - le 2e tap doit cumuler.
+        var t = 0L
+        val acc = DoubleTapSeekAccumulator(now = { t })
+        assertEquals(10_000L, acc.tap(forward = true))
+        t = 150L
+        assertEquals(20_000L, acc.tap(forward = true))
+    }
+
+    @Test
     fun `reset explicite`() {
         var t = 0L
         val acc = DoubleTapSeekAccumulator(now = { t })

@@ -77,6 +77,52 @@ class WatchHistoryTest {
     }
 
     @Test
+    fun `aller-retour json avec position et duree`() {
+        val e = entry("https://x/s1/", 7, watchedAt = 500L)
+            .copy(positionMs = 654_321L, durationMs = 1_440_000L)
+        val back = WatchHistory.decode(WatchHistory.encode(listOf(e)))
+        assertEquals(654_321L, back[0].positionMs)
+        assertEquals(1_440_000L, back[0].durationMs)
+    }
+
+    @Test
+    fun `json ancien sans position, retourne zero sans crash`() {
+        // Compatibilite ascendante : entrees ecrites avant la V2.2.
+        val raw = """
+[{"animeTitle":"Naruto","animeUrl":"u","posterUrl":"","seasonName":"S1","seasonUrl":"https://x/s1/","episodeNumber":3,"episodeLabel":"Épisode 3","lienIds":["lien:1"],"jeton":"j","watchedAt":123}]
+        """.trimIndent()
+        val back = WatchHistory.decode(raw)
+        assertEquals(1, back.size)
+        assertEquals(0L, back[0].positionMs)
+        assertEquals(0L, back[0].durationMs)
+    }
+
+    @Test
+    fun `withposition met a jour sans remonter l entree en tete`() {
+        val a = entry("https://x/s1/", 1, watchedAt = 100L)
+        val b = entry("https://x/s1/", 2, watchedAt = 200L)
+        val out = WatchHistory.withPosition(listOf(b, a), "https://x/s1/", 1, 42_000L, 1_400_000L)
+        // ordre inchange : b reste en tete
+        assertEquals(2, out[0].episodeNumber)
+        // seule l entree cible est modifiee
+        assertEquals(42_000L, out[1].positionMs)
+        assertEquals(1_400_000L, out[1].durationMs)
+        assertEquals(100L, out[1].watchedAt)
+        assertEquals(0L, out[0].positionMs)
+    }
+
+    @Test
+    fun `findposition retrouve la position et zero si absent`() {
+        val a = entry("https://x/s1/", 1).copy(positionMs = 99_000L)
+        val entries = listOf(a)
+        assertEquals(99_000L, WatchHistory.findPosition(entries, "https://x/s1/", 1))
+        // slash final insensible
+        assertEquals(99_000L, WatchHistory.findPosition(entries, "https://x/s1", 1))
+        assertEquals(0L, WatchHistory.findPosition(entries, "https://x/s1/", 2))
+        assertEquals(0L, WatchHistory.findPosition(emptyList(), "https://x/s1/", 1))
+    }
+
+    @Test
     fun `cle d unicite insensible au slash final`() {
         assertEquals(
             WatchHistory.entryKey("https://x/saison1/vf", 3),

@@ -73,6 +73,10 @@ class DoubleTapSeekAccumulator(
         private set
 
     private var lastTapAt = 0L
+    // Sentinelle séparée : lastTapAt == 0 est une horloge VALABLE (les
+    // tests injectent une horloge qui démarre à 0) — sans ce booléen, le
+    // 2e tap croyait qu'on n'avait jamais tapé et remettait le cumul à 0.
+    private var hasTapped = false
 
     /**
      * Un double-tap (moitié droite = avant, moitié gauche = arrière) :
@@ -80,7 +84,8 @@ class DoubleTapSeekAccumulator(
      */
     fun tap(forward: Boolean): Long {
         val t = now()
-        if (lastTapAt == 0L || t - lastTapAt > resetAfterMs) totalMs = 0L
+        if (!hasTapped || t - lastTapAt > resetAfterMs) totalMs = 0L
+        hasTapped = true
         lastTapAt = t
         totalMs += if (forward) incrementMs else -incrementMs
         return totalMs
@@ -89,5 +94,6 @@ class DoubleTapSeekAccumulator(
     fun reset() {
         totalMs = 0L
         lastTapAt = 0L
+        hasTapped = false
     }
 }

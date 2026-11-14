@@ -22,7 +22,11 @@ data class WatchHistoryEntry(
     val episodeLabel: String,
     val lienIds: List<String>,
     val jeton: String,
-    val watchedAt: Long
+    val watchedAt: Long,
+    /** Position de lecture (ms) — reprendre là où on s'était arrêté. */
+    val positionMs: Long = 0L,
+    /** Durée totale de l'épisode (ms), si connue. */
+    val durationMs: Long = 0L
 )
 
 /**
@@ -67,6 +71,8 @@ object WatchHistory {
                     .put("lienIds", JSONArray(e.lienIds))
                     .put("jeton", e.jeton)
                     .put("watchedAt", e.watchedAt)
+                    .put("positionMs", e.positionMs)
+                    .put("durationMs", e.durationMs)
             )
         }
         return arr.toString()
@@ -89,12 +95,42 @@ object WatchHistory {
                     episodeLabel = o.optString("episodeLabel"),
                     lienIds = if (liens == null) emptyList() else (0 until liens.length()).mapNotNull { liens.opt(it) as? String },
                     jeton = o.optString("jeton"),
-                    watchedAt = o.optLong("watchedAt")
+                    watchedAt = o.optLong("watchedAt"),
+                    positionMs = o.optLong("positionMs"),
+                    durationMs = o.optLong("durationMs")
                 )
             }
         } catch (_: Exception) {
             emptyList()
         }
+    }
+
+    /**
+     * Met à jour la position d'une entrée SANS la remonter en tête ni
+     * toucher à watchedAt (la reprise n'est pas une nouvelle lecture).
+     */
+    fun withPosition(
+        entries: List<WatchHistoryEntry>,
+        seasonUrl: String,
+        episodeNumber: Int,
+        positionMs: Long,
+        durationMs: Long
+    ): List<WatchHistoryEntry> {
+        val key = entryKey(seasonUrl, episodeNumber)
+        return entries.map {
+            if (entryKey(it.seasonUrl, it.episodeNumber) == key) {
+                it.copy(positionMs = positionMs, durationMs = durationMs)
+            } else {
+                it
+            }
+        }
+    }
+
+    /** Position enregistrée d'un épisode (0 si absent). */
+    fun findPosition(entries: List<WatchHistoryEntry>, seasonUrl: String, episodeNumber: Int): Long {
+        val key = entryKey(seasonUrl, episodeNumber)
+        return entries.firstOrNull { entryKey(it.seasonUrl, it.episodeNumber) == key }
+            ?.positionMs ?: 0L
     }
 
     // ── Persistance (SharedPreferences) ───────────────────────────────────
@@ -118,4 +154,28 @@ object WatchHistory {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().remove(KEY).apply()
     }
+
+    /**
+     * Enregistre la position de lecture d'un épisode (appelé toutes les
+     * 5 s par le lecteur + à sa fermeture).
+     */
+    fun recordPosition(
+        context: Context,
+        seasonUrl: String,
+        episodeNumber: Int,
+        positionMs: Long,
+        durationMs: Long
+    ) {
+        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString(
+                KEY,
+                encode(withPosition(decode(prefs.getString(KEY, null)), seasonUrl, episodeNumber, positionMs, durationMs))
+            )
+            .apply()
+    }
+
+    /** Position enregistrée d'un épisode (0 si absent). */
+    fun positionOf(context: Context, seasonUrl: String, episodeNumber: Int): Long =
+        findPosition(recent(context), seasonUrl, episodeNumber)
 }
