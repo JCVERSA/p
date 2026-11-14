@@ -13,10 +13,12 @@ class LibraryTest {
 
     private fun entry(
         url: String = "https://anime-sama.lu/catalogue/solo-leveling",
-        title: String = "Solo Leveling"
+        title: String = "Solo Leveling",
+        slug: String = ""
     ) = LibraryEntry(
         title = title,
         url = url,
+        slug = slug,
         posterUrl = "https://img/solo.jpg",
         languages = listOf("VOSTFR"),
         addedAt = 1_000L
