@@ -49,6 +49,10 @@ android {
     // Kotlin (comme src/main/java du panel) — on declare explicitement le
     // dossier test/kotlin pour ne pas dependre de la convention.
     getByName("test").java.srcDir("src/test/kotlin")
+    // Tests unitaires Robolectric : manifest dedie (activite lanzable
+    // pour les regles Compose — les manifests des libs de test ne sont
+    // pas fusionnes dans la config unitaire).
+    getByName("test").manifest.srcFile("src/test/AndroidManifest.xml")
   }
   testOptions {
     // V2.6 (owner) : tests UI Robolectric (cadrage video plein ecran).
