@@ -165,3 +165,31 @@ jobs:
             c=$(curl -sS -o /tmp/v.html --max-time 15 -A "$UA" -w '%{http_code} %{size_download}' "$O/$u" 2>/dev/null)
             say "vf $u => $c, eps arrays => $(grep -cE 'eps[0-9]+ *=' /tmp/v.html || true), jeton => $(grep -c epsJeton /tmp/v.html || true)"
           done
+
+          # Page d'accueil : structure pour l'onglet Catalogue (sections
+          # recents / populaires) — dump compact via notices.
+          curl -sS -A "$UA" --max-time 20 "$O/" -o /tmp/home.html 2>/dev/null
+          say "home size => $(wc -c < /tmp/home.html), cartes catalogue => $(grep -coE 'href="[^"]*/catalogue/[a-z0-9-]+/?"' /tmp/home.html || true)"
+          # Mots des titres de sections (populaires, derniers ajouts…).
+          grep -ioE '(populair|dernier|recent|récent|nouveaut|random|aléatoire|top)[a-zéèêà]*' /tmp/home.html | sort | uniq -c | sort -rn | head -n 6 | while IFS= read -r l; do
+            say "home mot => $l"
+          done
+          # Titres de sections (h1..h4, texte brut).
+          grep -oE '<h[1-4][^>]*>[^<]{2,70}' /tmp/home.html | sed 's/<[^>]*>//' | head -n 14 | while IFS= read -r t; do
+            say "home h => $t"
+          done
+          # Structure autour du premier titre de section (500 caracteres).
+          grep -oE '<h[1-4][^>]*>.{0,460}' /tmp/home.html | head -n 3 | sed 's/"/~/g' | while IFS= read -r w; do
+            echo "$w" | fold -w 200 | while IFS= read -r chunk; do say "home section => $chunk"; done
+          done
+          # Une carte d'anime complete (ancre vers catalogue + 400 caracteres).
+          grep -oE '<a [^>]*href="[^"]*/catalogue/[a-z0-9-]+/?"[^>]*>.{0,380}' /tmp/home.html | head -n 2 | sed 's/"/~/g' | while IFS= read -r c; do
+            echo "$c" | fold -w 200 | while IFS= read -r chunk; do say "home card => $chunk"; done
+          done
+
+          # Page catalogue complete (liste de tous les animes).
+          curl -sS -A "$UA" --max-time 20 "$O/catalogue/" -o /tmp/cat.html 2>/dev/null
+          say "catalogue size => $(wc -c < /tmp/cat.html), animes => $(grep -oE 'href="[^"]*/catalogue/[a-z0-9-]+/?"' /tmp/cat.html | sort -u | wc -l)"
+          grep -oE '<a [^>]*href="[^"]*/catalogue/[a-z0-9-]+/?"[^>]*>.{0,300}' /tmp/cat.html | head -n 1 | sed 's/"/~/g' | while IFS= read -r c; do
+            echo "$c" | fold -w 200 | while IFS= read -r chunk; do say "cat card => $chunk"; done
+          done
