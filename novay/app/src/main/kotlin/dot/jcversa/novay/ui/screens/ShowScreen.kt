@@ -67,6 +67,7 @@ import dot.jcversa.novay.ui.components.NovayBadge
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.theme.header
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
