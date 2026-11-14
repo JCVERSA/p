@@ -58,7 +58,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.ui.AspectRatioFrameLayout
 import dev.chrisbanes.haze.rememberHazeState
 import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.NovayLottieIcon
@@ -87,9 +86,12 @@ private data class VerticalFeedback(
 )
 
 /**
- * Hôte UNIQUE de `PlayerView` (TextureView), déplacé entre le mode portrait
- * intégré, le mini-lecteur flottant et le plein écran via `movableContentOf`
- * afin de ne jamais détruire ni recréer le décodeur vidéo.
+ * Hôte UNIQUE de la vue vidéo, déplacé entre le mode portrait intégré, le
+ * mini-lecteur flottant et le plein écran via `movableContentOf` afin de
+ * ne jamais détruire ni recréer le décodeur vidéo. Depuis la V2.8, la
+ * vue est un conteneur neutre : il héberge le `PlayerView` ExoPlayer
+ * (streaming) ou le `VLCVideoLayout` libVLC (fichiers téléchargés) — le
+ * `PlayerStateManager` gère l'enfant actif et son cadrage.
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -102,20 +104,12 @@ fun SinglePlayerViewHost(
     AndroidView(
         factory = { ctx -> playerManager.createSinglePlayerView(ctx) },
         update = { view ->
-            val player = playerManager.getOrCreatePlayer()
-            if (view.player !== player) {
-                view.player = player
-            }
-            if (view.resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FIT) {
-                view.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-            }
-            // Déclenche une passe de mesure propre lors du changement de mode ou de ratio.
+            // Déclenche une passe de mesure propre lors du changement de
+            // mode ou de ratio (le moteur actif cadre la vidéo lui-même).
             view.tag = presentationMode to videoAspectRatio
             view.requestLayout()
         },
-        onRelease = { view ->
-            view.player = null
-        },
+        onRelease = { playerManager.onSingleViewHostReleased() },
         modifier = modifier.fillMaxSize(),
     )
 }

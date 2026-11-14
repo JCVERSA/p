@@ -2,7 +2,9 @@ package dot.jcversa.novay.ui.player
 
 import android.content.Context
 import android.media.MediaCodec
+import android.net.Uri
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
@@ -166,6 +168,47 @@ class PlayerStateManager(
     }
 
     private var exoPlayerInstance: ExoPlayer? = null
+
+    // V2.8 : moteur libVLC pour les FICHIERS téléchargés (streaming en
+    // ligne = ExoPlayer, inchangé). Un seul moteur actif à la fois.
+    private var vlcEngine: NovayVlcEngine? = null
+    private var engineHost: FrameLayout? = null
+    private var exoPlayerViewHost: PlayerView? = null
+    private val vlcActive: Boolean get() = vlcEngine?.active == true
+
+    private val vlcCallbacks = object : NovayVlcEngine.Callbacks {
+        override fun onVlcPlaying(playing: Boolean) {
+            isPlaying = playing
+            // Lecture figée (pause/fin) : plus rien ne charge.
+            isBuffering = false
+        }
+
+        override fun onVlcBuffering(buffering: Boolean) {
+            isBuffering = buffering
+        }
+
+        override fun onVlcTime(timeMs: Long) {
+            if (!userSeeking) positionMs = timeMs.coerceAtLeast(0L)
+        }
+
+        override fun onVlcLength(lengthMs: Long) {
+            durationMs = lengthMs.coerceAtLeast(0L)
+        }
+
+        override fun onVlcEnded() {
+            // Parité ExoPlayer : fin = lecture stoppée, l'UI garde la main.
+        }
+
+        override fun onVlcError(message: String) {
+            isBuffering = false
+            streamError = message
+        }
+
+        override fun onVlcVideoSize(rawRatio: Float) {
+            videoAspectRatio = MiniPlayerGeometry.normalizeVideoAspectRatio(rawRatio)
+        }
+    }
+
     private var lastLoadedSignature: String? = null
     private var loadJob: Job? = null
     private var recoveryJob: Job? = null
@@ -271,11 +314,60 @@ class PlayerStateManager(
             .also { player ->
                 player.addListener(playerListener)
                 exoPlayerInstance = player
+                // La PlayerView hebergee reference peut-etre une instance
+                // precedemment liberee (re-ouverture apres fermeture).
+                exoPlayerViewHost?.player = player
                 ensureProgressLoopStarted()
             }
     }
 
-    fun createSinglePlayerView(context: Context): PlayerView {
+    /**
+     * Vue vidéo du lecteur : un conteneur neutre qui héberge le PlayerView
+     * ExoPlayer (streaming) ou le VLCVideoLayout libVLC (fichiers locaux) —
+     * les composables appelants n'ont aucune idée du moteur actif.
+     */
+    fun createSinglePlayerView(context: Context): View {
+        val container = FrameLayout(context)
+        container.layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+        refreshEngineViewChild(container)
+        engineHost = container
+        return container
+    }
+
+    private fun refreshEngineViewChild(container: FrameLayout) {
+        // Le PlayerView retiré ne doit pas garder une référence à un
+        // ExoPlayer libéré.
+        exoPlayerViewHost?.player = null
+        container.removeAllViews()
+        exoPlayerViewHost = null
+        if (vlcActive) {
+            val engine = vlcEngine ?: return
+            container.addView(engine.ensureVideoLayout(container.context))
+        } else {
+            val playerView = createExoPlayerView(container.context)
+            exoPlayerViewHost = playerView
+            container.addView(playerView)
+        }
+    }
+
+    /**
+     * L'hote Compose de la vue unique quitte la composition : on oublie
+     * les references de vues (le prochain factory recree le conteneur).
+     */
+    fun onSingleViewHostReleased() {
+        engineHost = null
+        exoPlayerViewHost = null
+    }
+
+    /** Bascule la vue hébergée quand le moteur change (local <-> en ligne). */
+    private fun refreshEngineView() {
+        engineHost?.let { refreshEngineViewChild(it) }
+    }
+
+    private fun createExoPlayerView(context: Context): PlayerView {
         val inflated = LayoutInflater.from(context)
             .inflate(R.layout.novay_player_view, FrameLayout(context), false) as PlayerView
         inflated.layoutParams = FrameLayout.LayoutParams(
@@ -464,7 +556,7 @@ class PlayerStateManager(
         val currentStream = stream ?: return
         if (selectedQualityUrl == qualityUrl) return
         selectedQualityUrl = qualityUrl
-        val keepPositionMs = exoPlayerInstance?.currentPosition?.coerceAtLeast(0L) ?: positionMs
+        val keepPositionMs = currentPlaybackPositionMs()
         preparePlayerWithStream(
             resolvedStream = currentStream,
             offline = currentSession.offline,
@@ -480,8 +572,32 @@ class PlayerStateManager(
         initialSeekMs: Long,
         autoPlay: Boolean = true,
     ) {
-        val player = getOrCreatePlayer()
         val effectiveUrl = qualityUrl ?: resolvedStream.url
+        // V2.8 : fichier téléchargé -> moteur libVLC (bulletproof) ; le
+        // streaming en ligne reste ExoPlayer (en-têtes + qualités HLS).
+        // Même définition « local » que Downloads.offlineMediaSource — on
+        // juge sur l'URL DU FLUX (ce qui est réellement joué hors ligne),
+        // pas sur une éventuelle qualité résiduelle d'une session en ligne.
+        val streamUrl = resolvedStream.url
+        val isLocalFile = streamUrl.startsWith("content://") ||
+            streamUrl.startsWith("file://") ||
+            streamUrl.startsWith("/")
+        if (offline && isLocalFile) {
+            val signature = "vlc|${session?.key}|$streamUrl"
+            if (signature == lastLoadedSignature) return
+            switchToVlc(streamUrl, initialSeekMs, autoPlay)
+            // APRES switchToVlc : releasePlayerOnly() efface la signature,
+            // il faut la reposer une fois le basculement fait.
+            lastLoadedSignature = signature
+            return
+        }
+        stopVlcPlayback()
+        // Retour d'un fichier local vers le streaming : la vue hébergée est
+        // encore le VLCVideoLayout détaché — sans ce rafraîchissement,
+        // ExoPlayer jouerait sans surface (écran noir, audio seul).
+        if (exoPlayerViewHost == null) refreshEngineView()
+
+        val player = getOrCreatePlayer()
         val signature = "${session?.key}|$offline|$effectiveUrl"
         if (signature == lastLoadedSignature) return
         lastLoadedSignature = signature
@@ -512,12 +628,38 @@ class PlayerStateManager(
         player.playWhenReady = autoPlay
     }
 
+    /**
+     * Ouvre un fichier local avec libVLC : ExoPlayer est libéré (plus
+     * aucun MediaCodec retenu), les sélecteurs de pistes/qualités ne
+     * concernent plus un fichier unique.
+     */
+    private fun switchToVlc(url: String, initialSeekMs: Long, autoPlay: Boolean) {
+        releasePlayerOnly()
+        audioTracks = emptyList()
+        subtitleTracks = emptyList()
+        isBuffering = true
+        durationMs = 0L
+        streamError = null
+        val engine = vlcEngine ?: NovayVlcEngine(appContext, vlcCallbacks).also { vlcEngine = it }
+        engine.open(
+            uri = Uri.parse(url),
+            initialSeekMs = initialSeekMs,
+            autoPlay = autoPlay,
+            rate = if (isFastForwardHold) 2f else playbackSpeed,
+        )
+        refreshEngineView()
+    }
+
+    private fun stopVlcPlayback() {
+        vlcEngine?.stopAndDetach()
+    }
+
     private fun attemptCodecRecovery(
         activeSession: PlayerSession,
         activeStream: ResolvedStream,
     ) {
         codecRecoveryAttempts++
-        val resumeMs = (exoPlayerInstance?.currentPosition?.takeIf { it > 0L } ?: positionMs).coerceAtLeast(0L)
+        val resumeMs = currentPlaybackPositionMs().coerceAtLeast(0L)
         val shouldPlay = exoPlayerInstance?.playWhenReady ?: true
         val targetKey = activeSession.key
         streamError = null
@@ -548,6 +690,10 @@ class PlayerStateManager(
     }
 
     fun togglePlayPause() {
+        vlcEngine?.takeIf { it.active }?.let {
+            it.togglePlayPause()
+            return
+        }
         val player = exoPlayerInstance ?: return
         if (player.isPlaying) {
             player.pause()
@@ -557,16 +703,37 @@ class PlayerStateManager(
     }
 
     fun play() {
+        vlcEngine?.takeIf { it.active }?.let {
+            it.play()
+            return
+        }
         exoPlayerInstance?.play()
     }
 
     fun pause() {
+        vlcEngine?.takeIf { it.active }?.let {
+            it.pause()
+            return
+        }
         exoPlayerInstance?.pause()
     }
 
-    fun currentPositionMs(): Long = exoPlayerInstance?.currentPosition?.coerceAtLeast(0L) ?: positionMs
+    fun currentPositionMs(): Long = currentPlaybackPositionMs()
+
+    /** Position de lecture, quel que soit le moteur actif. */
+    private fun currentPlaybackPositionMs(): Long =
+        vlcEngine?.takeIf { it.active }?.currentPositionMs
+            ?: exoPlayerInstance?.currentPosition?.coerceAtLeast(0L)
+            ?: positionMs
 
     fun seekTo(targetMs: Long) {
+        vlcEngine?.takeIf { it.active }?.let { engine ->
+            val maxDur = engine.durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE
+            val clamped = targetMs.coerceIn(0L, maxDur)
+            engine.seekTo(clamped)
+            positionMs = clamped
+            return
+        }
         val player = exoPlayerInstance ?: return
         val maxDur = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
         val clamped = targetMs.coerceIn(0L, maxDur)
@@ -575,6 +742,7 @@ class PlayerStateManager(
     }
 
     fun setScrubbing(enabled: Boolean) {
+        // Optimisation de rendu ExoPlayer uniquement.
         exoPlayerInstance?.isScrubbingModeEnabled = enabled
     }
 
@@ -591,6 +759,7 @@ class PlayerStateManager(
     fun selectPlaybackSpeed(speed: Float) {
         playbackSpeed = speed
         if (!isFastForwardHold) {
+            vlcEngine?.takeIf { it.active }?.setRate(speed)
             exoPlayerInstance?.setPlaybackSpeed(speed)
         }
     }
@@ -598,10 +767,13 @@ class PlayerStateManager(
     fun setTemporaryFastSpeed(enabled: Boolean) {
         if (isFastForwardHold == enabled) return
         isFastForwardHold = enabled
-        exoPlayerInstance?.setPlaybackSpeed(if (enabled) 2f else playbackSpeed)
+        val rate = if (enabled) 2f else playbackSpeed
+        vlcEngine?.takeIf { it.active }?.setRate(rate)
+        exoPlayerInstance?.setPlaybackSpeed(rate)
     }
 
     fun selectAudioTrack(option: PlayerTrackOption) {
+        if (vlcActive) return // fichier local : piste unique
         val player = exoPlayerInstance ?: return
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setOverrideForType(TrackSelectionOverride(option.trackGroup, option.trackIndex))
@@ -609,6 +781,7 @@ class PlayerStateManager(
     }
 
     fun selectSubtitleTrack(option: PlayerTrackOption?) {
+        if (vlcActive) return // fichier local : piste unique
         val player = exoPlayerInstance ?: return
         val builder = player.trackSelectionParameters.buildUpon()
         if (option == null) {
@@ -700,9 +873,15 @@ class PlayerStateManager(
         flushProgressNow()
         val activeSession = session
         val activeStream = stream
-        val player = exoPlayerInstance
-        if (activeSession != null && activeStream != null && player != null) {
-            backgroundResumePositionMs = player.currentPosition.coerceAtLeast(0L)
+        val engine = vlcEngine?.takeIf { it.active }
+        if (engine != null) {
+            // libVLC : pause douce, la position survit à la mise en arrière-
+            // plan (aucun MediaCodec à rendre au ResourceManagerService).
+            backgroundResumePositionMs = engine.currentPositionMs.coerceAtLeast(0L)
+            suspendedInBackground = true
+            engine.pause()
+        } else if (activeSession != null && activeStream != null && exoPlayerInstance != null) {
+            backgroundResumePositionMs = currentPlaybackPositionMs()
             suspendedInBackground = true
         }
         isPlaying = false
@@ -741,6 +920,8 @@ class PlayerStateManager(
         stream = null
         session = null
         presentationMode = PlayerPresentationMode.HIDDEN
+        stopVlcPlayback()
+        engineHost = null
         releasePlayerOnly()
         isPlaying = false
         isBuffering = false
@@ -753,6 +934,8 @@ class PlayerStateManager(
         loadJob?.cancel()
         recoveryJob?.cancel()
         progressJob?.cancel()
+        stopVlcPlayback()
+        engineHost = null
         releasePlayerOnly()
         session = null
         stream = null
@@ -763,29 +946,46 @@ class PlayerStateManager(
         if (progressJob?.isActive == true) return
         progressJob = scope.launch {
             while (isActive) {
-                val player = exoPlayerInstance
-                if (player != null) {
-                    isPlaying = player.isPlaying
-                    val dur = player.duration.coerceAtLeast(0L)
-                    durationMs = dur
-                    val pos = player.currentPosition.coerceAtLeast(0L)
-                    if (!userSeeking) positionMs = pos
+                // Source de vérité : le moteur ACTIF (libVLC pour les
+                // fichiers, ExoPlayer pour le streaming). Mêmes règles de
+                // sauvegarde d'historique des deux côtés.
+                val engine = vlcEngine?.takeIf { it.active }
+                val playingNow: Boolean
+                val dur: Long
+                val pos: Long
+                if (engine != null) {
+                    playingNow = engine.isPlayingNow
+                    dur = engine.durationMs.coerceAtLeast(0L)
+                    pos = engine.currentPositionMs.coerceAtLeast(0L)
+                } else {
+                    val player = exoPlayerInstance
+                    if (player != null) {
+                        playingNow = player.isPlaying
+                        dur = player.duration.coerceAtLeast(0L)
+                        pos = player.currentPosition.coerceAtLeast(0L)
+                    } else {
+                        delay(500L)
+                        continue
+                    }
+                }
+                isPlaying = playingNow
+                durationMs = dur
+                if (!userSeeking) positionMs = pos
 
-                    val now = System.currentTimeMillis()
-                    if (player.isPlaying && now - lastSavedAtMs >= 5000L && dur > 0L && pos > 3000L) {
-                        lastSavedAtMs = now
-                        val activeSession = session
-                        if (activeSession != null) {
-                            val effective = if (pos > dur * 95L / 100L) 0L else pos
-                            withContext(Dispatchers.IO) {
-                                WatchHistory.recordPosition(
-                                    appContext,
-                                    activeSession.season.url,
-                                    activeSession.episode.number,
-                                    effective,
-                                    dur,
-                                )
-                            }
+                val now = System.currentTimeMillis()
+                if (playingNow && now - lastSavedAtMs >= 5000L && dur > 0L && pos > 3000L) {
+                    lastSavedAtMs = now
+                    val activeSession = session
+                    if (activeSession != null) {
+                        val effective = if (pos > dur * 95L / 100L) 0L else pos
+                        withContext(Dispatchers.IO) {
+                            WatchHistory.recordPosition(
+                                appContext,
+                                activeSession.season.url,
+                                activeSession.episode.number,
+                                effective,
+                                dur,
+                            )
                         }
                     }
                 }
@@ -796,9 +996,17 @@ class PlayerStateManager(
 
     private fun flushProgressNow() {
         val activeSession = session ?: return
-        val player = exoPlayerInstance ?: return
-        val pos = player.currentPosition
-        val dur = player.duration
+        val engine = vlcEngine?.takeIf { it.active }
+        val pos: Long
+        val dur: Long
+        if (engine != null) {
+            pos = engine.currentPositionMs
+            dur = engine.durationMs
+        } else {
+            val player = exoPlayerInstance ?: return
+            pos = player.currentPosition
+            dur = player.duration
+        }
         if (dur > 0L && pos > 3000L) {
             val effective = if (pos > dur * 95L / 100L) 0L else pos
             scope.launch(Dispatchers.IO) {

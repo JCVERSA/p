@@ -85,46 +85,140 @@ jobs:
           tests=$(grep -ho 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | awk '{s+=$1} END {print s}')
           echo "::notice::${tests} tests unitaires passes"
 
-      # APK "fat" : armeabi-v7a (32 bits, Android 7+ - exigence owner) +
-      # arm64-v8a + x86_64 dans un seul fichier a installer.
-      - name: Build APK (release)
+      # V2.8 : un APK PAR ARCHITECTURE. libvlc-all embarque ~40 Mo de
+      # bibliotheques natives par ABI - un APK universel (4 ABI) peserait
+      # ~110 Mo. Chaque build filtre une seule ABI via -PnovayAbi (voir
+      # app/build.gradle.kts) : le telechargement reste aussi leger que
+      # possible. arm32 = armeabi-v7a (Android 7+ 32 bits, exigence owner).
+      - name: Build APK arm32 (release)
         run: |
           # Le shell par defaut des steps est `bash -e -o pipefail` : sans
           # `set +e`, l'echec de gradle tuerait l'etape AVANT l'ecriture du
           # resume de diagnostic (les logs GitHub sont inaccessibles depuis
           # certains reseaux - c'est notre seul canal d'erreur).
           set +e
-          gradle :app:assembleRelease --no-daemon 2>&1 | tee build.log
+          gradle :app:assembleRelease -PnovayAbi=armeabi-v7a --no-daemon 2>&1 | tee build-arm32.log
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
             # Annotations ::error - SEUL canal d'erreur lisible via l'API
             # depuis cette session.
-            grep -E "^e: |error: |FAILURE|What went wrong|Caused by|OutOfMemory|FAILED" build.log | head -n 6 | while IFS= read -r line; do
+            grep -E "^e: |error: |FAILURE|What went wrong|Caused by|OutOfMemory|FAILED" build-arm32.log | head -n 6 | while IFS= read -r line; do
               echo "::error::${line:0:240}"
             done
-            tail -n 40 build.log | grep -v "^> Task" | tail -n 4 | while IFS= read -r line; do
+            tail -n 40 build-arm32.log | grep -v "^> Task" | tail -n 4 | while IFS= read -r line; do
               echo "::error::${line:0:240}"
             done
             exit "$status"
           fi
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk dist/novay-arm32-release.apk
 
-      - name: Upload de l'APK
+      - name: Build APK arm64 (release)
+        run: |
+          set +e
+          gradle :app:assembleRelease -PnovayAbi=arm64-v8a --no-daemon 2>&1 | tee build-arm64.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            grep -E "^e: |error: |FAILURE|What went wrong|Caused by|OutOfMemory|FAILED" build-arm64.log | head -n 6 | while IFS= read -r line; do
+              echo "::error::${line:0:240}"
+            done
+            tail -n 40 build-arm64.log | grep -v "^> Task" | tail -n 4 | while IFS= read -r line; do
+              echo "::error::${line:0:240}"
+            done
+            exit "$status"
+          fi
+          cp app/build/outputs/apk/release/app-release.apk dist/novay-arm64-release.apk
+
+      # Connexion owner limitee : chaque APK est AUSSI livre compresse en
+      # 7z (LZMA2 niveau 9 - le code natif se compresse d'environ moitie).
+      # p7zip-full est preinstalle sur ubuntu-24.04 (binaire 7z ; 7zz en
+      # repli si le runner change).
+      - name: Compression 7z des APK
+        run: |
+          set -e
+          SEVENZ="$(command -v 7zz || command -v 7z)"
+          if [ -z "$SEVENZ" ]; then
+            echo "::error::p7zip introuvable sur le runner (attendu preinstalle)"
+            exit 1
+          fi
+          cd dist
+          for abi in arm32 arm64; do
+            "$SEVENZ" a -t7z -m0=lzma2 -mx=9 -md=128m -ms=on \
+              "novay-${abi}-release.7z" "novay-${abi}-release.apk" > /dev/null
+          done
+
+      # Garde-fou + tailles visibles : l'APK d'une ABI ne doit contenir
+      # AUCUNE native d'une autre ABI (sinon le filtre a echoue).
+      - name: Verification ABI et tailles livrees
+        run: |
+          set -e
+          cd dist
+          verify() {
+            apk="$1"; attendu="$2"
+            fuite=$(unzip -l "$apk" | grep "lib/" | grep -cv "lib/$attendu/" || true)
+            if [ "${fuite:-0}" -ne 0 ]; then
+              echo "::error::$apk embarque $fuite natives hors ABI $attendu - filtre ABI en echec"
+              exit 1
+            fi
+            natives=$(unzip -l "$apk" | grep -c "lib/$attendu/" || true)
+            if [ "${natives:-0}" -eq 0 ]; then
+              echo "::error::$apk ne contient aucune native $attendu - libvlc absent du packaging"
+              exit 1
+            fi
+          }
+          verify novay-arm32-release.apk armeabi-v7a
+          verify novay-arm64-release.apk arm64-v8a
+          mo() { awk -v b="$(stat -c%s "$1")" 'BEGIN {printf "%.2f", b/1048576}'; }
+          pct() { awk -v a="$1" -v b="$2" 'BEGIN {printf "%.0f", (a-b)*100/a}'; }
+          a32=$(mo novay-arm32-release.apk); z32=$(mo novay-arm32-release.7z)
+          a64=$(mo novay-arm64-release.apk); z64=$(mo novay-arm64-release.7z)
+          echo "::notice::arm32 (armeabi-v7a, Android 7+ 32 bits) : APK ${a32} Mo | 7z ${z32} Mo (-$(pct "$a32" "$z32") %)"
+          echo "::notice::arm64 (arm64-v8a) : APK ${a64} Mo | 7z ${z64} Mo (-$(pct "$a64" "$z64") %)"
+
+      - name: Upload APK arm32
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: novay-release-apk
-          path: novay/app/build/outputs/apk/release/app-release.apk
+          name: novay-release-arm32-apk
+          path: novay/dist/novay-arm32-release.apk
           if-no-files-found: error
 
-      # Log de build en artifact, meme en echec - plan B si les annotations
+      - name: Upload 7z arm32
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: novay-release-arm32-7z
+          path: novay/dist/novay-arm32-release.7z
+          if-no-files-found: error
+
+      - name: Upload APK arm64
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: novay-release-arm64-apk
+          path: novay/dist/novay-arm64-release.apk
+          if-no-files-found: error
+
+      - name: Upload 7z arm64
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: novay-release-arm64-7z
+          path: novay/dist/novay-arm64-release.7z
+          if-no-files-found: error
+
+      # Logs de build en artifact, meme en echec - plan B si les annotations
       # sont insuffisantes.
-      - name: Upload du log de build (toujours)
+      - name: Upload des logs de build (toujours)
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: novay-build-log
-          path: novay/build.log
+          path: |
+            novay/build-arm32.log
+            novay/build-arm64.log
           if-no-files-found: ignore
 
       - name: Upload du log de tests (toujours)
