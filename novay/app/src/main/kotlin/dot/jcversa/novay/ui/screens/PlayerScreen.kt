@@ -58,6 +58,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -273,7 +275,22 @@ private fun PlayerContent(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
-    val player = remember { ExoPlayer.Builder(context).build() }
+    val player = remember {
+        ExoPlayer.Builder(context)
+            // V2.2 : citoyen audio correct - le focus est demandé (une
+            // autre appli qui parle nous met en pause, on rend la main à
+            // la sortie) et débrancher le casque MET EN PAUSE au lieu de
+            // basculer à fond sur le haut-parleur.
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .build(),
+                /* handleAudioFocus = */ true
+            )
+            .setHandleAudioBecomingNoisy(true)
+            .build()
+    }
     // null = master playlist (qualité adaptative « Auto »).
     var selectedQualityUrl by remember(stream) { mutableStateOf<String?>(null) }
 
