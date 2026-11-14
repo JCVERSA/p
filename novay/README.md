@@ -154,7 +154,18 @@ anti-Cloudflare.
     « Reprise à mm:ss » des épisodes en cours.
   - Le lecteur vidéo garde SES gestes V2.2 — seul l'accent passe au bleu
     Tachiyomi.
-- **V3** : autres catalogues.
+- **V3** (livré) : **l'onglet Catalogue affiche la home d'anime-sama**.
+  - **À la une** : le carrousel héros du site (affiche plein cadre,
+    badge « Saison N en cours », genres, synopsis) — défilement auto
+    toutes les 6 s, tap = ouvre SA saison directement.
+  - **Derniers épisodes** : la grille des cartes du site (ordre = plus
+    récent d'abord), heure d'ajout et langue sur chaque carte, tap =
+    saison. Dédupliqué par animé (VF/VOSTFR fusionnés).
+  - **Aléatoire** : tirage au sort dans le catalogue, bouton ↻ pour
+    regénérer.
+  - Parseurs purs (ak-slide / as-carte, entités HTML, dédoublonnage)
+    testés JVM sur les fixtures des sondes CI réelles.
+- **V3.1** : autres catalogues (multi-sources).
 
 La sonde réseau CI (job « Sonde anime-sama », push avec `[probe]` dans le
 message) re-vérifie le domaine et la structure à la demande.

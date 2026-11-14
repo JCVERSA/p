@@ -67,6 +67,46 @@ data class QualityOption(
     val playerIndex: Int
 )
 
+/**
+ * Une carte « À la une » du catalogue (carrousel de la page d'accueil,
+ * V3) : l'animé mis en avant par le site, avec son synopsis et son lien
+ * direct de saison.
+ */
+data class CatalogHero(
+    val title: String,
+    /** « Saison 2 en cours » — libellé du badge du site, s'il existe. */
+    val seasonLabel: String? = null,
+    val genres: List<String> = emptyList(),
+    val synopsis: String? = null,
+    /** Lien direct du bouton « Visionner » (page de saison). */
+    val seasonUrl: String,
+    val posterUrl: String? = null,
+    /** Langue du lien (VF | VOSTFR), déduite du sous-chemin. */
+    val language: String? = null
+)
+
+/**
+ * Un animé récemment mis à jour sur la page d'accueil du catalogue
+ * (V3) : carte avec l'heure d'ajout et le lien de SA dernière saison.
+ */
+data class CatalogCard(
+    val title: String,
+    /** Page de l'animé (/catalogue/<slug>/). */
+    val animeUrl: String,
+    /** Dernière saison mise à jour (lien direct de la carte). */
+    val seasonUrl: String,
+    val posterUrl: String? = null,
+    /** Heure d'ajout affichée par le site (« 11h30 »). */
+    val timeLabel: String? = null,
+    val language: String? = null
+)
+
+/** Page d'accueil d'un catalogue : à la une + derniers ajouts. */
+data class CatalogHome(
+    val heroes: List<CatalogHero> = emptyList(),
+    val cards: List<CatalogCard> = emptyList()
+)
+
 /** Contrat commun à tous les catalogues. */
 interface AnimeSource {
     /** Nom affiché (ex. « anime-sama »). */
@@ -91,4 +131,11 @@ interface AnimeSource {
      */
     suspend fun streams(episode: AnimeEpisode): List<ResolvedStream> =
         listOf(stream(episode))
+
+    /**
+     * Page d'accueil du catalogue (V3) : animés à la une + derniers
+     * épisodes ajoutés. Un catalogue sans page d'accueil exploitable
+     * rend une liste vide — l'onglet retombe sur la recherche seule.
+     */
+    suspend fun home(): CatalogHome = CatalogHome()
 }

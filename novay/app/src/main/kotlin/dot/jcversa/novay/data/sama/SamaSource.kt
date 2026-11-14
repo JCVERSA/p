@@ -110,6 +110,24 @@ class SamaSource(
         }
     }
 
+    // ── Page d'accueil (V3) ────────────────────────────────────────────────
+
+    /**
+     * Page d'accueil du catalogue : le carrousel « À la une » du site et
+     * la grille des derniers épisodes ajoutés (l'ordre du document = le
+     * plus récent d'abord). Une home injoignable ne casse pas l'onglet :
+     * la recherche reste utilisable.
+     */
+    override suspend fun home(): dot.jcversa.novay.data.CatalogHome =
+        withContext(Dispatchers.IO) {
+            val base = origin()
+            val html = fetchBlocking(base, "$base/")
+            dot.jcversa.novay.data.CatalogHome(
+                heroes = SamaParsers.parseHeroSlides(html, base),
+                cards = SamaParsers.parseHomeCards(html, base)
+            )
+        }
+
     // ── Recherche ─────────────────────────────────────────────────────────
 
     override suspend fun search(query: String): List<AnimeSearchResult> = withContext(Dispatchers.IO) {

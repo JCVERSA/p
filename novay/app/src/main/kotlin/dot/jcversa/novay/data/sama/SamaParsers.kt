@@ -409,7 +409,153 @@ object SamaParsers {
         }.sortedByDescending { it.height }
     }
 
-    fun resolveUrl(url: String, base: String): String = try {
+
+    // ── Page d'accueil : À la une + derniers épisodes (V3) ───────────────
+    // Structure réelle (sonde CI 14/11, home 590 Ko aplatie) :
+    //  - carrousel héros : <div class="ak-slide"> avec ak-slide-bg (img),
+    //    ak-badge--saison, h2.ak-slide-title, ak-genre-tag (genres),
+    //    p.ak-slide-synopsis, a.ak-slide-cta (lien de saison) ; le DERNIER
+    //    slide est cloné en aria-hidden pour la boucle infinie — ignoré ;
+    //  - cartes : <div class="as-carte as-carte-anime" data-url data-nom
+    //    data-img> + a.as-carte-lien (saison), as-carte-temps (heure).
+
+    /** Entités HTML courantes (titres réels : « &#039;Tis Time… »). */
+    fun decodeHtmlEntities(input: String): String {
+        if (!input.contains("&")) return input
+        val named = mapOf(
+            "amp" to "&", "lt" to "<", "gt" to ">", "quot" to "\"",
+            "apos" to "'", "nbsp" to " ", "#039" to "'", "#39" to "'"
+        )
+        return Regex("&(#x?[0-9a-zA-Z]+);").replace(input) { m ->
+            val key = m.groupValues[1]
+            named[key] ?: when {
+                key.startsWith("x") -> key.substring(1).toIntOrNull(16)
+                    ?.toChar()?.toString()
+                key.startsWith("#") -> key.substring(1).toIntOrNull()
+                    ?.toChar()?.toString()
+                else -> null
+            } ?: m.value
+        }
+    }
+
+    /** Libellé de saison déduit d'une URL : « Saison 4 », « Film », « OAV ». */
+    fun seasonLabelFromUrl(url: String): String? {
+        val saison = Regex("/saison([0-9]+)", RegexOption.IGNORE_CASE).find(url)
+        if (saison != null) return "Saison " + saison.groupValues[1]
+        return when {
+            url.contains("/film", ignoreCase = true) -> "Film"
+            url.contains("/oav", ignoreCase = true) -> "OAV"
+            url.contains("/scan", ignoreCase = true) -> "Scans"
+            else -> null
+        }
+    }
+
+    /**
+     * Parse le carrousel « À la une » : chaque ak-slide donne le titre,
+     * le badge de saison, les genres, le synopsis et le lien du CTA.
+     * Les clones aria-hidden (boucle infinie du carrousel) sont ignorés.
+     */
+    fun parseHeroSlides(html: String, origin: String): List<dot.jcversa.novay.data.CatalogHero> {
+        if (html.isEmpty()) return emptyList()
+        val out = mutableListOf<dot.jcversa.novay.data.CatalogHero>()
+        val seen = mutableSetOf<String>()
+        // Découpe sur l'ouverture des slides ; le 1er morceau précède le
+        // carrousel et est ignoré.
+        val chunks = html.split(Regex("<div class=\"ak-slide\\b"))
+        for (chunk in chunks.drop(1)) {
+            val head = chunk.substringBefore(">")
+            if (head.contains("aria-hidden")) continue
+            // Titre.
+            val title = decodeHtmlEntities(classText(chunk, "ak-slide-title"))
+            if (title.length < 2) continue
+            // Lien du CTA : l'ancre porte ak-slide-cta (href avant OU
+            // après la classe selon le slide).
+            val cta = ANCHOR_FULL_RE.findAll(chunk).firstOrNull { a ->
+                Regex("class\\s*=\\s*[\"'][^\"']*ak-slide-cta").containsMatchIn(a.groupValues[1])
+            }
+            val href = cta?.let { HREF_ATTR_RE.find(it.groupValues[1])?.groupValues?.get(1) } ?: ""
+            if (href.isEmpty() || seen.add(href) == false) continue
+            val url = resolveUrl(href, origin)
+            // Image de fond : première image du slide.
+            val bg = Regex("<img\\b[^>]*src=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
+                .find(chunk)?.groupValues?.get(1)
+            val poster = bg?.takeIf { it.startsWith("http") }
+            out.add(
+                dot.jcversa.novay.data.CatalogHero(
+                    title = title,
+                    seasonLabel = decodeHtmlEntities(classText(chunk, "ak-badge--saison"))
+                        .takeIf { it.isNotEmpty() },
+                    genres = GENRE_TAG_RE.findAll(chunk).map { decodeHtmlEntities(it.groupValues[1].trim()) }
+                        .filter { it.isNotEmpty() }.take(6).toList(),
+                    synopsis = decodeHtmlEntities(classText(chunk, "ak-slide-synopsis"))
+                        .takeIf { it.isNotEmpty() },
+                    seasonUrl = url,
+                    posterUrl = poster,
+                    language = samaSubPathLanguage(url)
+                )
+            )
+            if (out.size >= 10) break
+        }
+        return out
+    }
+
+    private val GENRE_TAG_RE = Regex(
+        "<span\\b[^>]*class=\\s*[\"'][^\"']*ak-genre-tag[\"'][^>]*>([\\s\\S]*?)</span>",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * Parse les cartes d'animés de la page d'accueil : chaque
+     * as-carte-anime porte data-url/data-nom/data-img et un lien vers SA
+     * saison la plus récente. Dédupliqué par animé (une carte par animé :
+     * VF et VOSTFR arrivent en cartes séparées sur le site).
+     */
+    fun parseHomeCards(html: String, origin: String): List<dot.jcversa.novay.data.CatalogCard> {
+        if (html.isEmpty()) return emptyList()
+        val out = mutableListOf<dot.jcversa.novay.data.CatalogCard>()
+        val seen = mutableSetOf<String>()
+        val chunks = html.split(Regex("<div class=\"as-carte "))
+        for (chunk in chunks.drop(1)) {
+            if (!chunk.startsWith("as-carte-anime")) continue
+            val opening = chunk.substringBefore(">")
+            val animeUrl = DATA_URL_ATTR_RE.find(opening)?.groupValues?.get(1) ?: continue
+            if (animeUrl.isEmpty() || !seen.add(animeUrl)) continue
+            val title = decodeHtmlEntities(
+                DATA_NOM_ATTR_RE.find(opening)?.groupValues?.get(1) ?: ""
+            )
+            if (title.length < 2) continue
+            // Lien de saison (as-carte-lien) + miniature + heure.
+            val lien = ANCHOR_FULL_RE.findAll(chunk).firstOrNull { a ->
+                Regex("class\\s*=\\s*[\"'][^\"']*as-carte-lien").containsMatchIn(a.groupValues[1])
+            }
+            val seasonHref = lien?.let { HREF_ATTR_RE.find(it.groupValues[1])?.groupValues?.get(1) }
+                ?: animeUrl
+            val seasonUrl = resolveUrl(seasonHref, origin)
+            val thumb = Regex("<img\\b[^>]*src=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
+                .findAll(chunk).map { it.groupValues[1] }
+                .firstOrNull { it.startsWith("http") }
+            val time = Regex(
+                "<span\\b[^>]*class=\\s*[\"'][^\"']*as-carte-temps[\"'][^>]*>([^<]*)</span>",
+                RegexOption.IGNORE_CASE
+            ).find(chunk)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
+            out.add(
+                dot.jcversa.novay.data.CatalogCard(
+                    title = title,
+                    animeUrl = resolveUrl(animeUrl, origin),
+                    seasonUrl = seasonUrl,
+                    posterUrl = thumb,
+                    timeLabel = time,
+                    language = samaSubPathLanguage(seasonUrl)
+                )
+            )
+            if (out.size >= 60) break
+        }
+        return out
+    }
+
+    private val DATA_URL_ATTR_RE = Regex("data-url\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
+    private val DATA_NOM_ATTR_RE = Regex("data-nom\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
+\n    fun resolveUrl(url: String, base: String): String = try {
         URI(base).resolve(url).toString()
     } catch (_: Exception) {
         url

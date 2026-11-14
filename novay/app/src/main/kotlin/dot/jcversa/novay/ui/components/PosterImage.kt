@@ -25,7 +25,8 @@ fun PosterImage(
     url: String?,
     modifier: Modifier = Modifier,
     contentDescription: String? = null,
-    spinnerSize: Dp = 14.dp
+    spinnerSize: Dp = 14.dp,
+    contentScale: ContentScale = ContentScale.Crop
 ) {
     if (url.isNullOrBlank()) {
         Box(
@@ -42,7 +43,7 @@ fun PosterImage(
         SubcomposeAsyncImage(
             model = url,
             contentDescription = contentDescription,
-            contentScale = ContentScale.Crop,
+            contentScale = contentScale,
             modifier = modifier,
             loading = {
                 Box(

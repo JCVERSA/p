@@ -261,7 +261,16 @@ fun NoVaYApp() {
                             )
                             Destination.Browse -> BrowseScreen(
                                 source = source,
-                                onOpenShow = { open(Destination.Show(it)) }
+                                onOpenShow = { open(Destination.Show(it)) },
+                                onOpenEpisodes = { animeTitle, posterUrl, season ->
+                                    open(
+                                        Destination.Episodes(
+                                            animeTitle = animeTitle,
+                                            posterUrl = posterUrl,
+                                            season = season
+                                        )
+                                    )
+                                }
                             )
                             Destination.More -> MoreScreen(
                                 onOpenDownloads = { open(Destination.Downloads) }
