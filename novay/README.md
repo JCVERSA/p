@@ -81,6 +81,22 @@ anti-Cloudflare.
     gauche/droite), qualités dans un bouton réglages.
   - **Barre de navigation basse** : Accueil / Recherche /
     Téléchargements (la barre disparaît pendant la lecture).
+- **V2.2** (livré) : **lecteur niveau NextPlayer** (analyse du projet
+  anilbeesetti/nextplayer — GPL-3.0 : comportements seulement, aucun code
+  copié).
+  - Fix bloquant : la rotation vidait la pile de navigation (le lecteur
+    « ne s'ouvrait pas ») — `configChanges` complets + pile au niveau
+    processus.
+  - Glissé horizontal = seek progressif (50 ms/px, la vidéo suit le
+    doigt), double-tap cumulatif (+10 s, +20 s…), indicateur delta +
+    temps cible.
+  - Glissé vertical : luminosité (gauche) / volume (droite).
+  - Reprise à la position exacte (enregistrée toutes les 5 s + à la
+    fermeture ; épisode fini = reprise du début).
+  - Audio focus + pause quand le casque se débranche.
+  - Vitesse de lecture (0,5× à 2×) + appui long = 2× le temps du doigt.
+  - Bouton rotation paysage/portrait en mode capteur.
+  - Verrouillage des contrôles (cadenas).
 - **V3** : autres catalogues.
 
 La sonde réseau CI (job « Sonde anime-sama », push avec `[probe]` dans le
