@@ -252,6 +252,53 @@ class SamaSource(
         throw IOException("Aucun lecteur n'a livré de flux vidéo pour cet épisode")
     }
 
+    /**
+     * Flux de TOUS les lecteurs qui répondent (V2.3) : chaque lecteur en
+     * parallèle, l'union de leurs qualités donne le choix de résolution.
+     * Un lecteur muet ou mort est simplement absent de la liste — tant
+     * qu'au moins un répond, on ne échoue pas.
+     */
+    override suspend fun streams(episode: AnimeEpisode): List<ResolvedStream> =
+        withContext(Dispatchers.IO) {
+            val base = origin()
+            if (episode.lienIds.isEmpty()) {
+                throw IOException("Aucun lecteur enregistré pour cet épisode")
+            }
+            // Un jeton frais partagé par tous les lecteurs (le même pour
+            // toute la page de saison).
+            var jeton = episode.jeton
+            val playerUrls: List<String> = episode.lienIds.mapNotNull { id ->
+                if (id.startsWith("lien:")) {
+                    fetchLienUrl(base, id.removePrefix("lien:"), jeton)
+                        ?: run {
+                            // Une seule tentative de rafraîchissement du jeton.
+                            val fresh = runCatching {
+                                fetchBlocking(episode.url, "$base/")
+                            }.getOrNull()
+                            val newJeton = fresh?.let { SamaParsers.parseEpsJeton(it) }
+                            if (newJeton != null) {
+                                jeton = newJeton
+                                fetchLienUrl(base, id.removePrefix("lien:"), jeton)
+                            } else {
+                                null
+                            }
+                        }
+                } else {
+                    id
+                }
+            }
+            if (playerUrls.isEmpty()) {
+                throw IOException("Aucun lecteur n'a livré de flux vidéo pour cet épisode")
+            }
+            val resolved = playerUrls.map { url ->
+                async { runCatching { resolveFromPlayerPage(url, base) }.getOrNull() }
+            }.awaitAll().filterNotNull()
+            if (resolved.isEmpty()) {
+                throw IOException("Aucun lecteur n'a livré de flux vidéo pour cet épisode")
+            }
+            resolved
+        }
+
     /** /api/lien.php : {"u":"<embed>"} — null sur erreur de jeton/réseau. */
     private fun fetchLienUrl(base: String, lienId: String, jeton: String): String? = try {
         val url = "$base/api/lien.php?j=${urlEncode(jeton)}&l=${urlEncode(lienId)}"

@@ -69,4 +69,40 @@ class DownloadChoiceTest {
         assertEquals("https://cdn.example/v720.m3u8", choice.url)
         assertEquals("720P", choice.qualityLabel)
     }
+
+    @Test
+    fun `choix par hauteur exacte`() {
+        val s = stream(
+            listOf(
+                StreamQuality(label = "1080P", url = "https://cdn.example/v1080.m3u8", height = 1080),
+                StreamQuality(label = "720P", url = "https://cdn.example/v720.m3u8", height = 720)
+            )
+        )
+        val choice = DownloadChoice.pick(s, 720)
+        assertEquals("https://cdn.example/v720.m3u8", choice.url)
+        assertEquals("720P", choice.qualityLabel)
+    }
+
+    @Test
+    fun `hauteur absente, repli sur la meilleure de ce lecteur`() {
+        val s = stream(
+            listOf(
+                StreamQuality(label = "1080P", url = "https://cdn.example/v1080.m3u8", height = 1080)
+            )
+        )
+        val choice = DownloadChoice.pick(s, 360)
+        assertEquals("https://cdn.example/v1080.m3u8", choice.url)
+        assertEquals("1080P", choice.qualityLabel)
+    }
+
+    @Test
+    fun `hauteur nulle, meilleure qualite`() {
+        val s = stream(
+            listOf(
+                StreamQuality(label = "1080P", url = "https://cdn.example/v1080.m3u8", height = 1080),
+                StreamQuality(label = "480P", url = "https://cdn.example/v480.m3u8", height = 480)
+            )
+        )
+        assertEquals("1080P", DownloadChoice.pick(s, null).qualityLabel)
+    }
 }

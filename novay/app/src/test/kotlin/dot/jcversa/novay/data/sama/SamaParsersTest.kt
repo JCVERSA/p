@@ -358,4 +358,52 @@ class SamaParsersTest {
         assertEquals("https://cdn.example/video_hd.mp4?token=1", found?.first)
         assertEquals(false, found?.second)
     }
+
+    // ── Union des qualités de tous les lecteurs (V2.3) ─────────────────
+
+    private fun playerStream(vararg heights: Int) = dot.jcversa.novay.data.ResolvedStream(
+        url = "https://cdn.example/master.m3u8",
+        isHls = true,
+        headers = emptyMap(),
+        qualities = heights.map {
+            dot.jcversa.novay.data.StreamQuality(
+                label = "${it}P",
+                url = "https://cdn.example/v$it.m3u8",
+                height = it
+            )
+        }
+    )
+
+    @Test
+    fun `union des echelles de deux lecteurs, triee par hauteur descendante`() {
+        val merged = SamaParsers.mergePlayerQualities(
+            listOf(playerStream(1080, 480), playerStream(720))
+        )
+        assertEquals(listOf(1080, 720, 480), merged.map { it.height })
+        assertEquals(listOf("1080P", "720P", "480P"), merged.map { it.label })
+    }
+
+    @Test
+    fun `doublon de hauteur, le premier lecteur gagne`() {
+        val merged = SamaParsers.mergePlayerQualities(
+            listOf(playerStream(1080, 480), playerStream(1080, 720))
+        )
+        assertEquals(3, merged.size)
+        // le 1080 vient du lecteur 0, le 720 du lecteur 1
+        assertEquals(0, merged.first { it.height == 1080 }.playerIndex)
+        assertEquals(1, merged.first { it.height == 720 }.playerIndex)
+    }
+
+    @Test
+    fun `lecteur sans variantes ignore, hauteurs invalides ignorees`() {
+        val merged = SamaParsers.mergePlayerQualities(
+            listOf(playerStream(0, 480), playerStream())
+        )
+        assertEquals(listOf(480), merged.map { it.height })
+    }
+
+    @Test
+    fun `liste vide, union vide`() {
+        assertTrue(SamaParsers.mergePlayerQualities(emptyList()).isEmpty())
+    }
 }

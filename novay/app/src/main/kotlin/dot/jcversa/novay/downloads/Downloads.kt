@@ -107,7 +107,13 @@ object Downloads {
             cacheInternal!!
         }
 
-    /** Lance le téléchargement d'un épisode (meilleure qualité). */
+    /**
+     * Lance le téléchargement d'un épisode.
+     *
+     * @param preferredHeight hauteur choisie par l'utilisateur (V2.3) ;
+     *   null = meilleure qualité de ce lecteur. Si ce lecteur ne propose
+     *   pas la hauteur, repli honnête sur sa meilleure.
+     */
     fun startEpisodeDownload(
         context: Context,
         animeTitle: String,
@@ -116,10 +122,11 @@ object Downloads {
         episodeNumber: Int,
         episodeLabel: String,
         stream: ResolvedStream,
+        preferredHeight: Int? = null,
         onStart: () -> Unit = {},
         onError: (String) -> Unit = {}
     ) {
-        val choice = dot.jcversa.novay.data.DownloadChoice.best(stream)
+        val choice = dot.jcversa.novay.data.DownloadChoice.pick(stream, preferredHeight)
         val meta = EpisodeDownloadMeta(
             animeTitle = animeTitle,
             seasonName = seasonName,

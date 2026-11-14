@@ -382,6 +382,33 @@ object SamaParsers {
     fun parseHlsMasterPlaylist(master: String, masterUrl: String) =
         dot.jcversa.novay.data.voiranime.VoiranimeParsers.parseHlsMasterPlaylist(master, masterUrl)
 
+    /**
+     * Union des qualités de plusieurs lecteurs (V2.3) — PUR.
+     *
+     * Chaque lecteur a sa propre échelle (ex. 1080/480 chez l'un, 720
+     * chez l'autre) : on fusionne, on déduplique par hauteur (le
+     * PREMIER lecteur qui propose une hauteur gagne — ordre du site),
+     * tri par hauteur décroissante.
+     */
+    fun mergePlayerQualities(streams: List<dot.jcversa.novay.data.ResolvedStream>):
+        List<dot.jcversa.novay.data.QualityOption> {
+        val seen = mutableMapOf<Int, Int>() // height -> playerIndex
+        for ((index, stream) in streams.withIndex()) {
+            for (q in stream.qualities) {
+                if (q.height > 0 && !seen.containsKey(q.height)) {
+                    seen[q.height] = index
+                }
+            }
+        }
+        return seen.map { (height, playerIndex) ->
+            dot.jcversa.novay.data.QualityOption(
+                height = height,
+                label = "${height}P",
+                playerIndex = playerIndex
+            )
+        }.sortedByDescending { it.height }
+    }
+
     fun resolveUrl(url: String, base: String): String = try {
         URI(base).resolve(url).toString()
     } catch (_: Exception) {

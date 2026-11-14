@@ -31,4 +31,17 @@ object DownloadChoice {
             )
         }
     }
+
+    /**
+     * Qualité CHOISIE par l'utilisateur (V2.3) : la hauteur exacte si ce
+     * lecteur la propose, sinon sa meilleure (repli honnête — le
+     * téléchargement part quand même).
+     */
+    fun pick(stream: ResolvedStream, height: Int?): Choice =
+        if (height == null) best(stream)
+        else {
+            val q = stream.qualities.firstOrNull { it.height == height }
+            if (q != null) Choice(url = q.url, isHls = true, qualityLabel = q.label)
+            else best(stream)
+        }
 }

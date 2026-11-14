@@ -54,6 +54,19 @@ data class ResolvedStream(
     val qualities: List<StreamQuality>
 )
 
+/**
+ * Une hauteur proposée par AU MOINS UN lecteur de l'épisode (V2.3 :
+ * union des échelles de tous les lecteurs — un lecteur peut offrir
+ * 1080/480 et un autre 720).
+ */
+data class QualityOption(
+    val height: Int,
+    val label: String,
+    /** Index du lecteur (dans la liste renvoyée par [AnimeSource.streams])
+     *  qui propose cette hauteur — le premier gagne en cas de doublon. */
+    val playerIndex: Int
+)
+
 /** Contrat commun à tous les catalogues. */
 interface AnimeSource {
     /** Nom affiché (ex. « anime-sama »). */
@@ -70,4 +83,12 @@ interface AnimeSource {
 
     /** Résout le flux jouable d'un épisode (lecteur + qualités HLS). */
     suspend fun stream(episode: AnimeEpisode): ResolvedStream
+
+    /**
+     * Flux de TOUS les lecteurs qui répondent pour cet épisode (V2.3) —
+     * l'union de leurs qualités donne le choix de résolution au
+     * téléchargement. Repli par défaut : le premier lecteur qui marche.
+     */
+    suspend fun streams(episode: AnimeEpisode): List<ResolvedStream> =
+        listOf(stream(episode))
 }
