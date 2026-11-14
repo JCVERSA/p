@@ -65,7 +65,8 @@ jobs:
               grep -E "^e: |error: |What went wrong|Caused by|Could not|Execution failed|unresolved" test.log | head -n 4
               # Noms et messages des tests en echec (rapports XML)
               grep -lE '<failure|<error' app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | while read -r xf; do
-                grep -oE '<testcase name="[^"]*"|<failure message="[^"]{0,150}' "$xf" | head -n 4
+                grep -oE '<failure message="[^"]{0,200}|<error message="[^"]{0,200}' "$xf" | head -n 4
+                grep -oE '<testcase name="[^"]*"' "$xf" | head -n 2
               done
               grep -vE "^> |^[[:space:]]*$|^Download" test.log | tail -n 3
             } | while IFS= read -r line; do
