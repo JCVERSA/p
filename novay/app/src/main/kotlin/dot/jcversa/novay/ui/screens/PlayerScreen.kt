@@ -2,6 +2,7 @@ package dot.jcversa.novay.ui.screens
 
 import android.app.Activity
 import android.content.Context
+import android.content.res.Configuration
 import android.content.pm.ActivityInfo
 import android.media.AudioManager
 import androidx.compose.animation.AnimatedVisibility
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.BrightnessMedium
+import androidx.compose.material.icons.outlined.ScreenRotation
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
@@ -729,7 +731,28 @@ private fun PlayerContent(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                    // Rotation : bascule paysage/portrait, chacun en
+                    // mode capteur (suit le sens où le téléphone est tenu).
+                    Icon(
+                        imageVector = Icons.Outlined.ScreenRotation,
+                        contentDescription = "Rotation",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .bounceClick(onClick = {
+                                val activity = view.context as? Activity
+                                activity?.requestedOrientation =
+                                    if (activity?.resources?.configuration?.orientation ==
+                                        Configuration.ORIENTATION_LANDSCAPE
+                                    ) {
+                                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                                    } else {
+                                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                    }
+                            })
+                    )
                     if (!offline && stream.qualities.isNotEmpty()) {
+                        Spacer(Modifier.width(12.dp))
                         Icon(
                             imageVector = Icons.Outlined.Tune,
                             contentDescription = "Qualité",
