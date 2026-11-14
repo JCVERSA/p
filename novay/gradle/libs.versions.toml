@@ -13,6 +13,8 @@ coil = "2.7.0"
 haze = "1.6.10"
 media3 = "1.8.0"
 junit = "4.13.2"
+robolectric = "4.18"
+androidxTestCore = "1.6.1"
 orgJson = "20240303"
 
 [libraries]
@@ -40,6 +42,11 @@ media3-exoplayer-hls = { group = "androidx.media3", name = "media3-exoplayer-hls
 media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 # Tests purs des parseurs (fixtures du bot).
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+# V2.6 (owner) : test UI Robolectric du cadrage video plein ecran.
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
+compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 
 [plugins]

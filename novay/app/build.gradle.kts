@@ -50,6 +50,13 @@ android {
     // dossier test/kotlin pour ne pas dependre de la convention.
     getByName("test").java.srcDir("src/test/kotlin")
   }
+  testOptions {
+    // V2.6 (owner) : tests UI Robolectric (cadrage video plein ecran).
+    unitTests {
+      isIncludeAndroidResources = true
+      isReturnDefaultValues = false
+    }
+  }
   lint {
     // media3 marque une grande partie de son API @UnstableApi (stable en
     // pratique, utilisé en production partout) — les usages sont couverts
@@ -81,6 +88,11 @@ dependencies {
   implementation(libs.media3.exoplayer.hls)
   implementation(libs.media3.ui)
   testImplementation(libs.junit)
+  // V2.6 (owner) : test UI Robolectric du cadrage video plein ecran.
+  testImplementation(libs.robolectric)
+  testImplementation(libs.androidx.test.core)
+  testImplementation(libs.compose.ui.test.junit4)
+  testImplementation(libs.compose.ui.test.manifest)
   // org.json reel pour les tests JVM (celui d'android.jar est un stub).
   testImplementation(libs.org.json)
   debugImplementation(libs.androidx.compose.ui.tooling)
