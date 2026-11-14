@@ -28,6 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.BrightnessMedium
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -305,6 +306,11 @@ private fun PlayerContent(
     // V2.2 (étape 7) : verrouillage des contrôles — les gestes et les
     // contrôles se figent, seul un bouton déverrouille.
     var controlsLocked by remember { mutableStateOf(false) }
+    // V2.2 étape 5 : vitesse de lecture (bouton) + appui long = 2x
+    // tant que le doigt reste posé.
+    var playbackSpeed by remember { mutableStateOf(1f) }
+    var showSpeed by remember { mutableStateOf(false) }
+    var longPressFast by remember { mutableStateOf(false) }
     // V2.2 étape 2 : glissé vertical — luminosité (gauche) / volume
     // (droite), avec indicateur %.
     var verticalFeedback by remember { mutableStateOf<VerticalFeedback?>(null) }
@@ -477,6 +483,22 @@ private fun PlayerContent(
                     if (controlsLocked) return@pointerInput
                     detectTapGestures(
                         onTap = { controlsVisible = !controlsVisible },
+                        // Appui long : vitesse 2x jusqu'au relâchement
+                        // (passer un générique), puis retour à la vitesse
+                        // choisie.
+                        onLongPress = {
+                            if (player.isPlaying) {
+                                longPressFast = true
+                                player.setPlaybackSpeed(2f)
+                            }
+                        },
+                        onPress = {
+                            tryAwaitRelease()
+                            if (longPressFast) {
+                                longPressFast = false
+                                player.setPlaybackSpeed(playbackSpeed)
+                            }
+                        },
                         onDoubleTap = { offset ->
                             val forward = offset.x > size.width / 2
                             val inc = if (forward) {
@@ -577,6 +599,24 @@ private fun PlayerContent(
                     }
                 }
         )
+
+        // Vitesse 2× pendant l'appui long.
+        if (longPressFast) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color(0xB3000000),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 64.dp)
+            ) {
+                Text(
+                    text = "2×",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
+                )
+            }
+        }
 
         // Feedback volume / luminosité : icône + pourcentage, au centre.
         verticalFeedback?.let { vf ->
@@ -698,7 +738,16 @@ private fun PlayerContent(
                                 .size(28.dp)
                                 .bounceClick(onClick = { showQualities = !showQualities })
                         )
+                        Spacer(Modifier.width(12.dp))
                     }
+                    Icon(
+                        imageVector = Icons.Outlined.Speed,
+                        contentDescription = "Vitesse de lecture",
+                        tint = if (showSpeed || playbackSpeed != 1f) Amber500 else Color.White,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .bounceClick(onClick = { showSpeed = !showSpeed })
+                    )
                 }
 
                 // Lecture / pause au centre.
@@ -729,7 +778,7 @@ private fun PlayerContent(
                             modifier = Modifier.padding(12.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            QualityPill(
+                            SelectorPill(
                                 label = "Auto",
                                 selected = selectedQualityUrl == null,
                                 onClick = {
@@ -739,7 +788,7 @@ private fun PlayerContent(
                             )
                             stream.qualities.forEachIndexed { index, quality ->
                                 AnimateEntrance(index = index) {
-                                    QualityPill(
+                                    SelectorPill(
                                         label = quality.label,
                                         selected = selectedQualityUrl == quality.url,
                                         onClick = {
@@ -748,6 +797,45 @@ private fun PlayerContent(
                                         }
                                     )
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // Choix de la vitesse (par-dessus la vidéo).
+                AnimatedVisibility(
+                    visible = showSpeed,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 40.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = Color(0xE6141416)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                "0,5×" to 0.5f,
+                                "0,75×" to 0.75f,
+                                "1×" to 1f,
+                                "1,25×" to 1.25f,
+                                "1,5×" to 1.5f,
+                                "2×" to 2f
+                            ).forEach { (label, value) ->
+                                SelectorPill(
+                                    label = label,
+                                    selected = playbackSpeed == value,
+                                    onClick = {
+                                        playbackSpeed = value
+                                        player.setPlaybackSpeed(value)
+                                        showSpeed = false
+                                    }
+                                )
                             }
                         }
                     }
@@ -798,7 +886,7 @@ private fun PlayerContent(
 }
 
 @Composable
-private fun QualityPill(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun SelectorPill(label: String, selected: Boolean, onClick: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(999.dp),
         color = if (selected) MaterialTheme.colorScheme.primary else Color(0x33FFFFFF),
