@@ -72,7 +72,7 @@ class EpisodeDownloadMetaLocalTest {
     }
 
     @Test
-    fun `fichier file:// seven-to-nine lu lui aussi en local`() {
+    fun `fichier file Uri sept a neuf lu lui aussi en local`() {
         val local = base.copy(
             localUri = "file:///storage/emulated/0/Download/NoVaY/Solo Leveling - S01E03 VOSTFR 1080p.mp4",
             fileName = "Solo Leveling - S01E03 VOSTFR 1080p.mp4"

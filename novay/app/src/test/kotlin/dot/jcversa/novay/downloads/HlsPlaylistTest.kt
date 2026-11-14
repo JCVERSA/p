@@ -27,7 +27,7 @@ class HlsPlaylistTest {
     }
 
     @Test
-    fun `playlist media ts : segments relatifs resolus contre la base`() {
+    fun `playlist media ts segments relatifs resolus contre la base`() {
         val media = """
             #EXTM3U
             #EXT-X-TARGETDURATION:6
@@ -53,7 +53,7 @@ class HlsPlaylistTest {
     }
 
     @Test
-    fun `playlist fmp4 : segment d init ext-x-map resolu`() {
+    fun `playlist fmp4 segment d init ext-x-map resolu`() {
         val media = """
             #EXTM3U
             #EXT-X-TARGETDURATION:6
