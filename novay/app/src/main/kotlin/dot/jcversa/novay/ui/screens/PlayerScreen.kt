@@ -11,7 +11,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -91,6 +90,7 @@ import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
 /**
@@ -476,88 +476,105 @@ private fun PlayerContent(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Couche de gestes 1 : tap = afficher/masquer les contrôles,
-        // double-tap = ±10 s CUMULATIF (moitié gauche/droite de l'écran,
-        // tap-tap-tap à droite = +10 s, +20 s, +30 s — cf. nextplayer).
+        // Couche de gestes UNIQUE : en Compose, des boîtes sœurs
+        // superposées ne reçoivent pas toutes les évènements (le test
+        // d'atteinte s'arrête au frère du dessus) — taps et glissés
+        // doivent vivre dans le MÊME pointerInput. Sinon : le calque des
+        // glissés étouffait celui des taps, et les contrôles masqués ne
+        // revenaient jamais (retour owner V2.2).
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(player, durationMs, controlsLocked) {
                     if (controlsLocked) return@pointerInput
-                    detectTapGestures(
-                        onTap = { controlsVisible = !controlsVisible },
-                        // Appui long : vitesse 2x jusqu'au relâchement
-                        // (passer un générique), puis retour à la vitesse
-                        // choisie.
-                        onLongPress = {
-                            if (player.isPlaying) {
-                                longPressFast = true
-                                player.setPlaybackSpeed(2f)
-                            }
-                        },
-                        onPress = {
-                            tryAwaitRelease()
-                            if (longPressFast) {
-                                longPressFast = false
-                                player.setPlaybackSpeed(playbackSpeed)
-                            }
-                        },
-                        onDoubleTap = { offset ->
-                            val forward = offset.x > size.width / 2
-                            val inc = if (forward) {
-                                PlayerGestureMath.DOUBLE_TAP_INCREMENT_MS
-                            } else {
-                                -PlayerGestureMath.DOUBLE_TAP_INCREMENT_MS
-                            }
-                            val target = (player.currentPosition + inc)
-                                .coerceIn(0L, if (durationMs > 0) durationMs else Long.MAX_VALUE)
-                            player.seekTo(target)
-                            // L'indicateur montre le CUMUL de la rafale.
-                            seekFeedback = SeekFeedback(
-                                deltaMs = doubleTapSeek.tap(forward),
-                                targetMs = player.currentPosition
-                            )
-                        }
-                    )
-                }
-        )
-
-        // Couche de gestes 2 : glissé horizontal = seek progressif
-        // (50 ms de vidéo par pixel, borné à la durée). La vidéo suit le
-        // doigt (scrubbing mode) au lieu de saccader.
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(player, durationMs, controlsLocked) {
-                    if (controlsLocked) return@pointerInput
-                    // Seuil de direction (~8 dp, slop tactile standard) :
-                    // en dessous, le doigt est considéré immobile.
                     val slop = 8.dp.toPx()
+                    val longPressTimeout = viewConfiguration.longPressTimeoutMillis
+                    val doubleTapTimeout = viewConfiguration.doubleTapTimeoutMillis
+
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        var seeking = false
+                        val startX = down.position.x
+                        val startY = down.position.y
+                        val startPosition = player.currentPosition
+                        // 0 = indécis, 1 = glissé horizontal (seek),
+                        // 2 = glissé vertical (volume/luminosité),
+                        // 3 = appui long (2×) consommé.
+                        var mode = 0
                         var verticalIsBrightness = false
                         var verticalStartPct = 0
-                        var verticalActive = false
-                        val startX = down.position.x
-                        val startPosition = player.currentPosition
+
                         while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            if (!change.pressed) break
+                            // Mode indécis : sans mouvement pendant le seuil
+                            // d'appui long, c'est un appui long.
+                            val event = if (mode == 0) {
+                                withTimeoutOrNull(longPressTimeout) { awaitPointerEvent() }
+                            } else {
+                                awaitPointerEvent()
+                            }
+                            if (event == null) {
+                                if (player.isPlaying) {
+                                    longPressFast = true
+                                    player.setPlaybackSpeed(2f)
+                                }
+                                mode = 3
+                                continue
+                            }
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: continue
+                            if (!change.pressed) {
+                                when (mode) {
+                                    1 -> player.isScrubbingModeEnabled = false
+                                    3 -> if (longPressFast) {
+                                        longPressFast = false
+                                        player.setPlaybackSpeed(playbackSpeed)
+                                    }
+                                    0 -> {
+                                        // Relâchement sans glissé : tap. On
+                                        // attend un éventuel second tap.
+                                        val second = withTimeoutOrNull(doubleTapTimeout) {
+                                            awaitFirstDown(requireUnconsumed = false)
+                                        }
+                                        if (second == null) {
+                                            // Tap simple : contrôles on/off.
+                                            controlsVisible = !controlsVisible
+                                        } else {
+                                            // Double-tap ±10 s cumulatif.
+                                            val forward = second.position.x > size.width / 2
+                                            val inc = if (forward) {
+                                                PlayerGestureMath.DOUBLE_TAP_INCREMENT_MS
+                                            } else {
+                                                -PlayerGestureMath.DOUBLE_TAP_INCREMENT_MS
+                                            }
+                                            val target = (player.currentPosition + inc)
+                                                .coerceIn(
+                                                    0L,
+                                                    if (durationMs > 0) durationMs else Long.MAX_VALUE
+                                                )
+                                            player.seekTo(target)
+                                            seekFeedback = SeekFeedback(
+                                                deltaMs = doubleTapSeek.tap(forward),
+                                                targetMs = player.currentPosition
+                                            )
+                                            // Avale la remontée du second tap.
+                                            while (true) {
+                                                val e = awaitPointerEvent()
+                                                if (e.changes.all { !it.pressed }) break
+                                            }
+                                        }
+                                    }
+                                }
+                                break
+                            }
                             val dx = change.position.x - startX
-                            val dy = change.position.y - down.position.y
-                            if (!seeking && !verticalActive) {
+                            val dy = change.position.y - startY
+                            if (mode == 0) {
                                 when {
-                                    // Horizontal : seek progressif.
                                     abs(dx) > slop && abs(dx) > abs(dy) -> {
-                                        seeking = true
+                                        mode = 1
                                         player.isScrubbingModeEnabled = true
                                     }
-                                    // Vertical : luminosité (moitié gauche)
-                                    // ou volume (moitié droite).
                                     abs(dy) > slop && abs(dy) > abs(dx) -> {
-                                        verticalActive = true
+                                        mode = 2
                                         verticalIsBrightness = down.position.x < size.width / 2
                                         verticalStartPct = if (verticalIsBrightness) {
                                             val current = window?.attributes?.screenBrightness ?: -1f
@@ -571,34 +588,36 @@ private fun PlayerContent(
                                     }
                                 }
                             }
-                            if (seeking) {
-                                change.consume()
-                                val target = PlayerGestureMath.dragSeekTarget(
-                                    startPositionMs = startPosition,
-                                    startX = startX,
-                                    currentX = change.position.x,
-                                    durationMs = durationMs
-                                )
-                                player.seekTo(target)
-                                seekFeedback = SeekFeedback(
-                                    deltaMs = target - startPosition,
-                                    targetMs = target
-                                )
-                            } else if (verticalActive) {
-                                change.consume()
-                                val pct = PlayerGestureMath.verticalTarget(
-                                    startPercentage = verticalStartPct,
-                                    startY = down.position.y,
-                                    currentY = change.position.y
-                                )
-                                if (verticalIsBrightness) applyBrightness(pct) else applyVolume(pct)
-                                verticalFeedback = VerticalFeedback(
-                                    isBrightness = verticalIsBrightness,
-                                    percentage = pct
-                                )
+                            when (mode) {
+                                1 -> {
+                                    change.consume()
+                                    val target = PlayerGestureMath.dragSeekTarget(
+                                        startPositionMs = startPosition,
+                                        startX = startX,
+                                        currentX = change.position.x,
+                                        durationMs = durationMs
+                                    )
+                                    player.seekTo(target)
+                                    seekFeedback = SeekFeedback(
+                                        deltaMs = target - startPosition,
+                                        targetMs = target
+                                    )
+                                }
+                                2 -> {
+                                    change.consume()
+                                    val pct = PlayerGestureMath.verticalTarget(
+                                        startPercentage = verticalStartPct,
+                                        startY = startY,
+                                        currentY = change.position.y
+                                    )
+                                    if (verticalIsBrightness) applyBrightness(pct) else applyVolume(pct)
+                                    verticalFeedback = VerticalFeedback(
+                                        isBrightness = verticalIsBrightness,
+                                        percentage = pct
+                                    )
+                                }
                             }
                         }
-                        if (seeking) player.isScrubbingModeEnabled = false
                     }
                 }
         )
