@@ -161,7 +161,16 @@ fun PlayerScreen(
             error = null
             stream = null
             try {
-                stream = source.stream(episode)
+                // V2.5 : épisode téléchargé -> LE FICHIER publié dans
+                // Download/NoVaY/ d'abord (aucun réseau) ; résolution en
+                // ligne seulement si le fichier est absent.
+                stream = if (offline) {
+                    withContext(Dispatchers.IO) {
+                        Downloads.downloadedStream(context, season.url, episode.number)
+                    } ?: source.stream(episode)
+                } else {
+                    source.stream(episode)
+                }
             } catch (e: Exception) {
                 error = e.message ?: "Erreur inconnue"
             } finally {
@@ -385,12 +394,9 @@ private fun PlayerContent(
         val keepMs = player.currentPosition.coerceAtLeast(0L)
         val url = selectedQualityUrl ?: stream.url
         val mediaSource = if (offline) {
-            // V2.5 : lecture depuis le VRAI fichier téléchargé dans le
-            // téléphone (Download/NoVaY/) — jamais le réseau en hors-ligne.
-            Downloads.offlineMediaSource(
-                context,
-                Downloads.downloadedStream(context, season.url, episode.number) ?: stream
-            )
+            // V2.5 : le flux passé est déjà le FICHIER téléchargé dans le
+            // téléphone (substitué à la résolution) — jamais le réseau.
+            Downloads.offlineMediaSource(context, stream)
         } else {
             val httpFactory = DefaultHttpDataSource.Factory()
                 .setUserAgent(stream.headers["User-Agent"] ?: VoiranimeParsers.UA)
