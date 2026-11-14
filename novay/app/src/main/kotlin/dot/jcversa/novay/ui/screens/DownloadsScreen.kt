@@ -22,12 +22,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +40,9 @@ import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.ResolvedStream
 import dot.jcversa.novay.downloads.Downloads
+import dot.jcversa.novay.downloads.SpeedMeter
+import dot.jcversa.novay.downloads.formatEta
+import dot.jcversa.novay.downloads.formatSpeed
 import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.bounceClick
 import dot.jcversa.novay.ui.theme.DarkCardBorder
@@ -46,6 +51,7 @@ import dot.jcversa.novay.ui.theme.MintGreen
 import dot.jcversa.novay.ui.theme.TextMuted
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -61,12 +67,27 @@ fun DownloadsScreen(
 ) {
     val context = LocalContext.current
     var infos by remember { mutableStateOf<List<Downloads.DownloadInfo>>(emptyList()) }
+    // Vitesse lissée + temps restant du téléchargement actif (V2.3).
+    var speeds by remember { mutableStateOf<Map<String, SpeedMeter.Reading>>(emptyMap()) }
+    val meters = remember { mutableMapOf<String, SpeedMeter>() }
+    // Préférence « Wi-Fi uniquement ».
+    var wifiOnly by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        wifiOnly = withContext(Dispatchers.IO) { Downloads.isWifiOnly(context) }
+    }
 
     // L'index media3 est une base SQLite : lecture hors du thread principal.
     LaunchedEffect(Unit) {
         while (true) {
             infos = withContext(Dispatchers.IO) {
                 runCatching { Downloads.snapshot(context) }.getOrDefault(emptyList())
+            }
+            // Vitesse/ETA du (des) téléchargement(s) actif(s).
+            speeds = infos.filter { it.isActive }.associate { info ->
+                val meter = meters.getOrPut(info.id) { SpeedMeter() }
+                info.id to meter.sample(info.bytesDownloaded, info.totalBytes)
             }
             delay(1000)
         }
@@ -95,6 +116,46 @@ fun DownloadsScreen(
             )
         }
         Spacer(Modifier.height(16.dp))
+
+        // Progression de groupe (V2.3) : « 3/12 · 45 % ».
+        val completedCount = infos.count { it.isCompleted }
+        val activeInfo = infos.firstOrNull { it.isActive }
+        if (infos.isNotEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = buildString {
+                        append("$completedCount/${infos.size} téléchargés")
+                        activeInfo?.let { append(" · ${it.percent.toInt()} %") }
+                        speeds[activeInfo?.id]?.let { reading ->
+                            if (reading.bytesPerSecond > 0) {
+                                append(" · ${formatSpeed(reading.bytesPerSecond)}")
+                                if (reading.etaMillis > 0) append(" · ${formatEta(reading.etaMillis)}")
+                            }
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (completedCount == infos.size) MintGreen else TextMuted,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "Wi-Fi uniquement",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted
+                )
+                Switch(
+                    checked = wifiOnly,
+                    onCheckedChange = { checked ->
+                        wifiOnly = checked
+                        scope.launch(Dispatchers.IO) {
+                            Downloads.setWifiOnly(context, checked)
+                        }
+                    }
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+        }
 
         if (infos.isEmpty()) {
             Text(
@@ -207,7 +268,16 @@ private fun DownloadRow(
                 Text(
                     text = when {
                         info.isFailed -> "Échec — relance depuis la liste des épisodes"
-                        info.isActive -> "${info.percent.toInt()} %"
+                        info.isActive -> {
+                            val reading = speeds[info.id]
+                            if (reading != null && reading.bytesPerSecond > 0) {
+                                "${info.percent.toInt()} % · ${formatSpeed(reading.bytesPerSecond)}" +
+                                    (if (reading.etaMillis > 0) " · ${formatEta(reading.etaMillis)}" else "")
+                            } else {
+                                "${info.percent.toInt()} %"
+                            }
+                        }
+                        wifiOnly -> "En attente du Wi-Fi"
                         else -> "En pause"
                     },
                     style = MaterialTheme.typography.bodySmall,

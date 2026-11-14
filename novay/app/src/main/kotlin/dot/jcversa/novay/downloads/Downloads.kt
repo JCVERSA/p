@@ -1,9 +1,11 @@
 package dot.jcversa.novay.downloads
 
 import android.app.Notification
+import android.app.PendingIntent
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -16,10 +18,10 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.DownloadHelper
-import androidx.media3.exoplayer.offline.DownloadCursor
 import androidx.media3.exoplayer.offline.DownloadManager
-import androidx.media3.exoplayer.offline.DownloadNotificationHelper
 import androidx.media3.exoplayer.offline.DownloadService
+import androidx.media3.exoplayer.scheduler.Requirements
+import androidx.core.app.NotificationCompat
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -43,17 +45,22 @@ object Downloads {
 
     const val CHANNEL_ID = "novay_downloads"
 
+    private const val PREFS = "novay_download_prefs"
+    private const val KEY_WIFI_ONLY = "wifi_only"
+
     @Volatile private var appContext: Context? = null
     @Volatile private var cacheInternal: androidx.media3.datasource.cache.SimpleCache? = null
     @Volatile private var managerInternal: DownloadManager? = null
-    @Volatile private var notificationHelper: DownloadNotificationHelper? = null
 
     /** État d'un téléchargement, exposé à l'UI. */
     data class DownloadInfo(
         val id: String,
         val state: Int,
         val percent: Float,
-        val meta: EpisodeDownloadMeta?
+        val meta: EpisodeDownloadMeta?,
+        /** Octets reçus / taille totale (pour vitesse et temps restant). */
+        val bytesDownloaded: Long = 0L,
+        val totalBytes: Long = 0L
     ) {
         val isCompleted: Boolean get() = state == Download.STATE_COMPLETED
         val isFailed: Boolean get() = state == Download.STATE_FAILED
@@ -70,6 +77,35 @@ object Downloads {
         // Instancie le manager (charge l'index persisté + reprend les
         // téléchargements interrompus).
         manager(context.applicationContext)
+        // Contrainte réseau persistée (V2.3) : Wi-Fi uniquement ?
+        if (isWifiOnly(context)) {
+            runCatching {
+                manager(context.applicationContext)
+                    .setRequirements(Requirements(Requirements.NETWORK_UNMETERED))
+            }
+        }
+    }
+
+    /** True si l'utilisateur a demandé « Wi-Fi uniquement ». */
+    fun isWifiOnly(context: Context): Boolean =
+        context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_WIFI_ONLY, false)
+
+    /**
+     * Active/interrompt « Wi-Fi uniquement » : les téléchargements se
+     * mettent en attente en 4G et reprennent tout seuls en Wi-Fi
+     * (Requirements media3 — inspiration Downpour/Ketch).
+     */
+    fun setWifiOnly(context: Context, wifiOnly: Boolean) {
+        context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_WIFI_ONLY, wifiOnly).apply()
+        runCatching {
+            manager(context).setRequirements(
+                if (wifiOnly) Requirements(Requirements.NETWORK_UNMETERED) else Requirements(0)
+            )
+        }
     }
 
     fun manager(context: Context): DownloadManager {
@@ -198,7 +234,9 @@ object Downloads {
                         id = d.request.id,
                         state = d.state,
                         percent = d.percentDownloaded,
-                        meta = EpisodeDownloadMeta.fromJson(d.request.data)
+                        meta = EpisodeDownloadMeta.fromJson(d.request.data),
+                        bytesDownloaded = d.bytesDownloaded,
+                        totalBytes = d.contentLength
                     )
                 )
             }
@@ -227,24 +265,78 @@ object Downloads {
         }
     }
 
+    /**
+     * Notification de progression PILOTABLE (V2.3, inspiration Ketch) :
+     * boutons Pause / Reprendre / Annuler directement dans le tiroir de
+     * notifications — inutile de rouvrir l'appli pour mettre en pause.
+     */
     fun progressNotification(
         context: Context,
         downloads: List<Download>,
         notMetRequirements: Int
     ): Notification {
-        val helper = notificationHelper ?: synchronized(this) {
-            notificationHelper ?: DownloadNotificationHelper(context, CHANNEL_ID)
-                .also { notificationHelper = it }
+        val active = downloads.filter {
+            it.state == Download.STATE_DOWNLOADING || it.state == Download.STATE_RESTARTING
         }
-        return helper.buildProgressNotification(
-            context,
-            android.R.drawable.stat_sys_download,
-            /* contentIntent= */ null,
-            "Téléchargements NoVaY",
-            downloads,
-            notMetRequirements
-        )
+        val queued = downloads.filter { it.state == Download.STATE_QUEUED }
+        val pausedGlobally = runCatching {
+            manager(context).downloadsPaused
+        }.getOrDefault(false)
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("Téléchargements NoVaY")
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+
+        when {
+            active.isNotEmpty() -> {
+                val percents = active.map { it.percentDownloaded }.filter { it >= 0f }
+                val percent = if (percents.isEmpty()) -1 else percents.sum().toInt() / percents.size
+                val suffix = if (queued.isNotEmpty()) " · ${queued.size} en file" else ""
+                builder
+                    .setContentText(
+                        "${active.size} en cours · ${percent.coerceAtLeast(0)} %$suffix"
+                    )
+                    .setProgress(100, percent.coerceAtLeast(0), percent < 0)
+                    .addAction(
+                        0, "Pause",
+                        actionIntent(context, NovayDownloadService.ACTION_PAUSE_ALL, 1)
+                    )
+            }
+            pausedGlobally || queued.isNotEmpty() -> {
+                val label = when {
+                    notMetRequirements != 0 -> "En attente du réseau"
+                    pausedGlobally -> "En pause"
+                    else -> "En file"
+                }
+                builder
+                    .setContentText(label)
+                    .addAction(
+                        0, "Reprendre",
+                        actionIntent(context, NovayDownloadService.ACTION_RESUME_ALL, 2)
+                    )
+            }
+            else -> builder.setContentText("Terminé")
+        }
+
+        // Annuler reste possible tant qu'il y a du travail.
+        if (active.isNotEmpty() || queued.isNotEmpty()) {
+            builder.addAction(
+                0, "Annuler",
+                actionIntent(context, NovayDownloadService.ACTION_CANCEL_ALL, 3)
+            )
+        }
+        return builder.build()
     }
+
+    private fun actionIntent(context: Context, action: String, requestCode: Int): PendingIntent =
+        PendingIntent.getService(
+            context.applicationContext,
+            requestCode,
+            Intent(context.applicationContext, NovayDownloadService::class.java).setAction(action),
+            PendingIntent.FLAG_IMMUTABLE
+        )
 
     private fun createChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= 26) {
