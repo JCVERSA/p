@@ -8,23 +8,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import dot.jcversa.novay.data.AnimeSearchResult
+import dot.jcversa.novay.data.GenreCatalog
 import dot.jcversa.novay.data.LibraryEntry
 import dot.jcversa.novay.data.SearchHistoryEntry
 import dot.jcversa.novay.data.WatchHistoryEntry
 
-val BROWSE_DISCOVERY_CHIPS = listOf(
-    "Shonen",
-    "Seinen",
-    "Action",
-    "Isekai",
-    "Romance",
-    "Fantastique",
-)
+val BROWSE_DISCOVERY_CHIPS = GenreCatalog.CORE_GENRES
 
 /**
  * Contrôleur d'état @Stable inspiré de Jetsnack (`SearchState`) pour le
  * Catalogue NoVaY : sépare strictement la saisie/le focus des suggestions
- * instantanées, du live catalog et des résultats soumis.
+ * instantanées, du live catalog, du filtrage par genre et des résultats soumis.
  */
 @Stable
 class BrowseSearchController(
@@ -37,6 +31,12 @@ class BrowseSearchController(
         private set
 
     var submittedState by mutableStateOf<BrowseSearchState>(BrowseSearchState.Idle)
+        private set
+
+    var selectedGenre by mutableStateOf<String?>(null)
+        private set
+
+    var genreState by mutableStateOf<BrowseSearchState>(BrowseSearchState.Idle)
         private set
 
     var featuredState by mutableStateOf<BrowseFeaturedState>(BrowseFeaturedState.Loading)
@@ -61,11 +61,25 @@ class BrowseSearchController(
         get() = queryField.text.trim()
 
     val searchDisplay: BrowseSearchDisplay by derivedStateOf {
+        val activeGenre = selectedGenre
         when (val submitted = submittedState) {
             BrowseSearchState.Loading -> BrowseSearchDisplay.LoadingResults
             is BrowseSearchState.Error -> BrowseSearchDisplay.Error
             is BrowseSearchState.Results -> {
-                if (submitted.results.isEmpty()) {
+                if (activeGenre != null) {
+                    val hasSearchGenres = submitted.results.any { it.genres.isNotEmpty() }
+                    if (hasSearchGenres) {
+                        val filtered = submitted.results.filter { GenreCatalog.matches(it.genres, activeGenre) }
+                        if (filtered.isEmpty()) BrowseSearchDisplay.GenreEmpty else BrowseSearchDisplay.GenreResults
+                    } else {
+                        when (val g = genreState) {
+                            BrowseSearchState.Loading, BrowseSearchState.Idle -> BrowseSearchDisplay.GenreLoading
+                            is BrowseSearchState.Error -> BrowseSearchDisplay.GenreError
+                            is BrowseSearchState.Results ->
+                                if (g.results.isEmpty()) BrowseSearchDisplay.GenreEmpty else BrowseSearchDisplay.GenreResults
+                        }
+                    }
+                } else if (submitted.results.isEmpty()) {
                     BrowseSearchDisplay.EmptyResults
                 } else {
                     BrowseSearchDisplay.Results
@@ -74,13 +88,19 @@ class BrowseSearchController(
             BrowseSearchState.Idle -> when {
                 queryField.text.isNotBlank() -> BrowseSearchDisplay.TypingSuggestions
                 isFocused -> BrowseSearchDisplay.FocusedEmptySuggestions
+                activeGenre != null -> when (val g = genreState) {
+                    BrowseSearchState.Loading, BrowseSearchState.Idle -> BrowseSearchDisplay.GenreLoading
+                    is BrowseSearchState.Error -> BrowseSearchDisplay.GenreError
+                    is BrowseSearchState.Results ->
+                        if (g.results.isEmpty()) BrowseSearchDisplay.GenreEmpty else BrowseSearchDisplay.GenreResults
+                }
                 else -> BrowseSearchDisplay.SpotlightIdle
             }
         }
     }
 
     val canHandleBack: Boolean by derivedStateOf {
-        isFocused || queryField.text.isNotEmpty() || submittedState !is BrowseSearchState.Idle
+        isFocused || queryField.text.isNotEmpty() || submittedState !is BrowseSearchState.Idle || selectedGenre != null
     }
 
     val suggestions: SmartSearchSuggestionsUi by derivedStateOf {
@@ -141,9 +161,54 @@ class BrowseSearchController(
     fun resetToSpotlight() {
         queryField = TextFieldValue("")
         submittedState = BrowseSearchState.Idle
+        selectedGenre = null
+        genreState = BrowseSearchState.Idle
         liveCatalogResults = emptyList()
         isLiveLoading = false
         isFocused = false
+    }
+
+    fun selectGenre(genre: String?) {
+        val normalized = genre?.let(GenreCatalog::normalize)?.takeIf { it.isNotEmpty() }
+        if (normalized == null || selectedGenre?.let(GenreCatalog::foldKey) == GenreCatalog.foldKey(normalized)) {
+            clearGenre()
+            return
+        }
+        isFocused = false
+        selectedGenre = normalized
+        val submitted = submittedState
+        val canFilterSearchInMemory = submitted is BrowseSearchState.Results &&
+            submitted.results.any { it.genres.isNotEmpty() }
+        genreState = if (canFilterSearchInMemory) {
+            BrowseSearchState.Results(
+                submitted.results.filter { GenreCatalog.matches(it.genres, normalized) }
+            )
+        } else {
+            BrowseSearchState.Loading
+        }
+    }
+
+    fun clearGenre() {
+        selectedGenre = null
+        genreState = BrowseSearchState.Idle
+    }
+
+    fun finishGenreSuccess(results: List<AnimeSearchResult>) {
+        if (selectedGenre != null) {
+            genreState = BrowseSearchState.Results(results)
+        }
+    }
+
+    fun finishGenreError(message: String) {
+        if (selectedGenre != null) {
+            genreState = BrowseSearchState.Error(message)
+        }
+    }
+
+    fun retryGenre() {
+        if (selectedGenre != null) {
+            genreState = BrowseSearchState.Loading
+        }
     }
 
     fun prepareSubmit(explicitQuery: String = queryField.text): String? {
@@ -154,6 +219,8 @@ class BrowseSearchController(
         }
         isFocused = false
         isLiveLoading = false
+        selectedGenre = null
+        genreState = BrowseSearchState.Idle
         submittedState = BrowseSearchState.Loading
         return q
     }

@@ -21,9 +21,13 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.R
+import dot.jcversa.novay.ui.theme.NovayTheme
 
 /** État de chargement centré (spinner signature crimson + message). */
 @Composable
@@ -46,9 +50,16 @@ fun LoadingView(message: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** État d'erreur centré avec action « Réessayer » accessible (>=48dp). */
+/** État d'erreur centré avec titre contextuel et action « Réessayer » accessible (>=48dp). */
 @Composable
-fun ErrorView(message: String, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+fun ErrorView(
+    message: String,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+    title: String = stringResource(R.string.error_connection_title),
+    icon: ImageVector = NovayIcons.OfflineCloud,
+) {
+    val overlays = NovayTheme.overlays
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -67,7 +78,7 @@ fun ErrorView(message: String, onRetry: () -> Unit, modifier: Modifier = Modifie
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = NovayIcons.OfflineCloud,
+                        imageVector = icon,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(30.dp),
@@ -76,7 +87,7 @@ fun ErrorView(message: String, onRetry: () -> Unit, modifier: Modifier = Modifie
             }
             Spacer(Modifier.height(16.dp))
             Text(
-                text = "Connexion interrompue",
+                text = title,
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onBackground,
                 textAlign = TextAlign.Center,
@@ -92,8 +103,8 @@ fun ErrorView(message: String, onRetry: () -> Unit, modifier: Modifier = Modifie
             Button(
                 onClick = onRetry,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    containerColor = overlays.ctaContainer,
+                    contentColor = overlays.onCtaContainer,
                 ),
                 modifier = Modifier
                     .minimumInteractiveComponentSize()
@@ -106,7 +117,7 @@ fun ErrorView(message: String, onRetry: () -> Unit, modifier: Modifier = Modifie
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = "Réessayer",
+                    text = stringResource(R.string.action_retry),
                     style = MaterialTheme.typography.labelLarge
                 )
             }

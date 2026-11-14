@@ -9,10 +9,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.ui.theme.NovayTheme
 
 /**
  * Badge de langue éditorial :
- *  - VF en Crimson cinéma (rôle primaire) ;
+ *  - VF en Crimson cinéma (rôle primaire accessible >= 5.0:1) ;
  *  - VOSTFR en Émeraude (rôle tertiaire).
  */
 @Composable
@@ -21,22 +22,27 @@ fun LangPill(
     vf: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val tint = if (vf) {
+    val bgTint = if (vf) {
         MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.tertiary
+    }
+    val textColor = if (vf) {
+        NovayTheme.overlays.crimsonOnContainer
     } else {
         MaterialTheme.colorScheme.tertiary
     }
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(999.dp),
-        color = tint.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, tint.copy(alpha = 0.35f)),
+        color = bgTint.copy(alpha = 0.16f),
+        border = BorderStroke(1.dp, bgTint.copy(alpha = 0.40f)),
     ) {
         Text(
             text = text,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
             style = MaterialTheme.typography.labelSmall,
-            color = tint,
+            color = textColor,
             maxLines = 1,
         )
     }

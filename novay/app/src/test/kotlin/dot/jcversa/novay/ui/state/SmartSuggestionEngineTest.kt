@@ -149,4 +149,31 @@ class SmartSuggestionEngineTest {
         assertEquals(BrowseSearchDisplay.SpotlightIdle, controller.searchDisplay)
         assertFalse(controller.canHandleBack)
     }
+
+    @Test
+    fun `BrowseSearchController gere la selection de genre, erreur, reessai et reinitialisation`() {
+        val controller = BrowseSearchController()
+
+        controller.selectGenre("Action")
+        assertEquals("Action", controller.selectedGenre)
+        assertEquals(BrowseSearchDisplay.GenreLoading, controller.searchDisplay)
+        assertTrue(controller.canHandleBack)
+
+        controller.finishGenreError("Reseau indisponible")
+        assertEquals(BrowseSearchDisplay.GenreError, controller.searchDisplay)
+
+        controller.retryGenre()
+        assertEquals(BrowseSearchDisplay.GenreLoading, controller.searchDisplay)
+
+        controller.finishGenreSuccess(
+            listOf(AnimeSearchResult(title = "Jujutsu Kaisen", url = "https://anime-sama.fr/catalogue/jjk", genres = listOf("Action")))
+        )
+        assertEquals(BrowseSearchDisplay.GenreResults, controller.searchDisplay)
+
+        // Re-tapping active genre clears filter back to SpotlightIdle
+        controller.selectGenre("Action")
+        assertNull(controller.selectedGenre)
+        assertEquals(BrowseSearchDisplay.SpotlightIdle, controller.searchDisplay)
+        assertFalse(controller.canHandleBack)
+    }
 }

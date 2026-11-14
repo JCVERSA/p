@@ -7,13 +7,16 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -22,9 +25,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -35,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -50,9 +57,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
@@ -133,27 +142,6 @@ fun PlayerScreen(
         if (playerManager.scrollToTopSignal > 0) {
             listState.animateScrollToItem(0)
         }
-    }
-
-    val embeddedVisibleFraction by remember(listState) {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val item0 = info.visibleItemsInfo.firstOrNull { it.index == 0 }
-            if (item0 == null) {
-                0f
-            } else {
-                MiniPlayerGeometry.computeVisibleFraction(
-                    itemOffset = item0.offset,
-                    itemSize = item0.size,
-                    viewportStart = info.viewportStartOffset,
-                    viewportEnd = info.viewportEndOffset,
-                )
-            }
-        }
-    }
-
-    LaunchedEffect(embeddedVisibleFraction) {
-        playerManager.updateInlineSlotVisibility(embeddedVisibleFraction)
     }
 
     val currentSession = playerManager.session
@@ -290,237 +278,75 @@ fun PlayerScreen(
             }
         }
 
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
-            contentAlignment = Alignment.TopCenter,
         ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .widthIn(max = 840.dp)
-                    .navigationBarsPadding(),
-                contentPadding = PaddingValues(bottom = 32.dp),
-            ) {
-                // ── 1. Emplacement du lecteur vidéo portrait ──────────────────
-                item(key = "embedded_player_slot", contentType = "video_player") {
-                    EmbeddedVideoPlayer(
-                        playerManager = playerManager,
-                        showSurface = playerManager.presentationMode == PlayerPresentationMode.EMBEDDED_PORTRAIT,
-                        videoSurfaceSlot = videoSurfaceSlot,
-                        onRetry = { playerManager.retryResolve(source) },
-                    )
+            val isSplitPane = maxWidth >= 720.dp
+            val episodesErrorTitle = stringResource(R.string.error_episodes_title)
+
+            if (isSplitPane) {
+                LaunchedEffect(Unit) {
+                    playerManager.updateInlineSlotVisibility(1f)
                 }
 
-                // ── 2. Informations de l'animé & actions ──────────────────────
-                item(key = "anime_info_header", contentType = "anime_info") {
+                Row(modifier = Modifier.fillMaxSize()) {
                     Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                            .weight(0.56f)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState())
+                            .navigationBarsPadding()
+                            .padding(bottom = 16.dp),
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            if (!activePosterUrl.isNullOrBlank()) {
-                                PosterImage(
-                                    url = activePosterUrl,
-                                    contentDescription = activeAnimeTitle,
-                                    modifier = Modifier
-                                        .size(width = 52.dp, height = 74.dp)
-                                        .then(
-                                            if (activeAnime != null) {
-                                                Modifier.novaySharedPoster(activeAnime.url)
-                                            } else {
-                                                Modifier
-                                            },
-                                        )
-                                        .clip(MaterialTheme.shapes.small)
-                                        .border(0.5.dp, overlays.glassBorder, MaterialTheme.shapes.small),
-                                )
-                            }
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Text(
-                                    text = activePlayingEpisode.label,
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = MaterialTheme.colorScheme.onBackground,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    text = activeAnimeTitle,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    activePlayingSeason.language?.let { lang ->
-                                        LangPill(text = lang, vf = lang.equals("VF", true))
-                                    }
-                                    if (currentSession?.offline == true) {
-                                        NovayBadge(
-                                            text = "Hors-ligne",
-                                            color = MaterialTheme.colorScheme.tertiary,
-                                            textColor = MaterialTheme.colorScheme.onTertiary,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        if (activeAnime != null) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                OutlinedButton(
-                                    onClick = ::toggleFollow,
-                                    border = BorderStroke(
-                                        width = 1.dp,
-                                        color = if (inLibrary) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.outlineVariant
-                                        },
-                                    ),
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = if (inLibrary) {
-                                            MaterialTheme.colorScheme.secondaryContainer
-                                        } else {
-                                            MaterialTheme.colorScheme.surfaceContainerLow
-                                        },
-                                        contentColor = if (inLibrary) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        },
-                                    ),
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("watch_follow_button"),
-                                ) {
-                                    NovayFavoriteMorphIcon(
-                                        inLibrary = inLibrary,
-                                        tint = if (inLibrary) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        },
-                                        size = 18.dp,
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(if (inLibrary) "Suivi" else "Suivre")
-                                }
-                                OutlinedButton(
-                                    onClick = { onOpenShow(activeAnime) },
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("watch_open_show_button"),
-                                ) {
-                                    Icon(
-                                        imageVector = NovayIcons.SeasonReel,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Fiche animé")
-                                }
-                            }
-                        }
+                        EmbeddedVideoPlayer(
+                            playerManager = playerManager,
+                            showSurface = playerManager.presentationMode == PlayerPresentationMode.EMBEDDED_PORTRAIT,
+                            videoSurfaceSlot = videoSurfaceSlot,
+                            onRetry = { playerManager.retryResolve(source) },
+                            modifier = Modifier.heightIn(max = (this@BoxWithConstraints.maxHeight * 0.68f).coerceAtLeast(200.dp)),
+                        )
+                        AnimeInfoHeaderContent(
+                            activeAnime = activeAnime,
+                            activeAnimeTitle = activeAnimeTitle,
+                            activePosterUrl = activePosterUrl,
+                            activePlayingSeason = activePlayingSeason,
+                            activePlayingEpisode = activePlayingEpisode,
+                            isOffline = currentSession?.offline == true,
+                            inLibrary = inLibrary,
+                            onToggleFollow = ::toggleFollow,
+                            onOpenShow = onOpenShow,
+                        )
                     }
-                    HorizontalDivider(
+
+                    VerticalDivider(
                         thickness = 0.5.dp,
                         color = MaterialTheme.colorScheme.outlineVariant,
                     )
-                }
 
-                // ── 3. Sélection de saison / langue ───────────────────────────
-                if (seasonsList.size > 1) {
-                    item(key = "season_selector", contentType = "season_chips") {
-                        Column(
-                            modifier = Modifier.padding(top = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                text = "Saisons & Langues",
-                                style = MaterialTheme.typography.header,
-                                color = MaterialTheme.colorScheme.onBackground,
-                                modifier = Modifier.padding(horizontal = 16.dp),
-                            )
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                items(seasonsList, key = { it.url }) { s ->
-                                    val selected = s.url.trimEnd('/') == browsingSeason.url.trimEnd('/')
-                                    val label = buildString {
-                                        append(s.name)
-                                        s.language?.let { append(" (${it.uppercase()})") }
-                                    }
-                                    FilterChip(
-                                        selected = selected,
-                                        onClick = { browsingSeason = s },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                            selectedLabelColor = MaterialTheme.colorScheme.primary,
-                                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                                        ),
-                                        label = { Text(label, maxLines = 1) },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ── 4. Liste d'épisodes ───────────────────────────────────────
-                item(key = "episodes_header", contentType = "section_header") {
-                    Text(
-                        text = "Épisodes · ${browsingSeason.name}",
-                        style = MaterialTheme.typography.header,
-                        color = MaterialTheme.colorScheme.onBackground,
-                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp),
-                    )
-                }
-
-                when {
-                    episodesError != null -> item(key = "episodes_error") {
-                        ErrorView(
-                            message = episodesError ?: "Erreur inconnue",
-                            onRetry = { episodeRetry++ },
-                            modifier = Modifier.padding(vertical = 20.dp),
-                        )
-                    }
-                    episodes == null -> item(key = "episodes_skeleton") {
-                        EpisodesListSkeleton()
-                    }
-                    else -> items(
-                        items = episodes.orEmpty(),
-                        key = { "${browsingSeason.url}_${it.number}" },
-                        contentType = { "watch_episode_row" },
-                    ) { ep ->
-                        val isCurrent = browsingSeason.url.trimEnd('/') == activePlayingSeason.url.trimEnd('/') &&
-                            ep.number == activePlayingEpisode.number
-                        val dlInfo = downloadedByEpisode[ep.number]
-                        val resumeMs = resumePositions[ep.number] ?: 0L
-                        val itemMod = if (motion.reduceMotion) Modifier else Modifier.animateItem()
-                        WatchEpisodeRow(
-                            episode = ep,
-                            isCurrent = isCurrent,
-                            isDownloaded = dlInfo != null,
-                            resumeMs = resumeMs,
-                            onClick = {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .weight(0.44f)
+                            .fillMaxHeight()
+                            .navigationBarsPadding(),
+                        contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp),
+                    ) {
+                        watchRightPaneSections(
+                            seasonsList = seasonsList,
+                            browsingSeason = browsingSeason,
+                            onSelectSeason = { browsingSeason = it },
+                            episodes = episodes,
+                            episodesError = episodesError,
+                            episodesErrorTitle = episodesErrorTitle,
+                            onRetryEpisodes = { episodeRetry++ },
+                            activePlayingSeason = activePlayingSeason,
+                            activePlayingEpisode = activePlayingEpisode,
+                            downloadedByEpisode = downloadedByEpisode,
+                            resumePositions = resumePositions,
+                            reduceMotion = motion.reduceMotion,
+                            onSelectEpisode = { ep, dlInfo ->
                                 val offline = dlInfo?.meta?.toStream()
                                 playerManager.openEpisode(
                                     source = source,
@@ -532,45 +358,377 @@ fun PlayerScreen(
                                     initialStream = offline,
                                 )
                             },
-                            modifier = itemMod,
+                            recommendations = recommendations,
+                            onOpenShow = onOpenShow,
                         )
                     }
                 }
+            } else {
+                val embeddedVisibleFraction by remember(listState) {
+                    derivedStateOf {
+                        val info = listState.layoutInfo
+                        val item0 = info.visibleItemsInfo.firstOrNull { it.index == 0 }
+                        if (item0 == null) {
+                            0f
+                        } else {
+                            MiniPlayerGeometry.computeVisibleFraction(
+                                itemOffset = item0.offset,
+                                itemSize = item0.size,
+                                viewportStart = info.viewportStartOffset,
+                                viewportEnd = info.viewportEndOffset,
+                            )
+                        }
+                    }
+                }
 
-                // ── 5. Recommandations ────────────────────────────────────────
-                if (recommendations.isNotEmpty()) {
-                    item(key = "recommendations_header", contentType = "section_header") {
-                        Text(
-                            text = "Recommandations",
-                            style = MaterialTheme.typography.header,
-                            color = MaterialTheme.colorScheme.onBackground,
-                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 22.dp, bottom = 10.dp),
+                LaunchedEffect(embeddedVisibleFraction) {
+                    playerManager.updateInlineSlotVisibility(embeddedVisibleFraction)
+                }
+
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .widthIn(max = 840.dp)
+                            .navigationBarsPadding(),
+                        contentPadding = PaddingValues(bottom = 32.dp),
+                    ) {
+                        // ── 1. Emplacement du lecteur vidéo portrait ──────────────────
+                        item(key = "embedded_player_slot", contentType = "video_player") {
+                            EmbeddedVideoPlayer(
+                                playerManager = playerManager,
+                                showSurface = playerManager.presentationMode == PlayerPresentationMode.EMBEDDED_PORTRAIT,
+                                videoSurfaceSlot = videoSurfaceSlot,
+                                onRetry = { playerManager.retryResolve(source) },
+                            )
+                        }
+
+                        // ── 2. Informations de l'animé & actions ──────────────────────
+                        item(key = "anime_info_header", contentType = "anime_info") {
+                            AnimeInfoHeaderContent(
+                                activeAnime = activeAnime,
+                                activeAnimeTitle = activeAnimeTitle,
+                                activePosterUrl = activePosterUrl,
+                                activePlayingSeason = activePlayingSeason,
+                                activePlayingEpisode = activePlayingEpisode,
+                                isOffline = currentSession?.offline == true,
+                                inLibrary = inLibrary,
+                                onToggleFollow = ::toggleFollow,
+                                onOpenShow = onOpenShow,
+                            )
+                            HorizontalDivider(
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                            )
+                        }
+
+                        // ── 3–5. Saisons, Épisodes, Recommandations ──────────────────
+                        watchRightPaneSections(
+                            seasonsList = seasonsList,
+                            browsingSeason = browsingSeason,
+                            onSelectSeason = { browsingSeason = it },
+                            episodes = episodes,
+                            episodesError = episodesError,
+                            episodesErrorTitle = episodesErrorTitle,
+                            onRetryEpisodes = { episodeRetry++ },
+                            activePlayingSeason = activePlayingSeason,
+                            activePlayingEpisode = activePlayingEpisode,
+                            downloadedByEpisode = downloadedByEpisode,
+                            resumePositions = resumePositions,
+                            reduceMotion = motion.reduceMotion,
+                            onSelectEpisode = { ep, dlInfo ->
+                                val offline = dlInfo?.meta?.toStream()
+                                playerManager.openEpisode(
+                                    source = source,
+                                    season = browsingSeason,
+                                    episode = ep,
+                                    animeTitle = activeAnimeTitle,
+                                    posterUrl = activePosterUrl,
+                                    anime = activeAnime,
+                                    initialStream = offline,
+                                )
+                            },
+                            recommendations = recommendations,
+                            onOpenShow = onOpenShow,
                         )
                     }
-                    item(key = "recommendations_rail", contentType = "recommendations") {
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            items(
-                                items = recommendations,
-                                key = { "rec_${it.url}" },
-                                contentType = { "rec_card" },
-                            ) { rec ->
-                                val mod = if (motion.reduceMotion) Modifier.width(134.dp) else Modifier
-                                    .width(134.dp)
-                                    .animateItem()
-                                Box(modifier = mod) {
-                                    AnimeComfortableGridItem(
-                                        title = rec.title,
-                                        posterUrl = rec.posterUrl,
-                                        animeUrl = rec.url,
-                                        onClick = { onOpenShow(rec) },
-                                        onLongClick = {},
-                                    )
-                                }
-                            }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnimeInfoHeaderContent(
+    activeAnime: AnimeSearchResult?,
+    activeAnimeTitle: String,
+    activePosterUrl: String?,
+    activePlayingSeason: AnimeSeason,
+    activePlayingEpisode: AnimeEpisode,
+    isOffline: Boolean,
+    inLibrary: Boolean,
+    onToggleFollow: () -> Unit,
+    onOpenShow: (AnimeSearchResult) -> Unit,
+) {
+    val overlays = NovayTheme.overlays
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (!activePosterUrl.isNullOrBlank()) {
+                PosterImage(
+                    url = activePosterUrl,
+                    contentDescription = activeAnimeTitle,
+                    modifier = Modifier
+                        .size(width = 52.dp, height = 74.dp)
+                        .then(
+                            if (activeAnime != null) {
+                                Modifier.novaySharedPoster(activeAnime.url)
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .clip(MaterialTheme.shapes.small)
+                        .border(0.5.dp, overlays.glassBorder, MaterialTheme.shapes.small),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = activePlayingEpisode.label,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = activeAnimeTitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    activePlayingSeason.language?.let { lang ->
+                        LangPill(text = lang, vf = lang.equals("VF", true))
+                    }
+                    if (isOffline) {
+                        NovayBadge(
+                            text = "Hors-ligne",
+                            color = MaterialTheme.colorScheme.tertiary,
+                            textColor = MaterialTheme.colorScheme.onTertiary,
+                        )
+                    }
+                }
+            }
+        }
+
+        if (activeAnime != null) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = onToggleFollow,
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (inLibrary) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.outlineVariant
+                        },
+                    ),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (inLibrary) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerLow
+                        },
+                        contentColor = if (inLibrary) {
+                            overlays.crimsonOnContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    ),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("watch_follow_button"),
+                ) {
+                    NovayFavoriteMorphIcon(
+                        inLibrary = inLibrary,
+                        tint = if (inLibrary) {
+                            overlays.crimsonOnContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        size = 18.dp,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (inLibrary) "Suivi" else "Suivre")
+                }
+                OutlinedButton(
+                    onClick = { onOpenShow(activeAnime) },
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("watch_open_show_button"),
+                ) {
+                    Icon(
+                        imageVector = NovayIcons.SeasonReel,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Fiche animé")
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+private fun LazyListScope.watchRightPaneSections(
+    seasonsList: List<AnimeSeason>,
+    browsingSeason: AnimeSeason,
+    onSelectSeason: (AnimeSeason) -> Unit,
+    episodes: List<AnimeEpisode>?,
+    episodesError: String?,
+    episodesErrorTitle: String,
+    onRetryEpisodes: () -> Unit,
+    activePlayingSeason: AnimeSeason,
+    activePlayingEpisode: AnimeEpisode,
+    downloadedByEpisode: Map<Int, Downloads.DownloadInfo>,
+    resumePositions: Map<Int, Long>,
+    reduceMotion: Boolean,
+    onSelectEpisode: (AnimeEpisode, Downloads.DownloadInfo?) -> Unit,
+    recommendations: List<AnimeSearchResult>,
+    onOpenShow: (AnimeSearchResult) -> Unit,
+) {
+    if (seasonsList.size > 1) {
+        item(key = "season_selector", contentType = "season_chips") {
+            val overlays = NovayTheme.overlays
+            Column(
+                modifier = Modifier.padding(top = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "Saisons & Langues",
+                    style = MaterialTheme.typography.header,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(seasonsList, key = { it.url }) { s ->
+                        val selected = s.url.trimEnd('/') == browsingSeason.url.trimEnd('/')
+                        val label = buildString {
+                            append(s.name)
+                            s.language?.let { append(" (${it.uppercase()})") }
                         }
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSelectSeason(s) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                selectedLabelColor = overlays.crimsonOnContainer,
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            ),
+                            label = { Text(label, maxLines = 1) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    item(key = "episodes_header", contentType = "section_header") {
+        Text(
+            text = "Épisodes · ${browsingSeason.name}",
+            style = MaterialTheme.typography.header,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp),
+        )
+    }
+
+    when {
+        episodesError != null -> item(key = "episodes_error") {
+            ErrorView(
+                message = episodesError,
+                onRetry = onRetryEpisodes,
+                title = episodesErrorTitle,
+                icon = NovayIcons.ErrorSeal,
+                modifier = Modifier.padding(vertical = 20.dp),
+            )
+        }
+        episodes == null -> item(key = "episodes_skeleton") {
+            EpisodesListSkeleton()
+        }
+        else -> items(
+            items = episodes,
+            key = { "${browsingSeason.url}_${it.number}" },
+            contentType = { "watch_episode_row" },
+        ) { ep ->
+            val isCurrent = browsingSeason.url.trimEnd('/') == activePlayingSeason.url.trimEnd('/') &&
+                ep.number == activePlayingEpisode.number
+            val dlInfo = downloadedByEpisode[ep.number]
+            val resumeMs = resumePositions[ep.number] ?: 0L
+            val itemMod = if (reduceMotion) Modifier else Modifier.animateItem()
+            WatchEpisodeRow(
+                episode = ep,
+                isCurrent = isCurrent,
+                isDownloaded = dlInfo != null,
+                resumeMs = resumeMs,
+                onClick = { onSelectEpisode(ep, dlInfo) },
+                modifier = itemMod,
+            )
+        }
+    }
+
+    if (recommendations.isNotEmpty()) {
+        item(key = "recommendations_header", contentType = "section_header") {
+            Text(
+                text = "Recommandations",
+                style = MaterialTheme.typography.header,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 22.dp, bottom = 10.dp),
+            )
+        }
+        item(key = "recommendations_rail", contentType = "recommendations") {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(
+                    items = recommendations,
+                    key = { "rec_${it.url}" },
+                    contentType = { "rec_card" },
+                ) { rec ->
+                    val mod = if (reduceMotion) Modifier.width(134.dp) else Modifier
+                        .width(134.dp)
+                        .animateItem()
+                    Box(modifier = mod) {
+                        AnimeComfortableGridItem(
+                            title = rec.title,
+                            posterUrl = rec.posterUrl,
+                            animeUrl = rec.url,
+                            onClick = { onOpenShow(rec) },
+                        )
                     }
                 }
             }
@@ -588,6 +746,7 @@ private fun WatchEpisodeRow(
     modifier: Modifier = Modifier,
 ) {
     val shape = MaterialTheme.shapes.medium
+    val overlays = NovayTheme.overlays
     Surface(
         shape = shape,
         color = if (isCurrent) {
@@ -612,7 +771,7 @@ private fun WatchEpisodeRow(
             Surface(
                 shape = MaterialTheme.shapes.extraSmall,
                 color = if (isCurrent) {
-                    MaterialTheme.colorScheme.primary
+                    overlays.ctaContainer
                 } else {
                     MaterialTheme.colorScheme.surfaceContainerHigh
                 },
@@ -621,7 +780,7 @@ private fun WatchEpisodeRow(
                     text = "EP ${episode.number.toString().padStart(2, '0')}",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (isCurrent) {
-                        MaterialTheme.colorScheme.onPrimary
+                        overlays.onCtaContainer
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
@@ -648,13 +807,13 @@ private fun WatchEpisodeRow(
                     Text(
                         text = "En cours de lecture",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = overlays.crimsonOnContainer,
                     )
                 } else if (resumeMs > 0L) {
                     Text(
                         text = "Reprise à ${formatPosition(resumeMs)}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = overlays.crimsonOnContainer,
                     )
                 }
             }
@@ -671,7 +830,7 @@ private fun WatchEpisodeRow(
                 imageVector = if (isCurrent) NovayIcons.PlayCircle else NovayIcons.Play,
                 contentDescription = if (isCurrent) "Lecture en cours" else "Lire l'épisode",
                 tint = if (isCurrent) {
-                    MaterialTheme.colorScheme.primary
+                    overlays.crimsonOnContainer
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },

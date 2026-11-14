@@ -18,7 +18,8 @@ data class AnimeSearchResult(
     val subtitle: String? = null,
     val isVf: Boolean = false,
     // Affiche du catalogue (URL absolue, résolue contre l'origine).
-    val posterUrl: String? = null
+    val posterUrl: String? = null,
+    val genres: List<String> = emptyList()
 )
 
 /** Une saison/film d'un anime (langue structurelle du sous-chemin). */
@@ -141,4 +142,10 @@ interface AnimeSource {
      * liste vide — l'onglet retombe sur [featured]/la recherche seule.
      */
     suspend fun home(): CatalogHome = CatalogHome()
+
+    /** Genres normalisés de l'anime (lus depuis sa fiche quand disponibles). */
+    suspend fun genres(anime: AnimeSearchResult): List<String> = anime.genres
+
+    /** Catalogue filtré par genre (vide si non supporté par la source). */
+    suspend fun catalogByGenre(genre: String): List<AnimeSearchResult> = emptyList()
 }

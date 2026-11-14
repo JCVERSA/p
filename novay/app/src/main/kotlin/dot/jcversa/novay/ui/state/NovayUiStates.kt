@@ -78,6 +78,7 @@ data class LibraryUiState(
     val latestResume: WatchHistoryEntry? = null,
     val hasVf: Boolean = false,
     val hasVostfr: Boolean = false,
+    val availableGenres: List<String> = emptyList(),
 )
 
 @Immutable
@@ -103,6 +104,10 @@ enum class BrowseSearchDisplay {
     Results,
     EmptyResults,
     Error,
+    GenreLoading,
+    GenreResults,
+    GenreEmpty,
+    GenreError,
 }
 
 enum class SuggestionQuerySource {
@@ -169,8 +174,9 @@ fun computeLibraryItems(
     allItems: List<LibraryItemUi>,
     filter: LibraryFilter,
     sort: LibrarySort,
+    selectedGenre: String? = null,
 ): List<LibraryItemUi> {
-    val filtered = when (filter) {
+    val langFiltered = when (filter) {
         LibraryFilter.ALL -> allItems
         LibraryFilter.VF -> allItems.filter { h ->
             h.entry.languages.any { it.equals("VF", ignoreCase = true) }
@@ -179,10 +185,17 @@ fun computeLibraryItems(
             h.entry.languages.any { it.equals("VOSTFR", ignoreCase = true) }
         }
     }
+    val genreFiltered = if (selectedGenre.isNullOrBlank()) {
+        langFiltered
+    } else {
+        langFiltered.filter { h ->
+            dot.jcversa.novay.data.GenreCatalog.matches(h.entry.genres, selectedGenre)
+        }
+    }
     return when (sort) {
-        LibrarySort.RECENT -> filtered.sortedByDescending { it.entry.addedAt }
-        LibrarySort.TITLE -> filtered.sortedBy { it.entry.title.lowercase() }
-        LibrarySort.NEW_EPISODES -> filtered.sortedWith(
+        LibrarySort.RECENT -> genreFiltered.sortedByDescending { it.entry.addedAt }
+        LibrarySort.TITLE -> genreFiltered.sortedBy { it.entry.title.lowercase() }
+        LibrarySort.NEW_EPISODES -> genreFiltered.sortedWith(
             compareByDescending<LibraryItemUi> { it.entry.newEpisodes }
                 .thenByDescending { it.entry.addedAt }
         )

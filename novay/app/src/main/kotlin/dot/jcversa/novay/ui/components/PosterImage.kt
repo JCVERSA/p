@@ -47,10 +47,11 @@ fun PosterImage(
     }
 
     val context = LocalContext.current
-    val request = remember(context, url) {
+    val reduceMotion = LocalSlateMotion.current.reduceMotion
+    val request = remember(context, url, reduceMotion) {
         ImageRequest.Builder(context)
             .data(url)
-            .crossfade(160)
+            .crossfade(if (reduceMotion) 0 else 160)
             .build()
     }
     var state by remember(url) {

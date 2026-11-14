@@ -85,11 +85,12 @@ jobs:
           tests=$(grep -ho 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | awk '{s+=$1} END {print s}')
           echo "::notice::${tests} tests unitaires passes"
 
-      # V2.8 : un APK PAR ARCHITECTURE. libvlc-all embarque ~40 Mo de
-      # bibliotheques natives par ABI - un APK universel (4 ABI) peserait
-      # ~110 Mo. Chaque build filtre une seule ABI via -PnovayAbi (voir
-      # app/build.gradle.kts) : le telechargement reste aussi leger que
-      # possible. arm32 = armeabi-v7a (Android 7+ 32 bits, exigence owner).
+      # V2.8.1 (owner 15/11) : livraison ARM32 SEULE - le telephone du
+      # owner est 32 bits (armeabi-v7a, Android 7+). libvlc-all embarque
+      # ~40 Mo de natives par ABI : l'ABI unique via -PnovayAbi (voir
+      # app/build.gradle.kts) garde le telechargement aussi leger que
+      # possible. (Le build arm64 se reactive en dupliquant l'etape avec
+      # -PnovayAbi=arm64-v8a si besoin un jour.)
       - name: Build APK arm32 (release)
         run: |
           # Le shell par defaut des steps est `bash -e -o pipefail` : sans
@@ -114,24 +115,7 @@ jobs:
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk dist/novay-arm32-release.apk
 
-      - name: Build APK arm64 (release)
-        run: |
-          set +e
-          gradle :app:assembleRelease -PnovayAbi=arm64-v8a --no-daemon 2>&1 | tee build-arm64.log
-          status=${PIPESTATUS[0]}
-          set -e
-          if [ "$status" -ne 0 ]; then
-            grep -E "^e: |error: |FAILURE|What went wrong|Caused by|OutOfMemory|FAILED" build-arm64.log | head -n 6 | while IFS= read -r line; do
-              echo "::error::${line:0:240}"
-            done
-            tail -n 40 build-arm64.log | grep -v "^> Task" | tail -n 4 | while IFS= read -r line; do
-              echo "::error::${line:0:240}"
-            done
-            exit "$status"
-          fi
-          cp app/build/outputs/apk/release/app-release.apk dist/novay-arm64-release.apk
-
-      # Connexion owner limitee : chaque APK est AUSSI livre compresse en
+      # Connexion owner limitee : l'APK est AUSSI livre compresse en
       # 7z (LZMA2 niveau 9 - le code natif se compresse d'environ moitie).
       # p7zip-full est preinstalle sur ubuntu-24.04 (binaire 7z ; 7zz en
       # repli si le runner change).
@@ -144,7 +128,7 @@ jobs:
             exit 1
           fi
           cd dist
-          for abi in arm32 arm64; do
+          for abi in arm32; do
             "$SEVENZ" a -t7z -m0=lzma2 -mx=9 -md=128m -ms=on \
               "novay-${abi}-release.7z" "novay-${abi}-release.apk" > /dev/null
           done
@@ -169,13 +153,10 @@ jobs:
             fi
           }
           verify novay-arm32-release.apk armeabi-v7a
-          verify novay-arm64-release.apk arm64-v8a
           mo() { awk -v b="$(stat -c%s "$1")" 'BEGIN {printf "%.2f", b/1048576}'; }
           pct() { awk -v a="$1" -v b="$2" 'BEGIN {printf "%.0f", (a-b)*100/a}'; }
           a32=$(mo novay-arm32-release.apk); z32=$(mo novay-arm32-release.7z)
-          a64=$(mo novay-arm64-release.apk); z64=$(mo novay-arm64-release.7z)
           echo "::notice::arm32 (armeabi-v7a, Android 7+ 32 bits) : APK ${a32} Mo | 7z ${z32} Mo (-$(pct "$a32" "$z32") %)"
-          echo "::notice::arm64 (arm64-v8a) : APK ${a64} Mo | 7z ${z64} Mo (-$(pct "$a64" "$z64") %)"
 
       - name: Upload APK arm32
         if: success()
@@ -193,22 +174,6 @@ jobs:
           path: novay/dist/novay-arm32-release.7z
           if-no-files-found: error
 
-      - name: Upload APK arm64
-        if: success()
-        uses: actions/upload-artifact@v7
-        with:
-          name: novay-release-arm64-apk
-          path: novay/dist/novay-arm64-release.apk
-          if-no-files-found: error
-
-      - name: Upload 7z arm64
-        if: success()
-        uses: actions/upload-artifact@v7
-        with:
-          name: novay-release-arm64-7z
-          path: novay/dist/novay-arm64-release.7z
-          if-no-files-found: error
-
       # Logs de build en artifact, meme en echec - plan B si les annotations
       # sont insuffisantes.
       - name: Upload des logs de build (toujours)
@@ -216,9 +181,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: novay-build-log
-          path: |
-            novay/build-arm32.log
-            novay/build-arm64.log
+          path: novay/build-arm32.log
           if-no-files-found: ignore
 
       - name: Upload du log de tests (toujours)

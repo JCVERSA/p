@@ -62,8 +62,20 @@ class NovayDownloadService : Service() {
         return START_STICKY
     }
 
-    private fun stopForegroundAndSelf() {
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        // Android 15+ (quota dataSync 6h/24h) : pause silencieuse sans
+        // relancer startForegroundService() puis arret immediat pour eviter
+        // RemoteServiceException.
+        FileDownloadEngine.pauseAll()
+        stopForegroundAndSelf(startId)
+    }
+
+    private fun stopForegroundAndSelf(startId: Int? = null) {
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        if (startId != null) {
+            stopSelf(startId)
+        } else {
+            stopSelf()
+        }
     }
 }

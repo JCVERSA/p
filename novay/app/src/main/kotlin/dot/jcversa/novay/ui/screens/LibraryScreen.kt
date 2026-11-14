@@ -20,9 +20,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import android.os.Build
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -64,11 +66,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeSearchResult
+import dot.jcversa.novay.data.GenreCatalog
 import dot.jcversa.novay.data.Library
 import dot.jcversa.novay.data.WatchHistory
 import dot.jcversa.novay.data.WatchHistoryEntry
@@ -80,6 +85,7 @@ import dot.jcversa.novay.ui.components.AnimeListItem
 import dot.jcversa.novay.ui.components.AppBarAction
 import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.EmptyScreen
+import dot.jcversa.novay.ui.components.GenreFilterChipBar
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayIcons
@@ -120,6 +126,7 @@ fun LibraryScreen(
     var uiState by remember { mutableStateOf(LibraryUiState()) }
     var display by rememberSaveable { mutableStateOf(LibraryDisplay.COMFORTABLE_GRID) }
     var filter by rememberSaveable { mutableStateOf(LibraryFilter.ALL) }
+    var selectedGenre by rememberSaveable { mutableStateOf<String?>(null) }
     var sort by rememberSaveable { mutableStateOf(LibrarySort.RECENT) }
     var showDisplaySheet by remember { mutableStateOf(false) }
 
@@ -158,13 +165,14 @@ fun LibraryScreen(
                 latestResume = latest,
                 hasVf = lib.any { e -> e.languages.any { it.equals("VF", true) } },
                 hasVostfr = lib.any { e -> e.languages.any { it.equals("VOSTFR", true) } },
+                availableGenres = GenreCatalog.mergeGenresForBar(lib.flatMap { it.genres }),
             )
         }
         uiState = loaded
     }
 
-    val filtered = remember(uiState.items, filter, sort) {
-        computeLibraryItems(uiState.items, filter, sort)
+    val filtered = remember(uiState.items, filter, sort, selectedGenre) {
+        computeLibraryItems(uiState.items, filter, sort, selectedGenre)
     }
 
     fun deleteSelected() {
@@ -262,10 +270,20 @@ fun LibraryScreen(
                 }
             }
 
+            if (uiState.items.isNotEmpty()) {
+                GenreFilterChipBar(
+                    genres = uiState.availableGenres.ifEmpty { GenreCatalog.CORE_GENRES },
+                    selectedGenre = selectedGenre,
+                    onSelectGenre = { selectedGenre = it },
+                    allLabel = stringResource(R.string.filter_all),
+                    testTagPrefix = "library_genre_chip",
+                )
+            }
+
             val viewKey = when {
                 uiState.isLoading -> "loading_${display.name}"
                 uiState.items.isEmpty() -> "empty"
-                filtered.isEmpty() -> "filter_empty_${filter.name}"
+                filtered.isEmpty() -> "filter_empty_${filter.name}_${selectedGenre.orEmpty()}"
                 else -> "content_${display.name}"
             }
 
@@ -296,13 +314,35 @@ fun LibraryScreen(
                         subtitleText = "Explore le catalogue et touche le cœur sur un anime pour le suivre ici et détecter ses nouveaux épisodes.",
                         modifier = Modifier.padding(bottom = bottomChrome),
                     )
-                    stateKey.startsWith("filter_empty_") -> EmptyScreen(
-                        icon = NovayIcons.LibraryShelf,
-                        lottieRes = R.raw.lottie_bookmark,
-                        headingText = "Aucun anime en ${filter.label}",
-                        subtitleText = "Change de filtre de langue pour afficher tes autres animés suivis.",
-                        modifier = Modifier.padding(bottom = bottomChrome),
-                    )
+                    stateKey.startsWith("filter_empty_") -> {
+                        val activeGenre = selectedGenre
+                        val emptyHeading = when {
+                            activeGenre != null && filter != LibraryFilter.ALL ->
+                                "Aucun anime $activeGenre en ${filter.label}"
+                            activeGenre != null ->
+                                "Aucun anime $activeGenre suivi"
+                            else ->
+                                "Aucun anime en ${filter.label}"
+                        }
+                        val emptySubtitle = if (activeGenre != null) {
+                            "Ouvre une fiche d'animé pour actualiser ses genres ou réinitialise les filtres pour tout afficher."
+                        } else {
+                            "Change de filtre de langue pour afficher tes autres animés suivis."
+                        }
+                        EmptyScreen(
+                            icon = NovayIcons.LibraryShelf,
+                            lottieRes = R.raw.lottie_bookmark,
+                            headingText = emptyHeading,
+                            subtitleText = emptySubtitle,
+                            actionLabel = stringResource(R.string.action_reset_filters),
+                            onAction = {
+                                filter = LibraryFilter.ALL
+                                selectedGenre = null
+                            },
+                            actionTestTag = "library_reset_filters_button",
+                            modifier = Modifier.padding(bottom = bottomChrome),
+                        )
+                    }
                     else -> {
                         val grid = display != LibraryDisplay.LIST
                         val cellSize = if (display == LibraryDisplay.COMPACT_GRID) 104.dp else 140.dp
@@ -326,10 +366,16 @@ fun LibraryScreen(
                                         contentType = "resume_banner",
                                         span = { GridItemSpan(maxLineSpan) },
                                     ) {
-                                        ResumeCinemaBanner(
-                                            entry = hero,
-                                            onClick = { onResume(hero) },
-                                        )
+                                        Box(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            ResumeCinemaBanner(
+                                                entry = hero,
+                                                onClick = { onResume(hero) },
+                                                modifier = Modifier.widthIn(max = 760.dp),
+                                            )
+                                        }
                                     }
                                 }
                                 items(
@@ -404,10 +450,16 @@ fun LibraryScreen(
                                         key = "hero_resume_list",
                                         contentType = "resume_banner",
                                     ) {
-                                        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
                                             ResumeCinemaBanner(
                                                 entry = hero,
                                                 onClick = { onResume(hero) },
+                                                modifier = Modifier.widthIn(max = 760.dp),
                                             )
                                         }
                                     }
@@ -495,12 +547,13 @@ fun LibraryScreen(
                             Text("Tout")
                         }
                         Spacer(Modifier.weight(1f))
+                        val overlays = NovayTheme.overlays
                         Button(
                             enabled = selectedUrls.isNotEmpty(),
                             onClick = { deleteSelected() },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary,
+                                containerColor = overlays.ctaContainer,
+                                contentColor = overlays.onCtaContainer,
                             ),
                             modifier = Modifier
                                 .minimumInteractiveComponentSize()
@@ -639,7 +692,7 @@ fun LibraryScreen(
                             Icon(
                                 imageVector = NovayIcons.Check,
                                 contentDescription = "Actif",
-                                tint = MaterialTheme.colorScheme.primary,
+                                tint = NovayTheme.overlays.crimsonOnContainer,
                             )
                         }
                     }
@@ -654,17 +707,22 @@ fun LibraryScreen(
 private fun ResumeCinemaBanner(
     entry: WatchHistoryEntry,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val shape = MaterialTheme.shapes.large
     val overlays = NovayTheme.overlays
+    val supportsBlur = Build.VERSION.SDK_INT >= 31
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .border(0.5.dp, overlays.glassBorder, shape)
             .semantics(mergeDescendants = true) {}
-            .clickable(onClick = onClick)
+            .clickable(
+                onClickLabel = "Reprendre ${entry.animeTitle} ${entry.episodeLabel}",
+                onClick = onClick,
+            )
             .testTag("library_resume_hero_card"),
     ) {
         PosterImage(
@@ -672,16 +730,16 @@ private fun ResumeCinemaBanner(
             contentDescription = null,
             modifier = Modifier
                 .matchParentSize()
-                .blur(16.dp)
-                .alpha(0.22f),
+                .then(if (supportsBlur) Modifier.blur(16.dp) else Modifier)
+                .alpha(if (supportsBlur) 0.22f else 0.14f),
         )
         Box(
             modifier = Modifier
                 .matchParentSize()
                 .background(
                     Brush.horizontalGradient(
-                        0f to MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
-                        0.65f to MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.78f),
+                        0f to MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = if (supportsBlur) 0.92f else 0.96f),
+                        0.65f to MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = if (supportsBlur) 0.78f else 0.88f),
                         1f to MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                     ),
                 ),
@@ -694,7 +752,7 @@ private fun ResumeCinemaBanner(
         ) {
             PosterImage(
                 url = entry.posterUrl,
-                contentDescription = entry.animeTitle,
+                contentDescription = null,
                 modifier = Modifier
                     .size(width = 52.dp, height = 76.dp)
                     .novaySharedPoster(entry.animeUrl)
@@ -706,9 +764,9 @@ private fun ResumeCinemaBanner(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
-                    text = "REPRENDRE LA SÉANCE",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    text = "Reprendre la séance",
+                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.6.sp),
+                    color = overlays.crimsonOnContainer,
                 )
                 Text(
                     text = entry.animeTitle,
@@ -740,8 +798,8 @@ private fun ResumeCinemaBanner(
             Spacer(Modifier.width(12.dp))
             Surface(
                 shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
+                color = overlays.ctaContainer,
+                contentColor = overlays.onCtaContainer,
                 modifier = Modifier.minimumInteractiveComponentSize(),
             ) {
                 Box(
@@ -750,7 +808,7 @@ private fun ResumeCinemaBanner(
                 ) {
                     Icon(
                         imageVector = NovayIcons.Play,
-                        contentDescription = "Reprendre ${entry.episodeLabel}",
+                        contentDescription = null,
                     )
                 }
             }

@@ -17,30 +17,39 @@ import androidx.core.view.WindowInsetsControllerCompat
 /**
  * Contrôle l'orientation et l'immersion système uniquement sur demande explicite
  * du mode plein écran paysage :
- *  - la lecture par défaut reste en portrait sans rotation forcée ;
+ *  - la lecture par défaut respecte la préférence naturelle tant qu'aucun plein écran n'a été forcé ;
  *  - le passage plein écran verrouille en paysage capteur et masque les barres système ;
- *  - la sortie du plein écran restaure l'orientation portrait et les barres système edge-to-edge.
+ *  - la sortie du plein écran restaure l'orientation portrait sur téléphone si la séance reste active,
+ *    et libère toujours vers SCREEN_ORIENTATION_UNSPECIFIED dès que la séance est fermée ou sur tablette.
  */
 @Composable
 fun PlayerOrientationController(
+    hasActiveSession: Boolean,
     isFullscreen: Boolean,
     keepScreenOn: Boolean,
 ) {
     val view = LocalView.current
     var hadEnteredFullscreen by remember { mutableStateOf(false) }
 
+    LaunchedEffect(hasActiveSession) {
+        if (!hasActiveSession) {
+            hadEnteredFullscreen = false
+        }
+    }
+
     DisposableEffect(view, keepScreenOn) {
         view.keepScreenOn = keepScreenOn
         onDispose { view.keepScreenOn = false }
     }
 
-    LaunchedEffect(isFullscreen, view) {
+    LaunchedEffect(hasActiveSession, isFullscreen, view) {
         val activity = view.context as? Activity ?: return@LaunchedEffect
         val window = activity.window ?: return@LaunchedEffect
         val controller = WindowInsetsControllerCompat(window, view)
+        val isCompactDevice = view.context.resources.configuration.smallestScreenWidthDp < 600
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        if (isFullscreen) {
+        if (isFullscreen && hasActiveSession) {
             hadEnteredFullscreen = true
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             controller.systemBarsBehavior =
@@ -48,8 +57,10 @@ fun PlayerOrientationController(
             controller.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             controller.show(WindowInsetsCompat.Type.systemBars())
-            if (hadEnteredFullscreen) {
-                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            activity.requestedOrientation = if (hasActiveSession && isCompactDevice && hadEnteredFullscreen) {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             }
         }
     }

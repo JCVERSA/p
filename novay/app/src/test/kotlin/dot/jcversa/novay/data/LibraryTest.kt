@@ -86,7 +86,8 @@ class LibraryTest {
             entry().copy(
                 languages = listOf("VF", "VOSTFR"),
                 baseline = mapOf("s1" to 3),
-                lastCounts = mapOf("s1" to 7, "s2" to 1)
+                lastCounts = mapOf("s1" to 7, "s2" to 1),
+                genres = listOf("Action", "Fantastique")
             )
         )
         val decoded = Library.decode(Library.encode(list))
@@ -96,7 +97,24 @@ class LibraryTest {
         assertEquals(listOf("VF", "VOSTFR"), d.languages)
         assertEquals(mapOf("s1" to 3), d.baseline)
         assertEquals(mapOf("s1" to 7, "s2" to 1), d.lastCounts)
+        assertEquals(listOf("Action", "Fantastique"), d.genres)
         assertEquals(4, d.newEpisodes)
+    }
+
+    @Test
+    fun `decode reste compatible sans champ genres`() {
+        val legacyJson = """[{"title":"Naruto","url":"https://x/naruto","slug":"naruto","posterUrl":"","languages":["VF"],"addedAt":123}]"""
+        val decoded = Library.decode(legacyJson)
+        assertEquals(1, decoded.size)
+        assertTrue(decoded.first().genres.isEmpty())
+    }
+
+    @Test
+    fun `upsert preserve les genres existants si nouvel ajout sans genres`() {
+        val existing = entry().copy(genres = listOf("Action", "Romance"))
+        val updated = entry().copy(genres = emptyList())
+        val merged = Library.upsert(listOf(existing), updated)
+        assertEquals(listOf("Action", "Romance"), merged.first().genres)
     }
 
     @Test

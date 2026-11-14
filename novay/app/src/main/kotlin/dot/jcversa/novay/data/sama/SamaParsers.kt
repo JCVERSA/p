@@ -218,6 +218,7 @@ object SamaParsers {
                     .firstOrNull { it.isNotBlank() && !it.startsWith("data:") }
             }.orEmpty()
             val posterUrl = if (posterPath.isEmpty()) null else resolveUrl(posterPath, "$origin/")
+            val cardGenres = extractGenresFromChunk(body)
 
             out.add(
                 AnimeSearchResult(
@@ -225,11 +226,51 @@ object SamaParsers {
                     url = url,
                     slug = afterCat,
                     posterUrl = posterUrl,
+                    genres = cardGenres,
                 )
             )
-            if (out.size >= 24) break
+            if (out.size >= 48) break
         }
         return out
+    }
+
+    private val CATALOG_GENRE_SECTION_RE = Regex(
+        "(?:<h[2-4][^>]*>\\s*Genres?\\s*</h[2-4]>|Genres?\\s*:)\\s*([\\s\\S]{0,600}?)(?:</p>|</div>|</section>|<h[2-4])",
+        RegexOption.IGNORE_CASE,
+    )
+    private val CARD_GENRE_P_RE = Regex(
+        "<(?:p|span|div)\\b[^>]*class\\s*=\\s*[\"'][^\"']*genre[^\"']*[\"'][^>]*>([\\s\\S]*?)</(?:p|span|div)>",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun extractGenresFromChunk(html: String): List<String> {
+        val raw = mutableListOf<String>()
+        GENRE_TAG_RE.findAll(html).forEach { m ->
+            raw += decodeHtmlEntities(stripTags(m.groupValues[1]))
+        }
+        CARD_GENRE_P_RE.findAll(html).forEach { m ->
+            val txt = decodeHtmlEntities(stripTags(m.groupValues[1]))
+            txt.split(",", "·", "•", "/", "|").forEach { raw += it }
+        }
+        return dot.jcversa.novay.data.GenreCatalog.normalizeList(raw)
+    }
+
+    /**
+     * Extrait la liste normalisée des genres depuis une page fiche anime
+     * (`/catalogue/<slug>/`) anime-sama.
+     */
+    fun parseAnimeGenres(html: String): List<String> {
+        if (html.isEmpty()) return emptyList()
+        val raw = mutableListOf<String>()
+        raw += extractGenresFromChunk(html)
+        CATALOG_GENRE_SECTION_RE.findAll(html).forEach { match ->
+            val section = decodeHtmlEntities(stripTags(match.groupValues[1]))
+            section.split(",", "·", "•", "|").forEach { token ->
+                val cleaned = token.trim()
+                if (cleaned.length in 2..36) raw += cleaned
+            }
+        }
+        return dot.jcversa.novay.data.GenreCatalog.normalizeList(raw)
     }
 
     // ── Variantes de requête (portage 9.18kkk de animeSources.ts) ─────────
@@ -565,8 +606,11 @@ object SamaParsers {
                     title = title,
                     seasonLabel = decodeHtmlEntities(classText(chunk, "ak-badge--saison"))
                         .takeIf { it.isNotEmpty() },
-                    genres = GENRE_TAG_RE.findAll(chunk).map { decodeHtmlEntities(it.groupValues[1].trim()) }
-                        .filter { it.isNotEmpty() }.take(6).toList(),
+                    genres = GENRE_TAG_RE.findAll(chunk)
+                        .map { decodeHtmlEntities(it.groupValues[1].trim()) }
+                        .filter { it.isNotEmpty() }
+                        .take(6)
+                        .toList(),
                     synopsis = decodeHtmlEntities(classText(chunk, "ak-slide-synopsis"))
                         .takeIf { it.isNotEmpty() },
                     seasonUrl = url,

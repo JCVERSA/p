@@ -218,8 +218,9 @@ fun UpdatesScreen(
                             key = { it.url },
                             contentType = { "update_row" },
                         ) { entry ->
+                            val rowMod = if (motion.reduceMotion) Modifier else Modifier.animateItem()
                             UpdateRow(
-                                modifier = Modifier.animateItem(),
+                                modifier = rowMod,
                                 entry = entry,
                                 onClick = { onOpenShow(entry.toSearchResult()) },
                             )
@@ -238,10 +239,12 @@ private fun UpdateRow(
     modifier: Modifier = Modifier,
 ) {
     val shape = MaterialTheme.shapes.medium
+    val motion = LocalSlateMotion.current
     val interactionSource = remember { MutableInteractionSource() }
     val hovered by interactionSource.collectIsHoveredAsState()
     val containerColor by animateColorAsState(
         targetValue = if (hovered) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+        animationSpec = motion.colorSpec(180),
         label = "update_row_bg",
     )
 

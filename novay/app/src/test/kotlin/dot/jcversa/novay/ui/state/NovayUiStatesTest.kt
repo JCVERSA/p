@@ -12,6 +12,7 @@ class NovayUiStatesTest {
         addedAt: Long,
         languages: List<String>,
         newEpisodes: Int = 0,
+        genres: List<String> = emptyList(),
     ): LibraryItemUi {
         val url = "https://anime-sama.fr/catalogue/${title.lowercase().replace(' ', '-')}"
         val baseline = if (newEpisodes > 0) mapOf("$url/s1" to 10) else emptyMap()
@@ -24,6 +25,7 @@ class NovayUiStatesTest {
                 addedAt = addedAt,
                 baseline = baseline,
                 lastCounts = lastCounts,
+                genres = genres,
             ),
             downloadedCount = 0,
             resume = null,
@@ -31,10 +33,10 @@ class NovayUiStatesTest {
     }
 
     private val dataset = listOf(
-        sampleItem("Solo Leveling", addedAt = 100L, languages = listOf("VOSTFR"), newEpisodes = 2),
-        sampleItem("Dandadan", addedAt = 300L, languages = listOf("VF", "VOSTFR"), newEpisodes = 0),
-        sampleItem("Attack on Titan", addedAt = 200L, languages = listOf("vf"), newEpisodes = 5),
-        sampleItem("Bleach", addedAt = 400L, languages = listOf("VOSTFR"), newEpisodes = 2),
+        sampleItem("Solo Leveling", addedAt = 100L, languages = listOf("VOSTFR"), newEpisodes = 2, genres = listOf("Action", "Fantastique")),
+        sampleItem("Dandadan", addedAt = 300L, languages = listOf("VF", "VOSTFR"), newEpisodes = 0, genres = listOf("Action", "Comédie", "Sci-Fi")),
+        sampleItem("Attack on Titan", addedAt = 200L, languages = listOf("vf"), newEpisodes = 5, genres = listOf("Action", "Drame")),
+        sampleItem("Bleach", addedAt = 400L, languages = listOf("VOSTFR"), newEpisodes = 2, genres = listOf("Action", "Shonen")),
     )
 
     @Test
@@ -67,6 +69,18 @@ class NovayUiStatesTest {
             listOf("Attack on Titan", "Bleach", "Solo Leveling", "Dandadan"),
             byNew.map { it.entry.title },
         )
+    }
+
+    @Test
+    fun computeLibraryItems_filtersByGenreAndLanguageCombined() {
+        val comedyAll = computeLibraryItems(dataset, LibraryFilter.ALL, LibrarySort.RECENT, selectedGenre = "Comedy")
+        assertEquals(listOf("Dandadan"), comedyAll.map { it.entry.title })
+
+        val actionVf = computeLibraryItems(dataset, LibraryFilter.VF, LibrarySort.TITLE, selectedGenre = "Action")
+        assertEquals(listOf("Attack on Titan", "Dandadan"), actionVf.map { it.entry.title })
+
+        val romance = computeLibraryItems(dataset, LibraryFilter.ALL, LibrarySort.RECENT, selectedGenre = "Romance")
+        assertTrue(romance.isEmpty())
     }
 
     @Test

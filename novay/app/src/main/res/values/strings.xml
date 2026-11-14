@@ -1,4 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">NoVaY</string>
+
+    <!-- Navigation -->
+    <string name="nav_library">Bibliothèque</string>
+    <string name="nav_updates">Mises à jour</string>
+    <string name="nav_history">Historique</string>
+    <string name="nav_browse">Catalogue</string>
+    <string name="nav_more">Plus</string>
+
+    <!-- Erreurs & Actions -->
+    <string name="error_connection_title">Connexion interrompue</string>
+    <string name="error_catalog_title">Catalogue inaccessible</string>
+    <string name="error_episodes_title">Épisodes indisponibles</string>
+    <string name="error_stream_title">Flux vidéo indisponible</string>
+    <string name="action_retry">Réessayer</string>
+    <string name="action_resume_episode">Reprendre l\'épisode</string>
+    <string name="action_expand_player">Agrandir le lecteur</string>
+    <string name="action_close_mini_player">Fermer le mini-lecteur</string>
+    <string name="action_cycle_corner">Changer de coin</string>
+    <string name="filter_all">Tout</string>
+    <string name="action_reset_filters">Réinitialiser les filtres</string>
+    <string name="action_show_all">Tout afficher</string>
+
+    <!-- Permissions téléchargements -->
+    <string name="permission_notifications_denied_notice">Notifications désactivées — tes téléchargements continuent en file.</string>
+    <string name="permission_storage_denied_notice">Permission de stockage requise pour enregistrer les épisodes dans Téléchargements.</string>
 </resources>

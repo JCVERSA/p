@@ -33,10 +33,14 @@ import com.airbnb.lottie.compose.rememberLottieDynamicProperty
  * propriétés dynamiques STROKE_COLOR/FILL_COLOR sur le sélecteur "**"
  * appliquent la teinte à toutes les couches.
  *
+ * Par défaut (`loop = false`, `playing = true`), l'icône joue son
+ * animation une seule fois à l'entrée sur l'écran (et à chaque
+ * changement de [restartKey]), sans répétition en boucle.
+ *
  * @param restartKey change la valeur pour rejouer l'animation (morphs
  *   play/pause, plein écran, sélection…).
- * @param loop boucle infinie (loaders, empty states).
- * @param size [Dp.Unspecified] pour laisser le modifier dimensionner.
+ * @param loop boucle infinie (réservée aux loaders actifs).
+ * @param size taille explicite de l'icône (24.dp par défaut comme Material Icon).
  */
 @Composable
 fun NovayLottieIcon(
@@ -44,13 +48,14 @@ fun NovayLottieIcon(
     contentDescription: String?,
     modifier: Modifier = Modifier,
     tint: Color = Color.Unspecified,
-    size: Dp = Dp.Unspecified,
+    size: Dp = 24.dp,
     loop: Boolean = false,
     playing: Boolean = true,
     speed: Float = 1f,
     restartKey: Any? = null,
 ) {
     val composition by rememberLottieComposition(LottieCompositionSpec.RawRes(res))
+    val reduceMotion = LocalSlateMotion.current.reduceMotion
     val effectiveTint = if (tint == Color.Unspecified) {
         MaterialTheme.colorScheme.onSurface
     } else {
@@ -69,15 +74,16 @@ fun NovayLottieIcon(
         contentAlignment = Alignment.Center,
     ) {
         key(restartKey) {
+            val effectivePlaying = playing && !reduceMotion
             val progress by animateLottieCompositionAsState(
                 composition = composition,
-                iterations = if (loop) LottieConstants.IterateForever else 1,
-                isPlaying = playing,
+                iterations = if (loop && !reduceMotion) LottieConstants.IterateForever else 1,
+                isPlaying = effectivePlaying,
                 speed = speed,
             )
             LottieAnimation(
                 composition = composition,
-                progress = { progress },
+                progress = { if (reduceMotion) (if (loop) 0f else 1f) else progress },
                 dynamicProperties = dynamicProperties,
                 modifier = Modifier.fillMaxSize(),
             )

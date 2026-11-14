@@ -71,6 +71,9 @@ import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.SlateMotion
 import dot.jcversa.novay.ui.state.DownloadSection
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import dot.jcversa.novay.ui.theme.NovayTheme
 import dot.jcversa.novay.ui.theme.header
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -93,12 +96,11 @@ fun DownloadsScreen(
     var infos by remember { mutableStateOf<List<Downloads.DownloadInfo>>(emptyList()) }
     var speeds by remember { mutableStateOf<Map<String, SpeedMeter.Reading>>(emptyMap()) }
     val meters = remember { mutableMapOf<String, SpeedMeter>() }
-    var wifiOnly by remember { mutableStateOf(false) }
+    var wifiOnly by remember { mutableStateOf(Downloads.isWifiOnly(context)) }
     var paused by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(context) {
-        wifiOnly = withContext(Dispatchers.IO) { Downloads.isWifiOnly(context) }
         Downloads.observeQueue(context).collect { queue ->
             infos = queue.items
             paused = queue.paused
@@ -145,51 +147,15 @@ fun DownloadsScreen(
             )
 
             AnimatedVisibility(visible = infos.isNotEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Surface(
-                        shape = MaterialTheme.shapes.medium,
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .widthIn(max = 840.dp)
-                            .padding(horizontal = 16.dp, vertical = 6.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Wi-Fi uniquement",
-                                    style = MaterialTheme.typography.titleSmall,
-                                )
-                                Text(
-                                    text = "Met en pause en données mobiles et reprend en Wi-Fi.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Switch(
-                                checked = wifiOnly,
-                                onCheckedChange = { checked ->
-                                    wifiOnly = checked
-                                    scope.launch(Dispatchers.IO) {
-                                        Downloads.setWifiOnly(context, checked)
-                                    }
-                                },
-                                modifier = Modifier.testTag("downloads_wifi_switch"),
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
-                                    checkedTrackColor = MaterialTheme.colorScheme.primary,
-                                ),
-                            )
+                DownloadsWifiOnlyCard(
+                    wifiOnly = wifiOnly,
+                    onToggle = { checked ->
+                        wifiOnly = checked
+                        scope.launch(Dispatchers.IO) {
+                            Downloads.setWifiOnly(context, checked)
                         }
-                    }
-                }
+                    },
+                )
             }
 
             AnimatedContent(
@@ -251,8 +217,9 @@ fun DownloadsScreen(
                                     key = { it.id },
                                     contentType = { "download_row" },
                                 ) { info ->
+                                    val rowMod = if (motion.reduceMotion) Modifier else Modifier.animateItem()
                                     DownloadRow(
-                                        modifier = Modifier.animateItem(),
+                                        modifier = rowMod,
                                         info = info,
                                         reading = speeds[info.id],
                                         wifiOnly = wifiOnly,
@@ -297,6 +264,7 @@ fun DownloadsScreen(
                 .then(if (bottomChrome == 0.dp) Modifier.navigationBarsPadding() else Modifier)
                 .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp + bottomChrome),
         ) {
+            val overlays = NovayTheme.overlays
             ExtendedFloatingActionButton(
                 onClick = {
                     if (paused) {
@@ -307,15 +275,17 @@ fun DownloadsScreen(
                 },
                 shape = CircleShape,
                 modifier = Modifier.testTag("downloads_pause_resume_fab"),
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
+                containerColor = overlays.ctaContainer,
+                contentColor = overlays.onCtaContainer,
             ) {
                 NovayLottieIcon(
                     res = R.raw.lottie_playpause,
                     contentDescription = null,
+                    tint = overlays.onCtaContainer,
+                    size = 20.dp,
                     restartKey = paused,
                 )
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(8.dp))
                 Text(text = if (paused) "Reprendre" else "Mettre en pause")
             }
         }
@@ -341,8 +311,7 @@ private fun DownloadRow(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
-            .semantics(mergeDescendants = true) {},
+            .padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
         Column(
             modifier = Modifier
@@ -404,6 +373,7 @@ private fun DownloadRow(
                             res = R.raw.lottie_playpausecircle,
                             contentDescription = "Lire hors-ligne",
                             tint = MaterialTheme.colorScheme.tertiary,
+                            size = 24.dp,
                         )
                     }
                 }
@@ -417,6 +387,7 @@ private fun DownloadRow(
                         res = R.raw.lottie_trash2,
                         contentDescription = "Supprimer le téléchargement",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        size = 24.dp,
                     )
                 }
             }
@@ -440,3 +411,58 @@ private fun DownloadRow(
         }
     }
 }
+
+@Composable
+internal fun DownloadsWifiOnlyCard(
+    wifiOnly: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 840.dp)
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .clip(MaterialTheme.shapes.medium)
+                .toggleable(
+                    value = wifiOnly,
+                    role = Role.Switch,
+                    onValueChange = onToggle,
+                )
+                .minimumInteractiveComponentSize()
+                .testTag("downloads_wifi_switch"),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Wi-Fi uniquement",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        text = "Met en pause en données mobiles et reprend en Wi-Fi.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(
+                    checked = wifiOnly,
+                    onCheckedChange = null,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = NovayTheme.overlays.onCtaContainer,
+                        checkedTrackColor = NovayTheme.overlays.ctaContainer,
+                    ),
+                )
+            }
+        }
+    }
+}
+

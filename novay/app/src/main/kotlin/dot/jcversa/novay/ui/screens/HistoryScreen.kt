@@ -163,12 +163,12 @@ fun HistoryScreen(
                                 key = "header_${group.dayLabel}",
                                 contentType = "history_day_header",
                             ) {
+                                val headerMod = if (motion.reduceMotion) Modifier else Modifier.animateItem()
                                 Text(
                                     text = group.dayLabel,
                                     style = MaterialTheme.typography.header,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .animateItem()
+                                    modifier = headerMod
                                         .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp),
                                 )
                             }
@@ -177,8 +177,9 @@ fun HistoryScreen(
                                 key = { "${it.seasonUrl}#${it.episodeNumber}" },
                                 contentType = { "history_row" },
                             ) { entry ->
+                                val itemMod = if (motion.reduceMotion) Modifier else Modifier.animateItem()
                                 HistoryRow(
-                                    modifier = Modifier.animateItem(),
+                                    modifier = itemMod,
                                     entry = entry,
                                     onResume = { onResume(entry) },
                                     onRemove = {
@@ -246,10 +247,12 @@ private fun HistoryRow(
     modifier: Modifier = Modifier,
 ) {
     val shape = MaterialTheme.shapes.medium
+    val motion = LocalSlateMotion.current
     val interactionSource = remember { MutableInteractionSource() }
     val hovered by interactionSource.collectIsHoveredAsState()
     val containerColor by animateColorAsState(
         targetValue = if (hovered) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+        animationSpec = motion.colorSpec(180),
         label = "history_row_bg",
     )
 
@@ -260,10 +263,10 @@ private fun HistoryRow(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .clip(shape)
-            .semantics(mergeDescendants = true) {}
             .clickable(
                 interactionSource = interactionSource,
                 indication = ripple(),
+                onClickLabel = "Reprendre ${entry.animeTitle}",
                 onClick = onResume,
             ),
     ) {

@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import android.os.Build
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,8 +33,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -67,16 +67,19 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.AnimeSource
 import dot.jcversa.novay.data.CatalogCard
 import dot.jcversa.novay.data.CatalogHome
+import dot.jcversa.novay.data.GenreCatalog
 import dot.jcversa.novay.data.sama.SamaParsers
 import dot.jcversa.novay.data.Library
 import dot.jcversa.novay.data.SearchHistory
@@ -86,6 +89,7 @@ import dot.jcversa.novay.ui.components.AnimeComfortableGridItem
 import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.ErrorView
+import dot.jcversa.novay.ui.components.GenreFilterChipBar
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayIcons
@@ -93,7 +97,6 @@ import dot.jcversa.novay.ui.components.PosterGridSkeleton
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.ShimmerBox
 import dot.jcversa.novay.ui.components.novaySharedPoster
-import dot.jcversa.novay.ui.state.BROWSE_DISCOVERY_CHIPS
 import dot.jcversa.novay.ui.state.BrowseFeaturedState
 import dot.jcversa.novay.ui.state.BrowseSearchController
 import dot.jcversa.novay.ui.state.BrowseSearchDisplay
@@ -189,6 +192,29 @@ fun BrowseScreen(
             runCatching { source.search(liveLookupQuery) }.getOrDefault(emptyList())
         }
         controller.setLiveLookupState(loading = false, results = live)
+    }
+
+    val activeGenre = controller.selectedGenre
+    val activeGenreState = controller.genreState
+    LaunchedEffect(source, activeGenre, activeGenreState) {
+        if (activeGenre != null && activeGenreState is BrowseSearchState.Loading) {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { source.catalogByGenre(activeGenre) }
+            }
+            result.fold(
+                onSuccess = { controller.finishGenreSuccess(it) },
+                onFailure = { controller.finishGenreError(it.message ?: "Erreur inconnue") },
+            )
+        }
+    }
+
+    val availableGenres = remember(home, controller.featuredState, controller.libraryEntries) {
+        val featuredGenres = (controller.featuredState as? BrowseFeaturedState.Loaded)
+            ?.items.orEmpty()
+            .flatMap { it.genres }
+        val heroGenres = home?.heroes.orEmpty().flatMap { it.genres }
+        val libraryGenres = controller.libraryEntries.flatMap { it.genres }
+        GenreCatalog.mergeGenresForBar(heroGenres + featuredGenres + libraryGenres)
     }
 
     BackHandler(enabled = controller.canHandleBack) {
@@ -334,6 +360,22 @@ fun BrowseScreen(
             )
         }
 
+        if (displayMode != BrowseSearchDisplay.FocusedEmptySuggestions &&
+            displayMode != BrowseSearchDisplay.TypingSuggestions
+        ) {
+            GenreFilterChipBar(
+                genres = availableGenres,
+                selectedGenre = controller.selectedGenre,
+                onSelectGenre = { genre ->
+                    focusManager.clearFocus()
+                    keyboard?.hide()
+                    controller.selectGenre(genre)
+                },
+                allLabel = stringResource(R.string.filter_all),
+                testTagPrefix = "browse_genre_chip",
+            )
+        }
+
         AnimatedContent(
             targetState = displayMode,
             transitionSpec = { motion.stateCrossfade() },
@@ -351,7 +393,6 @@ fun BrowseScreen(
                     onShuffle = { randomSeed++ },
                     onOpenShow = onOpenShow,
                     onOpenEpisodes = onOpenEpisodes,
-                    onQuickQuery = { chip -> submitSearch(chip) },
                 )
 
                 BrowseSearchDisplay.FocusedEmptySuggestions,
@@ -383,7 +424,8 @@ fun BrowseScreen(
                     onOpenShow = ::openFromSuggestion,
                 )
 
-                BrowseSearchDisplay.LoadingResults -> PosterGridSkeleton(
+                BrowseSearchDisplay.LoadingResults,
+                BrowseSearchDisplay.GenreLoading -> PosterGridSkeleton(
                     minCellSize = 140.dp,
                     itemCount = 9,
                     modifier = Modifier.padding(bottom = bottomChrome),
@@ -395,6 +437,20 @@ fun BrowseScreen(
                     ErrorView(
                         message = errMessage,
                         onRetry = { submitSearch() },
+                        title = stringResource(R.string.error_catalog_title),
+                        icon = NovayIcons.ErrorSeal,
+                        modifier = Modifier.padding(bottom = bottomChrome),
+                    )
+                }
+
+                BrowseSearchDisplay.GenreError -> {
+                    val errMessage = (controller.genreState as? BrowseSearchState.Error)
+                        ?.message ?: "Erreur inconnue"
+                    ErrorView(
+                        message = errMessage,
+                        onRetry = { controller.retryGenre() },
+                        title = stringResource(R.string.error_catalog_title),
+                        icon = NovayIcons.ErrorSeal,
                         modifier = Modifier.padding(bottom = bottomChrome),
                     )
                 }
@@ -407,9 +463,31 @@ fun BrowseScreen(
                     modifier = Modifier.padding(bottom = bottomChrome),
                 )
 
-                BrowseSearchDisplay.Results -> {
-                    val results = (controller.submittedState as? BrowseSearchState.Results)
-                        ?.results.orEmpty()
+                BrowseSearchDisplay.GenreEmpty -> EmptyScreen(
+                    icon = NovayIcons.Search,
+                    lottieRes = R.raw.lottie_explore,
+                    headingText = "Aucun anime en ${controller.selectedGenre ?: "ce genre"}",
+                    subtitleText = "Aucun anime trouvé pour ce genre. Réinitialise le filtre ou essaie une autre catégorie.",
+                    actionLabel = stringResource(R.string.action_show_all),
+                    onAction = { controller.clearGenre() },
+                    actionTestTag = "browse_genre_reset_button",
+                    modifier = Modifier.padding(bottom = bottomChrome),
+                )
+
+                BrowseSearchDisplay.Results,
+                BrowseSearchDisplay.GenreResults -> {
+                    val results = if (display == BrowseSearchDisplay.GenreResults) {
+                        val currentGenre = controller.selectedGenre
+                        val submitted = controller.submittedState as? BrowseSearchState.Results
+                        if (submitted != null && currentGenre != null && submitted.results.any { it.genres.isNotEmpty() }) {
+                            submitted.results.filter { GenreCatalog.matches(it.genres, currentGenre) }
+                        } else {
+                            (controller.genreState as? BrowseSearchState.Results)?.results.orEmpty()
+                        }
+                    } else {
+                        (controller.submittedState as? BrowseSearchState.Results)
+                            ?.results.orEmpty()
+                    }
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(140.dp),
                         contentPadding = PaddingValues(
@@ -420,7 +498,9 @@ fun BrowseScreen(
                         ),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .imePadding(),
                     ) {
                         items(
                             items = results,
@@ -434,7 +514,6 @@ fun BrowseScreen(
                                 modifier = itemMod,
                                 animeUrl = result.url,
                                 onClick = { onOpenShow(result) },
-                                onLongClick = { },
                             )
                         }
                     }
@@ -454,7 +533,6 @@ private fun IdleBrowseSpotlight(
     onShuffle: () -> Unit,
     onOpenShow: (AnimeSearchResult) -> Unit,
     onOpenEpisodes: (animeTitle: String, posterUrl: String?, season: AnimeSeason) -> Unit,
-    onQuickQuery: (String) -> Unit,
 ) {
     val motion = LocalSlateMotion.current
     val listState = rememberLazyListState()
@@ -475,31 +553,6 @@ private fun IdleBrowseSpotlight(
         contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp + bottomChrome),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        item(key = "quick_chips", contentType = "chips") {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(BROWSE_DISCOVERY_CHIPS, key = { it }) { chip ->
-                    FilterChip(
-                        selected = false,
-                        onClick = { onQuickQuery(chip) },
-                        modifier = Modifier.testTag("browse_chip_${chip.lowercase()}"),
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            labelColor = MaterialTheme.colorScheme.onSurface,
-                        ),
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = false,
-                            borderColor = MaterialTheme.colorScheme.outlineVariant,
-                        ),
-                        label = { Text(chip) },
-                    )
-                }
-            }
-        }
-
         when (featured) {
             BrowseFeaturedState.Loading -> {
                 item(key = "spotlight_skeleton", contentType = "skeleton") {
@@ -535,7 +588,7 @@ private fun IdleBrowseSpotlight(
                         icon = NovayIcons.Search,
                         lottieRes = R.raw.lottie_explore,
                         headingText = "Explore le catalogue",
-                        subtitleText = "Saisis au moins 2 lettres ou choisis un thème ci-dessus — la recherche gère automatiquement les variantes.",
+                        subtitleText = "Saisis au moins 2 lettres ou choisis un genre ci-dessus — la recherche gère automatiquement les variantes.",
                     )
                 }
             }
@@ -586,7 +639,6 @@ private fun IdleBrowseSpotlight(
                                         posterUrl = anime.posterUrl,
                                         animeUrl = anime.url,
                                         onClick = { onOpenShow(anime) },
-                                        onLongClick = {},
                                     )
                                 }
                             }
@@ -685,7 +737,6 @@ private fun HomeCardRail(
                             )
                         )
                     },
-                    onLongClick = {},
                 )
             }
         }
@@ -706,7 +757,8 @@ private fun dot.jcversa.novay.data.CatalogHero.toSearchResult(): AnimeSearchResu
         slug = animeUrl.trimEnd('/').substringAfterLast('/', ""),
         language = language,
         subtitle = subtitle,
-        posterUrl = posterUrl
+        posterUrl = posterUrl,
+        genres = GenreCatalog.normalizeList(genres),
     )
 }
 
@@ -719,6 +771,7 @@ private fun SpotlightHeroCard(
 ) {
     val shape = MaterialTheme.shapes.large
     val overlays = NovayTheme.overlays
+    val supportsBlur = Build.VERSION.SDK_INT >= 31
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -739,16 +792,16 @@ private fun SpotlightHeroCard(
                     scaleY = 1.08f
                     translationY = parallaxOffsetProvider()
                 }
-                .blur(18.dp)
-                .alpha(0.32f),
+                .then(if (supportsBlur) Modifier.blur(18.dp) else Modifier)
+                .alpha(if (supportsBlur) 0.32f else 0.16f),
         )
         Box(
             modifier = Modifier
                 .matchParentSize()
                 .background(
                     Brush.horizontalGradient(
-                        0f to MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.94f),
-                        0.6f to MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.78f),
+                        0f to MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = if (supportsBlur) 0.94f else 0.97f),
+                        0.6f to MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = if (supportsBlur) 0.78f else 0.88f),
                         1f to MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                     ),
                 ),
@@ -779,13 +832,13 @@ private fun SpotlightHeroCard(
                     Icon(
                         imageVector = NovayIcons.Spotlight,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = overlays.crimsonOnContainer,
                         modifier = Modifier.size(16.dp),
                     )
                     Text(
-                        text = "À LA UNE",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        text = "À la une",
+                        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.6.sp),
+                        color = overlays.crimsonOnContainer,
                     )
                 }
                 Text(
@@ -807,8 +860,8 @@ private fun SpotlightHeroCard(
                 Button(
                     onClick = onClick,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        containerColor = overlays.ctaContainer,
+                        contentColor = overlays.onCtaContainer,
                     ),
                     modifier = Modifier.minimumInteractiveComponentSize(),
                 ) {

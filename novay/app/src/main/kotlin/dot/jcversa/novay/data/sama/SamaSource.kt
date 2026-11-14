@@ -95,6 +95,8 @@ class SamaSource(
 
     private var cachedHome: Pair<dot.jcversa.novay.data.CatalogHome, Long>? = null
     private val searchCache = LruTtlCache<String, List<AnimeSearchResult>>(24, SEARCH_TTL_MS, clockMs)
+    private val genreCatalogCache = LruTtlCache<String, List<AnimeSearchResult>>(24, FEATURED_TTL_MS, clockMs)
+    private val animeGenresCache = LruTtlCache<String, List<String>>(64, SEASONS_TTL_MS, clockMs)
     private val seasonsCache = LruTtlCache<String, List<AnimeSeason>>(32, SEASONS_TTL_MS, clockMs)
     private val episodesCache = LruTtlCache<String, List<AnimeEpisode>>(32, EPISODES_TTL_MS, clockMs)
 
@@ -209,6 +211,89 @@ class SamaSource(
         result
     }
 
+    override suspend fun genres(anime: AnimeSearchResult): List<String> = withContext(Dispatchers.IO) {
+        val cacheKey = anime.url.trimEnd('/')
+        animeGenresCache.get(cacheKey)?.let { cached ->
+            if (cached.isNotEmpty()) return@withContext cached
+        }
+        if (anime.genres.isNotEmpty()) {
+            val normalized = dot.jcversa.novay.data.GenreCatalog.normalizeList(anime.genres)
+            if (normalized.isNotEmpty()) {
+                animeGenresCache.put(cacheKey, normalized)
+                return@withContext normalized
+            }
+        }
+        val base = origin()
+        val html = runCatching { fetchBlocking(anime.url, "$base/") }.getOrNull().orEmpty()
+        val parsed = SamaParsers.parseAnimeGenres(html)
+        if (parsed.isNotEmpty()) {
+            animeGenresCache.put(cacheKey, parsed)
+        }
+        parsed
+    }
+
+    override suspend fun catalogByGenre(genre: String): List<AnimeSearchResult> = withContext(Dispatchers.IO) {
+        val canonical = dot.jcversa.novay.data.GenreCatalog.normalize(genre)
+        if (canonical.isEmpty()) return@withContext featured()
+        val cacheKey = dot.jcversa.novay.data.GenreCatalog.foldKey(canonical)
+        genreCatalogCache.get(cacheKey)?.let { return@withContext it }
+
+        val base = origin()
+        val queryGenre = dot.jcversa.novay.data.GenreCatalog.samaQueryValue(canonical)
+        var networkError: Exception? = null
+
+        val liveCatalogue = try {
+            val url = "$base/catalogue/?type%5B%5D=Anime&genre%5B%5D=${urlEncode(queryGenre)}"
+            val html = fetchBlocking(url, "$base/catalogue/")
+            SamaParsers.parseSamaCatalogueCards(html, base)
+        } catch (e: Exception) {
+            networkError = e
+            emptyList()
+        }
+
+        val matchingCards = liveCatalogue.filter { card ->
+            card.genres.isEmpty() || dot.jcversa.novay.data.GenreCatalog.matches(card.genres, canonical)
+        }.map { card ->
+            if (card.genres.isEmpty()) card.copy(genres = listOf(canonical)) else card
+        }
+
+        val homeHeroMatches = runCatching { home().heroes }.getOrDefault(emptyList())
+            .filter { hero -> dot.jcversa.novay.data.GenreCatalog.matches(hero.genres, canonical) }
+            .map { hero ->
+                val animeUrl = Regex("(.*?/catalogue/[^/]+/)").find(hero.seasonUrl)?.groupValues?.get(1)
+                    ?: hero.seasonUrl
+                AnimeSearchResult(
+                    title = hero.title,
+                    url = animeUrl,
+                    slug = animeUrl.trimEnd('/').substringAfterLast('/', ""),
+                    language = hero.language,
+                    subtitle = hero.genres.joinToString(" · ").takeIf { it.isNotBlank() },
+                    posterUrl = hero.posterUrl,
+                    genres = dot.jcversa.novay.data.GenreCatalog.normalizeList(hero.genres),
+                )
+            }
+
+        val merged = (homeHeroMatches + matchingCards).distinctBy { it.url.trimEnd('/') }
+        if (merged.isNotEmpty()) {
+            genreCatalogCache.put(cacheKey, merged)
+            return@withContext merged
+        }
+
+        val searchFallback = runCatching { search(queryGenre) }.getOrNull().orEmpty()
+            .map { item ->
+                if (item.genres.isEmpty()) item.copy(genres = listOf(canonical)) else item
+            }
+        if (searchFallback.isNotEmpty()) {
+            genreCatalogCache.put(cacheKey, searchFallback)
+            return@withContext searchFallback
+        }
+
+        if (networkError != null) {
+            throw IOException("anime-sama : ${networkError.message ?: networkError.javaClass.simpleName}")
+        }
+        emptyList()
+    }
+
     // ── Recherche ─────────────────────────────────────────────────────────
 
     override suspend fun search(query: String): List<AnimeSearchResult> = withContext(Dispatchers.IO) {
@@ -251,6 +336,10 @@ class SamaSource(
 
             val base = origin()
             val html = fetchBlocking(anime.url, "$base/")
+            val parsedGenres = SamaParsers.parseAnimeGenres(html)
+            if (parsedGenres.isNotEmpty()) {
+                animeGenresCache.put(cacheKey, parsedGenres)
+            }
             val panels = SamaParsers.parsePanneauSeasons(html, anime.url)
 
             // Terrain 13/11 : la page statique ne liste que la langue par

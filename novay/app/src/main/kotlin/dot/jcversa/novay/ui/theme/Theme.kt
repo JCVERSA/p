@@ -15,14 +15,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 
 /**
- * Jetons sémantiques de verre cinéma, superposition vidéo et squelettes
- * shimmer — zéro couleur codée en dur dans les écrans.
+ * Jetons sémantiques de verre cinéma, superposition vidéo, squelettes
+ * shimmer et jetons de contraste WCAG AA — zéro couleur codée en dur dans les écrans.
  */
 @Immutable
 data class NovayOverlayColors(
@@ -36,6 +35,11 @@ data class NovayOverlayColors(
     val videoTrackInactive: Color,
     val shimmerBase: Color,
     val shimmerHighlight: Color,
+    /** Fond CTA plein accessible (>= 5.10:1 avec [onCtaContainer]). */
+    val ctaContainer: Color,
+    val onCtaContainer: Color,
+    /** Crimson éclairci accessible (>= 5.06:1 sur secondaryContainer et pastilles VF). */
+    val crimsonOnContainer: Color,
 )
 
 private val NovayNoirOverlays = NovayOverlayColors(
@@ -49,6 +53,9 @@ private val NovayNoirOverlays = NovayOverlayColors(
     videoTrackInactive = Color(0x5CFFFFFF),
     shimmerBase = Color(0xFF161620),
     shimmerHighlight = Color(0xFF282838),
+    ctaContainer = Color(0xFFD9143C),
+    onCtaContainer = Color(0xFFFFFFFF),
+    crimsonOnContainer = Color(0xFFFF6B85),
 )
 
 private val NovayAmoledOverlays = NovayNoirOverlays.copy(
@@ -67,7 +74,8 @@ object NovayTheme {
 
 /**
  * Thème NoVaY — Cinema Midnight Noir & Crimson :
- *  - primary            = Crimson cinéma (#FB3758) pour les CTA et lectures ;
+ *  - primary            = Crimson cinéma (#FB3758) pour les accents sur fond sombre ;
+ *  - ctaContainer       = Crimson plein (#D9143C, 5.10:1 avec #FFFFFF) pour les CTA ;
  *  - secondary          = Or projection (#F59E0B) réservé aux nouveaux épisodes ;
  *  - secondaryContainer = Pastille active crimson foncé (#3B111E) ;
  *  - tertiary           = Émeraude (#34D399) pour l'état téléchargé / hors-ligne.
@@ -99,7 +107,7 @@ private val NovayNoirScheme = darkColorScheme(
     onError = Color(0xFF3D0005),
     errorContainer = Color(0xFF7F1D1D),
     onErrorContainer = Color(0xFFFEE2E2),
-    outline = Color(0xFF5A5A6E),
+    outline = Color(0xFF66667C),
     outlineVariant = Color(0xFF262634),
     surfaceContainerLowest = Color(0xFF0E0E14),
     surfaceContainerLow = Color(0xFF12121A),
@@ -176,10 +184,6 @@ fun NoVaYTheme(
         SideEffect {
             val window = (view.context as? Activity)?.window
             if (window != null) {
-                @Suppress("DEPRECATION")
-                window.statusBarColor = Color.Transparent.toArgb()
-                @Suppress("DEPRECATION")
-                window.navigationBarColor = Color.Transparent.toArgb()
                 val insetsController = WindowCompat.getInsetsController(window, view)
                 insetsController.isAppearanceLightStatusBars = false
                 insetsController.isAppearanceLightNavigationBars = false

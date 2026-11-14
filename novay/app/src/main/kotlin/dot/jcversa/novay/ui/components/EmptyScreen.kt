@@ -11,18 +11,23 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.ui.theme.NovayTheme
 
 /**
  * État vide Editorial Cinema : halo crimson discret, icône centrée dans
@@ -36,9 +41,13 @@ fun EmptyScreen(
     modifier: Modifier = Modifier,
     // V2.7 : icône animée Lottie en lieu et place de l'ImageVector.
     lottieRes: Int? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    actionTestTag: String? = null,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val surfaceHigh = MaterialTheme.colorScheme.surfaceContainerHigh
+    val overlays = NovayTheme.overlays
 
     Box(
         modifier = modifier
@@ -79,7 +88,7 @@ fun EmptyScreen(
                                 contentDescription = null,
                                 size = 34.dp,
                                 tint = primary,
-                                loop = true,
+                                loop = false,
                             )
                         } else {
                             Icon(
@@ -106,6 +115,24 @@ fun EmptyScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
+            if (actionLabel != null && onAction != null) {
+                Spacer(Modifier.height(20.dp))
+                Button(
+                    onClick = onAction,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = overlays.ctaContainer,
+                        contentColor = overlays.onCtaContainer,
+                    ),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .let { if (actionTestTag != null) it.testTag(actionTestTag) else it },
+                ) {
+                    Text(
+                        text = actionLabel,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+            }
         }
     }
 }

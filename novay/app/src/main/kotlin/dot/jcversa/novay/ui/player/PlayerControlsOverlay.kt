@@ -5,12 +5,15 @@ import android.content.Context
 import android.media.AudioManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.annotation.OptIn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -28,6 +31,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -52,18 +56,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
 import dev.chrisbanes.haze.rememberHazeState
 import dot.jcversa.novay.ui.components.AnimateEntrance
+import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayLottieIcon
 import dot.jcversa.novay.R
 import dot.jcversa.novay.ui.components.NovayIcons
-import dot.jcversa.novay.ui.components.NovayPlayPauseMorphIcon
 import dot.jcversa.novay.ui.components.SwiftSlateSpinner
 import dot.jcversa.novay.ui.components.bounceClick
 import dot.jcversa.novay.ui.components.novayCinemaGlass
@@ -129,6 +137,7 @@ fun EmbeddedVideoPlayer(
     modifier: Modifier = Modifier,
 ) {
     val overlays = NovayTheme.overlays
+    val motion = LocalSlateMotion.current
     val hazeState = rememberHazeState()
     var controlsVisible by remember { mutableStateOf(true) }
     var activeSheet by remember { mutableStateOf<SelectorSheet?>(null) }
@@ -318,24 +327,37 @@ fun EmbeddedVideoPlayer(
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    Icon(
+                        imageVector = NovayIcons.ErrorSeal,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.error_stream_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = overlays.videoControlsInk,
+                        textAlign = TextAlign.Center,
+                    )
                     Text(
                         text = playerManager.streamError ?: "Erreur vidéo",
                         style = MaterialTheme.typography.bodySmall,
-                        color = overlays.videoControlsInk,
+                        color = overlays.videoControlsMutedInk,
+                        textAlign = TextAlign.Center,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Button(
                         onClick = onRetry,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                            containerColor = overlays.ctaContainer,
+                            contentColor = overlays.onCtaContainer,
                         ),
                         modifier = Modifier.minimumInteractiveComponentSize(),
                     ) {
-                        Text("Réessayer")
+                        Text(stringResource(R.string.action_retry))
                     }
                 }
             }
@@ -401,8 +423,8 @@ fun EmbeddedVideoPlayer(
 
         AnimatedVisibility(
             visible = showSurface && controlsVisible && !playerManager.isResolvingStream && playerManager.streamError == null,
-            enter = fadeIn(),
-            exit = fadeOut(),
+            enter = if (motion.reduceMotion) EnterTransition.None else fadeIn(motion.enterSpec(180)),
+            exit = if (motion.reduceMotion) ExitTransition.None else fadeOut(motion.exitSpec(140)),
             modifier = Modifier.fillMaxSize(),
         ) {
             Box(
@@ -475,7 +497,7 @@ fun EmbeddedVideoPlayer(
                                 } else {
                                     overlays.videoControlsInk
                                 },
-                                modifier = Modifier.size(20.dp),
+                                size = 20.dp,
                             )
                         }
                     }
@@ -508,7 +530,7 @@ fun EmbeddedVideoPlayer(
                             res = R.raw.lottie_minimize2,
                             contentDescription = "Réduire en mini-lecteur",
                             tint = overlays.videoControlsInk,
-                            modifier = Modifier.size(20.dp),
+                            size = 20.dp,
                         )
                     }
                 }
@@ -522,6 +544,7 @@ fun EmbeddedVideoPlayer(
                             .size(58.dp)
                             .semantics {
                                 this.contentDescription = if (playerManager.isPlaying) "Pause" else "Lecture"
+                                this.role = Role.Button
                             }
                             .novayCinemaGlass(
                                 shape = CircleShape,
@@ -535,7 +558,7 @@ fun EmbeddedVideoPlayer(
                     ) {
                         NovayLottieIcon(
                             res = R.raw.lottie_playpause,
-                            contentDescription = if (playerManager.isPlaying) "Pause" else "Lecture",
+                            contentDescription = null,
                             tint = overlays.videoControlsInk,
                             size = 30.dp,
                             restartKey = playerManager.isPlaying,
@@ -569,8 +592,16 @@ fun EmbeddedVideoPlayer(
                     )
                     Slider(
                         value = playerManager.positionMs.toFloat(),
-                        onValueChange = { playerManager.previewSeekPosition(it.toLong()) },
-                        onValueChangeFinished = { playerManager.commitSeekPosition(playerManager.positionMs) },
+                        onValueChange = {
+                            if (!playerManager.userSeeking) {
+                                playerManager.setScrubbing(true)
+                            }
+                            playerManager.previewSeekPosition(it.toLong())
+                        },
+                        onValueChangeFinished = {
+                            playerManager.commitSeekPosition(playerManager.positionMs)
+                            playerManager.setScrubbing(false)
+                        },
                         valueRange = 0f..(playerManager.durationMs.coerceAtLeast(1000L)).toFloat(),
                         modifier = Modifier
                             .weight(1f)
@@ -600,7 +631,7 @@ fun EmbeddedVideoPlayer(
                             res = R.raw.lottie_maximizeminimize,
                             contentDescription = "Plein écran paysage",
                             tint = overlays.videoControlsInk,
-                            modifier = Modifier.size(20.dp),
+                            size = 20.dp,
                         )
                     }
                 }
@@ -621,6 +652,7 @@ fun FullscreenPlayerOverlay(
 ) {
     val context = LocalContext.current
     val overlays = NovayTheme.overlays
+    val motion = LocalSlateMotion.current
     val hazeState = rememberHazeState()
     val audioManager = remember(context) {
         context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -900,7 +932,8 @@ fun FullscreenPlayerOverlay(
                         res = if (vf.isBrightness) R.raw.lottie_sun else R.raw.lottie_volume,
                         contentDescription = null,
                         tint = overlays.videoControlsInk,
-                        loop = true,
+                        size = 24.dp,
+                        loop = false,
                     )
                     Text(
                         text = "${vf.percentage} %",
@@ -951,8 +984,8 @@ fun FullscreenPlayerOverlay(
 
         AnimatedVisibility(
             visible = controlsVisible,
-            enter = fadeIn(),
-            exit = fadeOut(),
+            enter = if (motion.reduceMotion) EnterTransition.None else fadeIn(motion.enterSpec(180)),
+            exit = if (motion.reduceMotion) ExitTransition.None else fadeOut(motion.exitSpec(140)),
             modifier = Modifier.fillMaxSize(),
         ) {
             Box(
@@ -1098,6 +1131,7 @@ fun FullscreenPlayerOverlay(
                             .size(72.dp)
                             .semantics {
                                 this.contentDescription = if (playerManager.isPlaying) "Pause" else "Lecture"
+                                this.role = Role.Button
                             }
                             .novayCinemaGlass(
                                 shape = CircleShape,
@@ -1111,7 +1145,7 @@ fun FullscreenPlayerOverlay(
                     ) {
                         NovayLottieIcon(
                             res = R.raw.lottie_playpause,
-                            contentDescription = if (playerManager.isPlaying) "Pause" else "Lecture",
+                            contentDescription = null,
                             tint = overlays.videoControlsInk,
                             size = 38.dp,
                             restartKey = playerManager.isPlaying,
@@ -1145,8 +1179,16 @@ fun FullscreenPlayerOverlay(
                     )
                     Slider(
                         value = playerManager.positionMs.toFloat(),
-                        onValueChange = { playerManager.previewSeekPosition(it.toLong()) },
-                        onValueChangeFinished = { playerManager.commitSeekPosition(playerManager.positionMs) },
+                        onValueChange = {
+                            if (!playerManager.userSeeking) {
+                                playerManager.setScrubbing(true)
+                            }
+                            playerManager.previewSeekPosition(it.toLong())
+                        },
+                        onValueChangeFinished = {
+                            playerManager.commitSeekPosition(playerManager.positionMs)
+                            playerManager.setScrubbing(false)
+                        },
                         valueRange = 0f..(playerManager.durationMs.coerceAtLeast(1000L)).toFloat(),
                         modifier = Modifier
                             .weight(1f)
@@ -1191,13 +1233,14 @@ private fun PlayerSelectorPanel(
     modifier: Modifier = Modifier,
 ) {
     val overlays = NovayTheme.overlays
+    val motion = LocalSlateMotion.current
     val stream = playerManager.stream
     val isOffline = playerManager.session?.offline == true
 
     AnimatedVisibility(
         visible = activeSheet != null,
-        enter = fadeIn(),
-        exit = fadeOut(),
+        enter = if (motion.reduceMotion) EnterTransition.None else fadeIn(motion.enterSpec(160)),
+        exit = if (motion.reduceMotion) ExitTransition.None else fadeOut(motion.exitSpec(120)),
         modifier = modifier,
     ) {
         Box(
@@ -1214,7 +1257,9 @@ private fun PlayerSelectorPanel(
             when (activeSheet) {
                 SelectorSheet.QUALITY -> if (!isOffline && stream != null && stream.qualities.isNotEmpty()) {
                     Row(
-                        modifier = Modifier.padding(12.dp),
+                        modifier = Modifier
+                            .horizontalScroll(rememberScrollState())
+                            .padding(12.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         PlayerSelectorPill(
@@ -1242,7 +1287,9 @@ private fun PlayerSelectorPanel(
                 SelectorSheet.SPEED -> {
                     val speeds = listOf(0.5f, 1f, 1.25f, 1.5f, 2f)
                     Row(
-                        modifier = Modifier.padding(12.dp),
+                        modifier = Modifier
+                            .horizontalScroll(rememberScrollState())
+                            .padding(12.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         speeds.forEachIndexed { index, spd ->
@@ -1271,7 +1318,10 @@ private fun PlayerSelectorPanel(
                                 style = MaterialTheme.typography.labelMedium,
                                 color = overlays.videoControlsMutedInk,
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
                                 playerManager.audioTracks.forEach { option ->
                                     PlayerSelectorPill(
                                         label = option.label,
@@ -1290,7 +1340,10 @@ private fun PlayerSelectorPanel(
                                 style = MaterialTheme.typography.labelMedium,
                                 color = overlays.videoControlsMutedInk,
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
                                 PlayerSelectorPill(
                                     label = "Désactivés",
                                     selected = playerManager.subtitlesDisabled,
@@ -1331,7 +1384,7 @@ private fun PlayerSelectorPill(
         modifier = Modifier
             .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
             .background(
-                color = if (selected) MaterialTheme.colorScheme.primary else overlays.glassSurface,
+                color = if (selected) overlays.ctaContainer else overlays.glassSurface,
                 shape = RoundedCornerShape(999.dp),
             )
             .bounceClick(onClick = onClick)
@@ -1341,7 +1394,7 @@ private fun PlayerSelectorPill(
             text = label,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
             style = MaterialTheme.typography.labelMedium,
-            color = if (selected) MaterialTheme.colorScheme.onPrimary else overlays.videoControlsInk,
+            color = if (selected) overlays.onCtaContainer else overlays.videoControlsInk,
         )
     }
 }

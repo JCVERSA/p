@@ -36,7 +36,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -68,7 +70,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -95,6 +97,7 @@ import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.SlateMotion
 import dot.jcversa.novay.ui.components.SwiftSlateSpinner
 import dot.jcversa.novay.ui.components.bounceClick
+import dot.jcversa.novay.ui.theme.NovayTheme
 import dot.jcversa.novay.ui.theme.header
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -197,7 +200,19 @@ fun EpisodesPane(
 
     val notifPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { }
+    ) { granted ->
+        if (!granted) {
+            toast = context.getString(R.string.permission_notifications_denied_notice)
+        }
+    }
+
+    val storagePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            toast = context.getString(R.string.permission_storage_denied_notice)
+        }
+    }
 
     LaunchedEffect(season.url, retryKey) {
         error = null
@@ -231,6 +246,7 @@ fun EpisodesPane(
     }
 
     val motion = LocalSlateMotion.current
+    val overlays = NovayTheme.overlays
     val seasonUrl = season.url.trimEnd('/')
     val seasonInfos = remember(infos, seasonUrl) {
         infos.filter { it.meta?.seasonUrl?.trimEnd('/') == seasonUrl }
@@ -250,13 +266,12 @@ fun EpisodesPane(
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         // Android 7-9 : vrais fichiers dans Download/NoVaY/ -> permission
-        // de stockage demandee au premier telechargement (SDK different du
-        // bloc notifications ci-dessus, jamais les deux en meme temps).
+        // de stockage demandee au premier telechargement.
         if (Build.VERSION.SDK_INT <= 28 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            notifPermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
     }
 
@@ -423,6 +438,8 @@ fun EpisodesPane(
                 "error" -> ErrorView(
                     message = error ?: "Erreur inconnue",
                     onRetry = { retryKey++ },
+                    title = stringResource(R.string.error_episodes_title),
+                    icon = NovayIcons.ErrorSeal,
                     modifier = Modifier.padding(bottom = bottomChrome),
                 )
                 "loading" -> Box(
@@ -466,7 +483,7 @@ fun EpisodesPane(
                                 else -> EpDl.QUEUED
                             }
                             EpisodeRow(
-                                modifier = Modifier.animateItem(),
+                                modifier = if (motion.reduceMotion) Modifier else Modifier.animateItem(),
                                 episode = episode,
                                 dlState = state,
                                 dlPercent = info?.percent ?: 0f,
@@ -545,8 +562,8 @@ fun EpisodesPane(
                             enabled = selected.isNotEmpty(),
                             onClick = { downloadSelected() },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary,
+                                containerColor = overlays.ctaContainer,
+                                contentColor = overlays.onCtaContainer,
                             ),
                             modifier = Modifier
                                 .minimumInteractiveComponentSize()
@@ -579,7 +596,7 @@ fun EpisodesPane(
                 )
             },
             text = {
-                Column {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text(
                         text = if (state.episodes.size == 1) {
                             "Sélectionne la qualité à télécharger pour cet épisode :"
@@ -640,6 +657,7 @@ private fun EpisodeRow(
     modifier: Modifier = Modifier,
 ) {
     val shape = MaterialTheme.shapes.medium
+    val motion = LocalSlateMotion.current
     val interactionSource = remember { MutableInteractionSource() }
     val hovered by interactionSource.collectIsHoveredAsState()
     val containerColor by animateColorAsState(
@@ -648,6 +666,7 @@ private fun EpisodeRow(
             hovered -> MaterialTheme.colorScheme.surfaceContainer
             else -> MaterialTheme.colorScheme.surfaceContainerLow
         },
+        animationSpec = motion.colorSpec(180),
         label = "episode_row_bg",
     )
 
@@ -659,10 +678,10 @@ private fun EpisodeRow(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .clip(shape)
-            .semantics(mergeDescendants = true) {}
             .combinedClickable(
                 interactionSource = interactionSource,
                 indication = ripple(),
+                onClickLabel = if (selectionMode) "Sélectionner l'épisode ${episode.number}" else "Lire ${episode.label}",
                 onClick = onClick,
                 onLongClick = onLongClick,
             )
@@ -681,6 +700,7 @@ private fun EpisodeRow(
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
+                    size = 22.dp,
                     restartKey = isSelected,
                     modifier = Modifier.padding(end = 10.dp),
                 )
@@ -747,6 +767,7 @@ private fun EpisodeDownloadIndicator(
                 res = R.raw.lottie_clock,
                 contentDescription = "En file d'attente",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                size = 22.dp,
             )
         }
         EpDl.DOWNLOADING -> Box(
@@ -775,6 +796,7 @@ private fun EpisodeDownloadIndicator(
                 res = R.raw.lottie_checkcircle,
                 contentDescription = "Téléchargé — lecture hors-ligne",
                 tint = MaterialTheme.colorScheme.tertiary,
+                size = 22.dp,
             )
         }
         EpDl.FAILED -> IconButton(
@@ -785,6 +807,7 @@ private fun EpisodeDownloadIndicator(
                 res = R.raw.lottie_alertcircle,
                 contentDescription = "Échec — réessayer le téléchargement",
                 tint = MaterialTheme.colorScheme.error,
+                size = 22.dp,
             )
         }
         EpDl.NONE -> IconButton(
@@ -798,6 +821,7 @@ private fun EpisodeDownloadIndicator(
                 res = R.raw.lottie_download,
                 contentDescription = "Télécharger l'épisode",
                 tint = MaterialTheme.colorScheme.primary,
+                size = 22.dp,
             )
         }
     }
