@@ -108,8 +108,10 @@ object FileDownloadEngine {
         pump()
     }
 
+    @Synchronized
     fun tasks(): List<Task> = tasksInternal.toList()
 
+    @Synchronized
     fun find(id: String): Task? = tasksInternal.firstOrNull { it.id == id }
 
     fun setWifiOnly(value: Boolean) {
@@ -162,6 +164,7 @@ object FileDownloadEngine {
         if (pumpJob?.isActive == true) return
         val context = appContext ?: return
         pumpJob = scope.launch {
+            var ran = false
             while (true) {
                 if (paused) break
                 if (wifiOnly && isNetworkMetered(context)) {
@@ -175,10 +178,13 @@ object FileDownloadEngine {
                 val task = tasksInternal.firstOrNull {
                     it.state == State.QUEUED || it.state == State.WAITING_WIFI
                 } ?: break
+                ran = true
                 runTask(context, task)
             }
-            // File épuisée ou suspendue : notification d'état, puis silence.
-            notifyUpdate()
+            // File épuisée ou suspendue : notification d'état, puis
+            // silence. Rien tourné et rien de connu (première ouverture,
+            // aucune tâche) : on ne réveille même pas le service.
+            if (ran || tasksInternal.isNotEmpty()) notifyUpdate()
         }
     }
 

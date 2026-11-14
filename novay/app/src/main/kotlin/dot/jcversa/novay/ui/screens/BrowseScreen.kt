@@ -127,7 +127,7 @@ fun BrowseScreen(
         val h = runCatching { source.home() }.getOrNull()
         if (h != null && (h.heroes.isNotEmpty() || h.cards.isNotEmpty())) {
             home = h
-            val heroesAsResults = h.heroes.map { it.toSearchResult() }
+            val heroesAsResults = h.heroes.map { it.toSearchResult() }.distinctBy { it.url }
             featured = if (heroesAsResults.isNotEmpty()) {
                 BrowseFeaturedState.Loaded(heroesAsResults)
             } else {

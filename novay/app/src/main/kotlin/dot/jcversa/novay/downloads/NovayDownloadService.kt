@@ -37,6 +37,12 @@ class NovayDownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android 8+ : notifyState() demarre le service via
+        // startForegroundService(), qui EXIGE un appel a startForeground()
+        // avant tout arret — meme si le service n'a rien a faire. Sans
+        // cet appel, le systeme tue l'application entiere (crash a
+        // l'ouverture). On l'invoque donc TOUJOURS, en premier.
+        startForeground(NOTIFICATION_ID, Downloads.progressNotification(this))
         when (intent?.action) {
             ACTION_PAUSE_ALL -> Downloads.pauseAll(this)
             ACTION_RESUME_ALL -> Downloads.resumeAll(this)
@@ -53,7 +59,6 @@ class NovayDownloadService : Service() {
             stopForegroundAndSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, Downloads.progressNotification(this))
         return START_STICKY
     }
 
