@@ -28,7 +28,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SmallExtendedFloatingActionButton
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
@@ -240,7 +240,7 @@ fun ShowScreen(
             label = "fab_visibility",
         )
         if (fabVisible && fabScale > 0.01f) {
-            SmallExtendedFloatingActionButton(
+            ExtendedFloatingActionButton(
                 onClick = { resumeEntry?.let(onResume) },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)

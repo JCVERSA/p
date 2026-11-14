@@ -35,6 +35,7 @@ fun SwiftSlateSpinner(
     speedMs: Int = 1100
 ) {
     val effectiveTint = if (tint == Color.Unspecified) MaterialTheme.colorScheme.primary else tint
+    val tertiaryColor = MaterialTheme.colorScheme.tertiary
     val infiniteTransition = rememberInfiniteTransition(label = "swiftslate_spinner")
 
     // Continuous 360 degree rotation
@@ -82,7 +83,7 @@ fun SwiftSlateSpinner(
                     colors = listOf(
                         effectiveTint.copy(alpha = 0.1f),
                         effectiveTint,
-                        MaterialTheme.colorScheme.tertiary
+                        tertiaryColor
                     )
                 ),
                 startAngle = rotation,

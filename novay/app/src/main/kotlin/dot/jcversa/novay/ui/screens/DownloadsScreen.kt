@@ -22,7 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SmallExtendedFloatingActionButton
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -225,7 +225,7 @@ fun DownloadsScreen(
 
         // FAB pause/reprise globale (Mihon DownloadQueueScreen).
         if (pending > 0) {
-            SmallExtendedFloatingActionButton(
+            ExtendedFloatingActionButton(
                 onClick = {
                     if (paused) {
                         Downloads.resumeAll(context)
