@@ -171,6 +171,8 @@ fun DownloadsScreen(
                     AnimateEntrance(index = index) {
                         DownloadRow(
                             info = info,
+                            reading = speeds[info.id],
+                            wifiOnly = wifiOnly,
                             onPlay = {
                                 val meta = info.meta ?: return@DownloadRow
                                 val season = AnimeSeason(name = meta.seasonName, url = meta.seasonUrl)
@@ -193,6 +195,8 @@ fun DownloadsScreen(
 @Composable
 private fun DownloadRow(
     info: Downloads.DownloadInfo,
+    reading: SpeedMeter.Reading?,
+    wifiOnly: Boolean,
     onPlay: () -> Unit,
     onRemove: () -> Unit
 ) {
@@ -269,7 +273,6 @@ private fun DownloadRow(
                     text = when {
                         info.isFailed -> "Échec — relance depuis la liste des épisodes"
                         info.isActive -> {
-                            val reading = speeds[info.id]
                             if (reading != null && reading.bytesPerSecond > 0) {
                                 "${info.percent.toInt()} % · ${formatSpeed(reading.bytesPerSecond)}" +
                                     (if (reading.etaMillis > 0) " · ${formatEta(reading.etaMillis)}" else "")
