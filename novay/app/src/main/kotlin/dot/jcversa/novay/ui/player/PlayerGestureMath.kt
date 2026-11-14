@@ -38,6 +38,24 @@ object PlayerGestureMath {
         val delta = ((currentX - startX).toLong()) * DRAG_MS_PER_PX
         return (start + delta).coerceIn(0L, durationMs)
     }
+
+    /** Sensibilité des gestes verticaux : % de plage par pixel glissé. */
+    const val VERTICAL_PCT_PER_PX = 0.1f
+
+    /**
+     * Pourcentage cible d'un glissé vertical : monter le doigt AUGMENTE
+     * (volume ou luminosité), le descendre diminue. Toujours borné
+     * 0..[maxPercentage].
+     */
+    fun verticalTarget(
+        startPercentage: Int,
+        startY: Float,
+        currentY: Float,
+        maxPercentage: Int = 100
+    ): Int {
+        val delta = ((startY - currentY) * VERTICAL_PCT_PER_PX).toInt()
+        return (startPercentage + delta).coerceIn(0, maxPercentage)
+    }
 }
 
 /**

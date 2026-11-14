@@ -54,6 +54,46 @@ class PlayerGestureMathTest {
         )
     }
 
+    // ── Glissé vertical (volume / luminosité) ──────────────────────────
+
+    @Test
+    fun `monter le doigt augmente le pourcentage`() {
+        // 200 px vers le haut depuis 40 % = +20 %
+        assertEquals(
+            60,
+            PlayerGestureMath.verticalTarget(startPercentage = 40, startY = 800f, currentY = 600f)
+        )
+    }
+
+    @Test
+    fun `descendre le doigt diminue le pourcentage`() {
+        assertEquals(
+            20,
+            PlayerGestureMath.verticalTarget(startPercentage = 40, startY = 600f, currentY = 800f)
+        )
+    }
+
+    @Test
+    fun `pourcentage borne a zero et cent`() {
+        assertEquals(
+            100,
+            PlayerGestureMath.verticalTarget(startPercentage = 90, startY = 1000f, currentY = 0f)
+        )
+        assertEquals(
+            0,
+            PlayerGestureMath.verticalTarget(startPercentage = 5, startY = 0f, currentY = 1000f)
+        )
+    }
+
+    @Test
+    fun `glisse inferieur au seuil d un point, valeur inchangee`() {
+        // 4 px de glisse = 0,4 % -> 0 apres arrondi
+        assertEquals(
+            40,
+            PlayerGestureMath.verticalTarget(startPercentage = 40, startY = 500f, currentY = 496f)
+        )
+    }
+
     // ── Cumul de double-taps ───────────────────────────────────────────
 
     @Test

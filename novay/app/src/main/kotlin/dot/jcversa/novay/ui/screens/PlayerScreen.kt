@@ -1,7 +1,9 @@
 package dot.jcversa.novay.ui.screens
 
 import android.app.Activity
+import android.content.Context
 import android.content.pm.ActivityInfo
+import android.media.AudioManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -22,8 +24,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.BrightnessMedium
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -260,6 +264,25 @@ private fun PlayerContent(
     // V2.2 (étape 7) : verrouillage des contrôles — les gestes et les
     // contrôles se figent, seul un bouton déverrouille.
     var controlsLocked by remember { mutableStateOf(false) }
+    // V2.2 étape 2 : glissé vertical — luminosité (gauche) / volume
+    // (droite), avec indicateur %.
+    var verticalFeedback by remember { mutableStateOf<VerticalFeedback?>(null) }
+    val audioManager = remember {
+        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    }
+    val window = (context as? Activity)?.window
+
+    fun applyVolume(percent: Int) {
+        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        val target = (percent * max / 100).coerceIn(0, max)
+        runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
+    }
+
+    fun applyBrightness(percent: Int) {
+        val lp = window?.attributes ?: return
+        lp.screenBrightness = percent / 100f
+        window.attributes = lp
+    }
     // V2.2 : double-tap cumulatif (inspire nextplayer - comportement).
     val doubleTapSeek = remember { DoubleTapSeekAccumulator() }
 
@@ -324,12 +347,19 @@ private fun PlayerContent(
         }
     }
 
-    // Le feedback de seek s'efface 800 ms apres la derniere mise a jour
-    // (un glisse continu le garde affiche, la valeur suit le doigt).
+    // Les feedbacks (seek, volume, luminosite) s'effacent 800 ms apres
+    // la derniere mise a jour (un glisse continu les garde affiches).
     LaunchedEffect(seekFeedback) {
         if (seekFeedback != null) {
             delay(800)
             seekFeedback = null
+        }
+    }
+
+    LaunchedEffect(verticalFeedback) {
+        if (verticalFeedback != null) {
+            delay(800)
+            verticalFeedback = null
         }
     }
 
@@ -388,24 +418,45 @@ private fun PlayerContent(
                 .fillMaxSize()
                 .pointerInput(player, durationMs, controlsLocked) {
                     if (controlsLocked) return@pointerInput
-                    val slop = viewConfiguration.pointerSlop
+                    // Seuil de direction (~8 dp, slop tactile standard) :
+                    // en dessous, le doigt est considéré immobile.
+                    val slop = 8.dp.toPx()
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         var seeking = false
+                        var verticalIsBrightness = false
+                        var verticalStartPct = 0
+                        var verticalActive = false
                         val startX = down.position.x
                         val startPosition = player.currentPosition
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
                             if (!change.pressed) break
-                            if (!seeking) {
-                                val dx = change.position.x - startX
-                                val dy = change.position.y - down.position.y
-                                // Direction : horizontale seulement (les
-                                // gestes verticaux arrivent en V2.2 étape 2).
-                                if (abs(dx) > slop && abs(dx) > abs(dy)) {
-                                    seeking = true
-                                    player.isScrubbingModeEnabled = true
+                            val dx = change.position.x - startX
+                            val dy = change.position.y - down.position.y
+                            if (!seeking && !verticalActive) {
+                                when {
+                                    // Horizontal : seek progressif.
+                                    abs(dx) > slop && abs(dx) > abs(dy) -> {
+                                        seeking = true
+                                        player.isScrubbingModeEnabled = true
+                                    }
+                                    // Vertical : luminosité (moitié gauche)
+                                    // ou volume (moitié droite).
+                                    abs(dy) > slop && abs(dy) > abs(dx) -> {
+                                        verticalActive = true
+                                        verticalIsBrightness = down.position.x < size.width / 2
+                                        verticalStartPct = if (verticalIsBrightness) {
+                                            val current = window?.attributes?.screenBrightness ?: -1f
+                                            if (current >= 0f) (current * 100).toInt() else 50
+                                        } else {
+                                            val max = audioManager
+                                                .getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                                .coerceAtLeast(1)
+                                            audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / max
+                                        }
+                                    }
                                 }
                             }
                             if (seeking) {
@@ -421,12 +472,53 @@ private fun PlayerContent(
                                     deltaMs = target - startPosition,
                                     targetMs = target
                                 )
+                            } else if (verticalActive) {
+                                change.consume()
+                                val pct = PlayerGestureMath.verticalTarget(
+                                    startPercentage = verticalStartPct,
+                                    startY = down.position.y,
+                                    currentY = change.position.y
+                                )
+                                if (verticalIsBrightness) applyBrightness(pct) else applyVolume(pct)
+                                verticalFeedback = VerticalFeedback(
+                                    isBrightness = verticalIsBrightness,
+                                    percentage = pct
+                                )
                             }
                         }
                         if (seeking) player.isScrubbingModeEnabled = false
                     }
                 }
         )
+
+        // Feedback volume / luminosité : icône + pourcentage, au centre.
+        verticalFeedback?.let { vf ->
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color(0xB3000000),
+                modifier = Modifier.align(Alignment.Center)
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = if (vf.isBrightness) {
+                            Icons.Outlined.BrightnessMedium
+                        } else {
+                            Icons.AutoMirrored.Filled.VolumeUp
+                        },
+                        contentDescription = null,
+                        tint = Color.White
+                    )
+                    Text(
+                        text = "${vf.percentage} %",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White
+                    )
+                }
+            }
+        }
 
         // Feedback de seek : côté tapé, delta cumulé + temps cible.
         seekFeedback?.let { fb ->
@@ -638,4 +730,10 @@ private fun QualityPill(label: String, selected: Boolean, onClick: () -> Unit) {
 private data class SeekFeedback(
     val deltaMs: Long,
     val targetMs: Long
+)
+
+/** Feedback d'un geste vertical : luminosité ou volume, en pourcentage. */
+private data class VerticalFeedback(
+    val isBrightness: Boolean,
+    val percentage: Int
 )
