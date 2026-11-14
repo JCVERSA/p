@@ -87,6 +87,11 @@ anti-Cloudflare.
   - Fix bloquant : la rotation vidait la pile de navigation (le lecteur
     « ne s'ouvrait pas ») — `configChanges` complets + pile au niveau
     processus.
+  - Fix bloquant (retour terrain) : contrôles masqués impossibles à faire
+    revenir — deux couches de gestes empilées s'étouffaient mutuellement
+    (le test d'atteinte Compose s'arrête au frère du dessus) ; tous les
+    gestes vivent maintenant dans UNE couche (machine à états : tap,
+    double-tap, appui long, glissé H/V).
   - Glissé horizontal = seek progressif (50 ms/px, la vidéo suit le
     doigt), double-tap cumulatif (+10 s, +20 s…), indicateur delta +
     temps cible.
