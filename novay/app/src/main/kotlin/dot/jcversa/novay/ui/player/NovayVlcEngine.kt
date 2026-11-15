@@ -163,7 +163,10 @@ class NovayVlcEngine(
                 mp.media = media
                 media.release()
                 mp.setRate(rate)
-                if (pendingSeekMs > 0L) runCatching { mp.setTime(pendingSeekMs) }
+                // V2.9 phase 2 : PAS de setTime avant play() — il forçait la
+                // création du thread d'input VLC et ralentissait le démarrage
+                // (pattern Fermata : la reprise de position s'applique sur
+                // l'événement Playing, via applyPendingSeekOnPlay).
                 if (autoPlay) {
                     requestFocus()
                     mp.play()
@@ -256,20 +259,34 @@ class NovayVlcEngine(
      * de VLC for Android 3.x : le natif ne comprend PAS `content://`, on
      * résout via le ContentResolver en descripteur de fichier ouvert en
      * lecture (`fd://N`, gardé ouvert pendant toute la lecture).
+     *
+     * V2.9 phase 2 — options de lecture éprouvées par les lecteurs VLC
+     * Android réels (pattern Fermata) :
+     *  - `:no-mediacodec-dr` / `:no-omxil-dr` : décodage matériel SANS
+     *    rendu direct. Le rendu direct MediaCodec est la cause classique
+     *    du « audio seul, écran noir » sur les appareils anciens 32 bits.
+     *  - `:input-fast-seek` : seek rapide (moindre précision pendant le
+     *    déplacement, précis au relâchement — le pattern de l'UI moderne).
      */
-    private fun mediaFromUri(libvlc: LibVLC, uri: Uri): Media = when {
-        uri.scheme.equals("content", ignoreCase = true) -> {
-            val pfd = context.contentResolver.openFileDescriptor(uri, "r")
-                ?: throw IllegalStateException("Fichier introuvable sur le stockage")
-            heldFileDescriptor?.runCatching { close() }
-            heldFileDescriptor = pfd
-            Media(libvlc, Uri.parse("fd://${pfd.fd}"))
+    private fun mediaFromUri(libvlc: LibVLC, uri: Uri): Media {
+        val media = when {
+            uri.scheme.equals("content", ignoreCase = true) -> {
+                val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+                    ?: throw IllegalStateException("Fichier introuvable sur le stockage")
+                heldFileDescriptor?.runCatching { close() }
+                heldFileDescriptor = pfd
+                Media(libvlc, Uri.parse("fd://${pfd.fd}"))
+            }
+            uri.scheme == null -> {
+                // Chemin brut (/storage/...) -> URI file:// propre.
+                Media(libvlc, Uri.fromFile(java.io.File(uri.path ?: uri.toString())))
+            }
+            else -> Media(libvlc, uri)
         }
-        uri.scheme == null -> {
-            // Chemin brut (/storage/...) -> URI file:// propre.
-            Media(libvlc, Uri.fromFile(java.io.File(uri.path ?: uri.toString())))
-        }
-        else -> Media(libvlc, uri)
+        media.addOption(":no-mediacodec-dr")
+        media.addOption(":no-omxil-dr")
+        media.addOption(":input-fast-seek")
+        return media
     }
 
     private fun closeHeldFileDescriptor() {
