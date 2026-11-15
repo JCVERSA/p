@@ -45,6 +45,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Tests Robolectric UI (createComposeRule) : la regle Compose
+             lance une ComponentActivity par intention EXPLICITE. Ni le
+             manifest du source set test ni ceux des libs de test ne sont
+             fusionnes dans la config unitaire AGP 9 (constate V2.6 et
+             V2.8.1) : on declare l activite hote ici. Sans filtre
+             d intention, elle est invisible du lanceur d applications. -->
+        <activity android:name="androidx.activity.ComponentActivity" />
+
         <!-- V2 : telechargements en arriere-plan (progression en
              notification, reprise apres redemarrage). -->
         <service
