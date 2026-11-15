@@ -17,7 +17,7 @@ import org.junit.Test
 class NovayVlcEngineVoutFallbackTest {
 
     @Test
-    fun `repli declenche : lecture active, aucune sortie video, surface attachee`() {
+    fun `repli declenche quand lecture active sans sortie video`() {
         assertTrue(NovayVlcEngine.voutFallbackNeeded(active = true, hadVout = false, viewsAttached = true))
     }
 
