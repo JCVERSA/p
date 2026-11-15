@@ -183,7 +183,7 @@ La CI (novay.yml) exécute tests unitaires + build + tailles, mais jamais `lint`
 | B-02 | doublons MediaStore | ✅ CORRIGÉ — écrasement de l'entrée existante (`"wt"` troncature) |
 | B-03 | `!!` défensifs | ✅ CORRIGÉ — 3 sites en smart-cast |
 | P-03 | polices | ✅ CORRIGÉ — sous-ensemblées (1 503 → 627 Ko, **−856 Ko**), caractères requis vérifiés présents |
-| Q-02 | lint en CI | ✅ CORRIGÉ — étape non bloquante + rapport en artefact |
+| Q-02 | lint en CI | ✅ CORRIGÉ — étape non bloquante (lint ressort PROPRE sur V2.9.5) ; l archivage du rapport HTML reste non résolu sous AGP 9 (chemin de sortie introuvable — les avertissements passent par le canal inline, fonctionnel) |
 | Q-03 | test désactivé mort | ✅ CORRIGÉ — supprimé |
 | **P-05** | clés de listes | ❌ **RÉTRACTÉ** — faux positif : le comptage grep de l'audit ne voyait pas les clés sur la ligne suivante. Re-verification exhaustive : **TOUTES** les listes des écrans ont une `key` (les deux `items()` sans clé sont des placeholders Shimmer sans identité — correct). Aucune action. |
 
