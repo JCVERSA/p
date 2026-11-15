@@ -647,6 +647,11 @@ class PlayerStateManager(
             autoPlay = autoPlay,
             rate = if (isFastForwardHold) 2f else playbackSpeed,
         )
+        // Audit S-02 (versant decouvert pendant le correctif) : une session
+        // VLC pure ne cree JAMAIS d'ExoPlayer, donc la boucle de progression
+        // (sauvegarde d'historique toutes les 5 s) ne demarrait pas - la
+        // position n'etait sauvegardee qu'a la fermeture (perdue si kill).
+        ensureProgressLoopStarted()
         refreshEngineView()
     }
 
@@ -910,6 +915,10 @@ class PlayerStateManager(
         flushProgressNow()
         loadJob?.cancel()
         recoveryJob?.cancel()
+        // Audit S-02 : la boucle de progression doit mourir avec le lecteur
+        // (elle redemarre a la prochaine lecture - creation ExoPlayer ou
+        // switchToVlc ; l'UI VLC est, elle, pilotee par evenements).
+        progressJob?.cancel()
         suspendedInBackground = false
         codecRecoveryAttempts = 0
         activeWatchToken = null

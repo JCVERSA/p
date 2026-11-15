@@ -419,10 +419,11 @@ fun EpisodesPane(
             )
         }
 
+        val episodeList = episodes
         val viewKey = when {
             error != null -> "error"
-            episodes == null -> "loading"
-            episodes!!.isEmpty() -> "empty"
+            episodeList == null -> "loading"
+            episodeList.isEmpty() -> "empty"
             else -> "list"
         }
 

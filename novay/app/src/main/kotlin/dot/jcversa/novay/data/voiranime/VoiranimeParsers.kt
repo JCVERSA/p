@@ -184,7 +184,7 @@ object VoiranimeParsers {
             val titleSeason = TITLE_SEASON_RES.firstNotNullOfOrNull { it.find(e.title) }
             val seasonMatch = slugSeason ?: titleSeason
             val explicit = seasonMatch != null
-            val season = if (explicit) seasonMatch!!.groupValues[1].toIntOrNull() ?: 1 else 1
+            val season = if (explicit) seasonMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1 else 1
 
             val groupKey = stripSeasonMarker(if (colon != null) colon.groupValues[1] else e.title)
             val label = when {

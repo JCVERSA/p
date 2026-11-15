@@ -13,8 +13,10 @@ android {
     // minSdk 24 = Android 7.0.
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "0.1.0"
+    // Audit C-01 : versionning reel. Compteur simple, +1 a chaque
+    // livraison installee par l owner (V2.9.5 = 30e livraison).
+    versionCode = 30
+    versionName = "2.9.5"
 
     // V2.8 : libvlc-all embarque les 4 ABI natives (~40 Mo chacune).
     // La CI construit un APK par architecture :

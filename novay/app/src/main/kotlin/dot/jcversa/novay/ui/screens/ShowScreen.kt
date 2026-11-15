@@ -255,10 +255,11 @@ fun ShowScreen(
                 },
             )
 
+            val seasonList = seasons
             val viewKey = when {
                 error != null -> "error"
-                seasons == null -> "loading"
-                seasons!!.isEmpty() -> "empty"
+                seasonList == null -> "loading"
+                seasonList.isEmpty() -> "empty"
                 else -> "loaded"
             }
 
@@ -461,11 +462,8 @@ fun ShowScreen(
                 )
                 firstSeason?.let { first ->
                     ShowSheetActionRow(
-                        label = if (resumeEntry != null) {
-                            "Reprendre Épisode ${resumeEntry!!.episodeNumber}"
-                        } else {
-                            "Ouvrir ${first.name}"
-                        },
+                        label = resumeEntry?.let { "Reprendre Épisode ${it.episodeNumber}" }
+                            ?: "Ouvrir ${first.name}",
                         icon = NovayIcons.Play,
                         onClick = {
                             showActionsSheet = false

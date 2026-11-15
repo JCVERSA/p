@@ -169,3 +169,29 @@ La CI (novay.yml) exécute tests unitaires + build + tailles, mais jamais `lint`
 | 11 | P-04 double fetch | S | à re-vérifier d'abord |
 
 *Audit en lecture seule — aucune ligne de code modifiée. Rapport commité pour servir de référence aux prochains GO.*
+
+---
+
+## 10. Suivi V2.9.5 (lot correctif, GO owner « ok vasy »)
+
+| # | Finding | Statut V2.9.5 |
+|---|---|---|
+| C-01 | versionning | ✅ CORRIGÉ — `versionCode 30`, `versionName "2.9.5"` |
+| S-01 | verrou liste tâches | ✅ CORRIGÉ — `CopyOnWriteArrayList` |
+| S-02 | boucle de progression | ✅ CORRIGÉ des deux côtés — annulée dans `closeAndStop()` ET démarrée dans `switchToVlc()` |
+| B-01 | ligne arithmétiquement morte | ✅ CORRIGÉ — supprimée |
+| B-02 | doublons MediaStore | ✅ CORRIGÉ — écrasement de l'entrée existante (`"wt"` troncature) |
+| B-03 | `!!` défensifs | ✅ CORRIGÉ — 3 sites en smart-cast |
+| P-03 | polices | ✅ CORRIGÉ — sous-ensemblées (1 503 → 627 Ko, **−856 Ko**), caractères requis vérifiés présents |
+| Q-02 | lint en CI | ✅ CORRIGÉ — étape non bloquante + rapport en artefact |
+| Q-03 | test désactivé mort | ✅ CORRIGÉ — supprimé |
+| **P-05** | clés de listes | ❌ **RÉTRACTÉ** — faux positif : le comptage grep de l'audit ne voyait pas les clés sur la ligne suivante. Re-verification exhaustive : **TOUTES** les listes des écrans ont une `key` (les deux `items()` sans clé sont des placeholders Shimmer sans identité — correct). Aucune action. |
+
+### Découverte pendant le correctif S-02 (non vue par l'audit)
+Une session **VLC pure** (lecture d'un fichier téléchargé) ne crée jamais d'ExoPlayer — or la boucle de progression (qui sauvegarde l'historique toutes les 5 s) n'était démarrée qu'à la création d'un ExoPlayer : **la position n'était sauvegardée qu'à la fermeture du lecteur** (perdue en cas de kill de l'app). Corrigé : `switchToVlc()` démarre maintenant la boucle.
+
+### Restent en attente (fenêtre calme / GO ultérieur)
+- **Q-01** déduplication de l'overlay lecteur (M/L)
+- **P-06** minification R8 (M, à tester sur appareil)
+- **P-04** double fetch à l'ouverture d'une saison (à re-vérifier d'abord)
+- **SEC-03** clé debug release : assumé tant que distribution sideload

@@ -36,6 +36,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 
 /**
@@ -89,7 +90,11 @@ object FileDownloadEngine {
     private var pumpJob: Job? = null
 
     @Volatile private var appContext: Context? = null
-    @Volatile private var tasksInternal = mutableListOf<Task>()
+    // Audit S-01 : liste lue/modifiee depuis le thread principal (enqueue,
+    // cancel, pause) ET la coroutine IO de la boucle + le callback reseau.
+    // CopyOnWriteArrayList elimine le dernier risque de crash theorique
+    // (ConcurrentModificationException pendant un parcours de la file).
+    @Volatile private var tasksInternal: MutableList<Task> = CopyOnWriteArrayList()
     @Volatile private var paused = false
     @Volatile private var wifiOnly = false
 
@@ -117,7 +122,7 @@ object FileDownloadEngine {
         if (appContext != null) return
         appContext = context.applicationContext
         wifiOnly = Downloads.isWifiOnly(context)
-        tasksInternal = loadIndex(context).toMutableList()
+        tasksInternal = CopyOnWriteArrayList(loadIndex(context))
         // Une tâche interrompue par un kill reprend là où elle en était —
         // SAUF si elle est morte en FINALISATION (tous les segments reçus) :
         // relancer la finalisation automatiquement à chaque ouverture est
@@ -304,9 +309,6 @@ object FileDownloadEngine {
             task.segmentsDone = i + 1
             task.bytesDone += segFile.length()
             // Estimation honnête du total (recalibrée au fil des segments).
-            if (task.bytesTotal < task.bytesDone) {
-                task.bytesTotal = (task.bytesDone.toLong() * (i + 1) / (i + 1)).coerceAtLeast(task.bytesDone)
-            }
             val expectedTotal = estimateTotal(task, total)
             if (expectedTotal > 0) task.bytesTotal = expectedTotal
             if (i % 10 == 0) persist()
@@ -493,9 +495,32 @@ object FileDownloadEngine {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/NoVaY")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
-            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            // Audit B-02 : si une entree MediaStore porte DEJA ce nom
+            // (re-telechargement apres suppression du fichier depuis un
+            // autre ecran), on l'ecrase au lieu de creer un doublon
+            // "Episode (1).ts" - parite avec la branche 7-9 ci-dessous.
+            val existingUri = runCatching {
+                resolver.query(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    arrayOf(MediaStore.MediaColumns._ID),
+                    "${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
+                    arrayOf(baseName),
+                    null,
+                )?.use { c ->
+                    if (c.moveToFirst()) c.getLong(0) else null
+                }?.let { id ->
+                    android.net.Uri.withAppendedPath(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, id.toString(),
+                    )
+                }
+            }.getOrNull()
+            val uri = existingUri
+                ?: resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: throw IOException("MediaStore a refusé l'écriture")
-            resolver.openOutputStream(uri)?.use { out -> FileInputStream(source).use { it.copyTo(out) } }
+            // "wt" : ecriture + troncature - un ecrasement ne doit jamais
+            // laisser la queue d'un fichier precedent plus long.
+            resolver.openOutputStream(uri, "wt")
+                ?.use { out -> FileInputStream(source).use { it.copyTo(out) } }
                 ?: throw IOException("Flux de sortie indisponible")
             values.clear()
             values.put(MediaStore.MediaColumns.IS_PENDING, 0)

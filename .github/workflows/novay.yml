@@ -85,6 +85,30 @@ jobs:
           tests=$(grep -ho 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | awk '{s+=$1} END {print s}')
           echo "::notice::${tests} tests unitaires passes"
 
+      # Audit Q-02 : lint statique Android - NON BLOQUANT dans un premier
+      # temps : le rapport part en artefact pour analyse, on ne casse pas
+      # une livraison pour un avertissement.
+      - name: Lint Android (non bloquant)
+        run: |
+          set +e
+          gradle :app:lintDebug --no-daemon 2>&1 | tee lint.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::lint a signale des problemes - rapport dans l artefact novay-lint-report"
+            grep -E "Error:|Warning:" lint.log | head -n 8 | while IFS= read -r line; do
+              echo "::warning::${line:0:240}"
+            done
+          fi
+
+      - name: Upload rapport lint (toujours)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: novay-lint-report
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
       # V2.8.1 (owner 15/11) : livraison ARM32 SEULE - le telephone du
       # owner est 32 bits (armeabi-v7a, Android 7+). libvlc-all embarque
       # ~40 Mo de natives par ABI : l'ABI unique via -PnovayAbi (voir
