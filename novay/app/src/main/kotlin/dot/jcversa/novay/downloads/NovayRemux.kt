@@ -91,7 +91,7 @@ object NovayRemux {
                 return Outcome(tier, null)
             }
             lastDiagnostic = truncateDiagnostic(
-                session.failStackTrace ?: session.outputAsString,
+                session.failStackTrace ?: session.allLogsAsString,
             )
             output.delete()
         }
