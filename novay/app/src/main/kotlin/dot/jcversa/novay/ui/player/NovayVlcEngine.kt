@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.videolan.libvlc.LibVLC
@@ -34,11 +35,15 @@ import kotlin.concurrent.thread
  * logiciel automatique quand le décodeur matériel manque (précieux en
  * 32 bits).
  *
- * Threads : les appels libVLC (open/stop/seek/pause/détachement) sont
- * sérialisés sur une file dédiée — setMedia/stop rejoignent le thread
- * d'input et peuvent bloquer sur un flux capricieux. Les événements
- * arrivent sur le thread principal (le handler de VLCObject retombe sur
- * le looper main quand le player est créé hors looper).
+ * Threads : les appels libVLC (open/stop/seek/pause) sont sérialisés sur
+ * une file dédiée — setMedia/stop rejoignent le thread d'input et peuvent
+ * bloquer sur un flux capricieux. TOUT ce qui touche aux vues
+ * (attachViews/detachViews) s'exécute sur le THREAD PRINCIPAL : c'est le
+ * contrat @MainThread de l'AWindow libVLC (vérifié dans les sources
+ * officielles vlc-android) — un attachement lancé depuis un thread de
+ * fond ne connecte jamais la SurfaceTexture (son sans image, écran noir ;
+ * le bug constaté sur l'appareil du owner depuis la V2.8). Les
+ * événements arrivent sur le thread principal.
  *
  * L'instance LibVLC (lourde, native) vit pour toute la durée de l'app :
  * un seul chargement de la bibliothèque, réouverture instantanée.
@@ -60,6 +65,20 @@ class NovayVlcEngine(
 
     companion object {
         @Volatile private var libVlcInstance: LibVLC? = null
+
+        /**
+         * Délai du repli de rendu : lecture démarrée mais toujours aucune
+         * sortie vidéo après ce délai → bascule TextureView → SurfaceView.
+         */
+        private const val VOUT_WATCHDOG_MS = 3_000L
+
+        /**
+         * PUR (testé JVM) : faut-il basculer le rendu en SurfaceView ?
+         * Lecture active, aucune sortie vidéo reçue (Event.Vout), et une
+         * surface actuellement attachée à remplacer.
+         */
+        fun voutFallbackNeeded(active: Boolean, hadVout: Boolean, viewsAttached: Boolean): Boolean =
+            active && !hadVout && viewsAttached
 
         @Synchronized
         private fun libVlc(appContext: Context): LibVLC =
@@ -87,6 +106,13 @@ class NovayVlcEngine(
     @Volatile private var pendingSeekMs = 0L
     @Volatile private var viewsAttached = false
     @Volatile private var currentUri: Uri? = null
+
+    /** Une sortie vidéo a été créée (Event.Vout > 0) depuis open(). */
+    @Volatile private var hadVout = false
+    /** TextureView (V2.8, verre CinemaGlass) tant qu'aucun repli rendu. */
+    @Volatile private var preferTextureView = true
+    /** Le chien de garde de rendu n'est armé qu'une fois par lecture. */
+    @Volatile private var voutWatchdogArmed = false
 
     /**
      * Descripteur du fichier content:// en cours de lecture : doit rester
@@ -121,8 +147,9 @@ class NovayVlcEngine(
 
     /**
      * Vue vidéo du moteur (créée/remplie sur le thread principal par le
-     * composable hôte). L'attachement réel au player part sur la file
-     * sérialisée.
+     * composable hôte). L'attachement réel au player se fait sur le THREAD
+     * PRINCIPAL (contrat @MainThread de l'AWindow libVLC, cf.
+     * attachViewsIfNeeded).
      */
     fun ensureVideoLayout(context: Context): View {
         var layout = videoLayout
@@ -145,6 +172,8 @@ class NovayVlcEngine(
     fun open(uri: Uri, initialSeekMs: Long, autoPlay: Boolean, rate: Float) {
         active = true
         playing = false
+        hadVout = false
+        voutWatchdogArmed = false
         pendingSeekMs = initialSeekMs.coerceAtLeast(0L)
         // Position immédiatement honnête (reprise en pause) + durée
         // conservée si on ré-ouvre LE MÊME fichier (retour d'arrière-plan).
@@ -162,6 +191,11 @@ class NovayVlcEngine(
             // des événements Playing/Paused/TimeChanged n'est pas garantie
             // : c'est l'icône play/pause figée constatée par l'owner.
             val mp = withContext(Dispatchers.Main) { ensurePlayer() }
+            // V2.9.4 : la surface est branchée AVANT la lecture, sur le
+            // thread principal (le bug écran noir depuis la V2.8 : la vue
+            // était attachée depuis la file IO, après play()). Si la vue
+            // n'existe pas encore, ensureVideoLayout relancera l'appel.
+            attachViewsIfNeeded()
             runCatching {
                 // Un média précédent peut encore tourner : arrêt propre.
                 runCatching { mp.stop() }
@@ -232,12 +266,15 @@ class NovayVlcEngine(
         lengthMs = 0L
         pendingSeekMs = 0L
         currentUri = null
+        hadVout = false
+        voutWatchdogArmed = false
         abandonFocus()
         scope.launch {
             val mp = player ?: return@launch
             runCatching {
                 if (viewsAttached) {
-                    mp.detachViews()
+                    // detachViews : aussi un contrat @MainThread (AWindow).
+                    withContext(Dispatchers.Main) { runCatching { mp.detachViews() } }
                     viewsAttached = false
                 }
                 mp.stop()
@@ -313,20 +350,63 @@ class NovayVlcEngine(
         val mp = player ?: return
         val layout = videoLayout ?: return
         if (viewsAttached) return
-        runCatching {
-            // V2.9.3 : TEXTUREVIEW — retour à la config V2.8 validée sur
-            // l'appareil du owner (l'écran noir venait des options media
-            // ajoutées en V2.9, pas de la vue). Sous-titres désactivés
-            // (aucun fichier .srt embarqué).
-            mp.attachViews(layout, null, false, true)
-            viewsAttached = true
-        }.onFailure { e ->
-            // Plus jamais d'échec silencieux : si la surface ne s'attache
-            // pas, l'écran le dit (au lieu d'un écran noir inexpliqué).
-            main.post {
-                callbacks.onVlcError(
-                    "Surface vidéo impossible : ${e.message ?: e.javaClass.simpleName}",
-                )
+        // V2.9.4 : attachViews DOIT s'exécuter sur le THREAD PRINCIPAL —
+        // contrat @MainThread de l'AWindow libVLC (sources officielles
+        // vlc-android). Lancé depuis la file IO (V2.8 → V2.9.3),
+        // attachTextureView() ne connectait jamais la SurfaceTexture :
+        // son sans image, écran noir. C'est LE bug de l'écran noir.
+        withContext(Dispatchers.Main) {
+            if (viewsAttached || !active) return@withContext
+            val attach: () -> Unit = {
+                if (!viewsAttached && active && player === mp && videoLayout === layout) {
+                    runCatching { mp.attachViews(layout, null, false, preferTextureView) }
+                        .onSuccess { viewsAttached = true }
+                        .onFailure { e ->
+                            // Plus jamais d'échec silencieux : si la surface
+                            // ne s'attache pas, l'écran le dit.
+                            callbacks.onVlcError(
+                                "Surface vidéo impossible : ${e.message ?: e.javaClass.simpleName}",
+                            )
+                        }
+                }
+            }
+            // Vue pas encore rattachée à la fenêtre (ajoutée au frame en
+            // cours) : on attend le frame suivant — post() s'exécute une
+            // fois la vue attachée et mesurée, le pattern du player
+            // officiel VLC qui attend la disponibilité de ses surfaces.
+            if (layout.isAttachedToWindow) attach() else layout.post(attach)
+        }
+    }
+
+    /**
+     * Chien de garde du rendu (V2.9.4) : armé au premier événement
+     * Playing. Si aucune sortie vidéo n'est apparue après [VOUT_WATCHDOG_MS],
+     * on détache et ré-attache la surface en SURFACEVIEW — le rendu du
+     * player officiel VLC, le plus fiable sur les GPU anciens. La sortie
+     * vidéo libVLC est recréée à chaud, sans coupure du son.
+     */
+    private fun armVoutWatchdog() {
+        if (voutWatchdogArmed) return
+        voutWatchdogArmed = true
+        scope.launch {
+            delay(VOUT_WATCHDOG_MS)
+            if (voutFallbackNeeded(active, hadVout, viewsAttached)) {
+                reattachWithSurfaceView()
+            }
+        }
+    }
+
+    private suspend fun reattachWithSurfaceView() {
+        val mp = player ?: return
+        val layout = videoLayout ?: return
+        withContext(Dispatchers.Main) {
+            if (!voutFallbackNeeded(active, hadVout, viewsAttached)) return@withContext
+            runCatching {
+                mp.detachViews()
+                viewsAttached = false
+                preferTextureView = false
+                mp.attachViews(layout, null, false, false)
+                viewsAttached = true
             }
         }
     }
@@ -335,6 +415,7 @@ class NovayVlcEngine(
         when (event.type) {
             MediaPlayer.Event.Playing -> {
                 playing = true
+                armVoutWatchdog()
                 main.post {
                     applyPendingSeekOnPlay()
                     callbacks.onVlcPlaying(true)
@@ -372,7 +453,12 @@ class NovayVlcEngine(
                 main.post { callbacks.onVlcError("Erreur de lecture du fichier (libVLC)") }
             }
             MediaPlayer.Event.Vout -> {
-                if (event.getVoutCount() > 0) readVideoSize()
+                if (event.getVoutCount() > 0) {
+                    // La sortie vidéo EXISTE : le chien de garde de rendu
+                    // n'a plus rien à faire.
+                    hadVout = true
+                    readVideoSize()
+                }
             }
         }
     }
