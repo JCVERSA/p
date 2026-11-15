@@ -110,8 +110,15 @@ dependencies {
   // arbitraires -> pas de Referer possible).
   implementation(libs.libvlc.all)
   // V2.9 : remux final des episodes (paliers du bot novabox : copie +
-  // aac_adtstoasc + faststart, puis audio AAC). Variant min LGPL.
-  implementation(libs.ffmpeg.kit.min)
+  // aac_adtstoasc + faststart, puis audio AAC).
+  //
+  // ffmpeg-kit n a plus AUCUN binaire Maven avec armeabi-v7a (arthenica
+  // retire de Maven Central, tous les rebuilds actuels sont arm64-only —
+  // verifie le 15/11/2026). On consomme l AAR du rescue communautaire
+  // (Muwanguzi12/necxa-ffmpeg-rescue v6.0.3, min-gpl, arm32 inclus) que
+  // la CI telecharge dans app/libs/ avec verification sha256 + ABI (voir
+  // novay.yml) : le fichier de 35 Mo n est PAS commité.
+  implementation(files("libs/ffmpeg-kit.aar"))
   testImplementation(libs.junit)
   // V2.6 (owner) : test UI Robolectric du cadrage video plein ecran.
   testImplementation(libs.robolectric)

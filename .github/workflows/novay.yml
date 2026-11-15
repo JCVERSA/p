@@ -52,6 +52,25 @@ jobs:
             -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=NoVaY Debug,O=NoVaY,C=CM"
 
+      # V2.9 : AAR ffmpeg pour le remux des episodes (recette du bot).
+      # Aucun binaire ffmpeg-kit avec armeabi-v7a n existe plus sur Maven
+      # (arthenica retire, rebuilds actuels arm64-only) : la CI telecharge
+      # l AAR du rescue communautaire, PINNE par tag + sha256, et VERIFIE
+      # qu il contient la lib native arm32 avant de construire. Le fichier
+      # (35 Mo) n est pas commité dans le repo.
+      - name: AAR ffmpeg (rescue arm32, epingle)
+        run: |
+          set -e
+          mkdir -p app/libs
+          curl -fsSL -o app/libs/ffmpeg-kit.aar \
+            "https://github.com/Muwanguzi12/necxa-ffmpeg-rescue/releases/download/v6.0.3/ffmpeg-kit.aar"
+          echo "820c74ef4cd82906bb94cb7053ad74dc421f34ff2088845eff1c67d85fcbd932  app/libs/ffmpeg-kit.aar" | sha256sum -c -
+          if ! unzip -l app/libs/ffmpeg-kit.aar | grep -q "jni/armeabi-v7a/"; then
+            echo "::error::L AAR ffmpeg ne contient pas armeabi-v7a - abandon"
+            exit 1
+          fi
+          echo "AAR ffmpeg arm32 verifie ($(stat -c%s app/libs/ffmpeg-kit.aar) octets)"
+
       # Tests unitaires des parseurs (fixtures portees du bot) AVANT le
       # build : un parseur casse ne doit jamais produire d'APK.
       - name: Tests unitaires
