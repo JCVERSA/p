@@ -106,10 +106,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: novay-lint-report
-          path: |
-            app/build/reports/lint-results-debug.html
-            app/build/reports/lint-results-debug.txt
-            app/build/reports/lint-debug/
+          path: app/build/reports/
           if-no-files-found: ignore
 
       # V2.8.1 (owner 15/11) : livraison ARM32 SEULE - le telephone du
