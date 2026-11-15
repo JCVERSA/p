@@ -109,6 +109,9 @@ dependencies {
   // en ligne reste ExoPlayer (libVLC 3 n'envoie pas d'en-tetes HTTP
   // arbitraires -> pas de Referer possible).
   implementation(libs.libvlc.all)
+  // V2.9 : remux final des episodes (paliers du bot novabox : copie +
+  // aac_adtstoasc + faststart, puis audio AAC). Variant min LGPL.
+  implementation(libs.ffmpeg.kit.min)
   testImplementation(libs.junit)
   // V2.6 (owner) : test UI Robolectric du cadrage video plein ecran.
   testImplementation(libs.robolectric)

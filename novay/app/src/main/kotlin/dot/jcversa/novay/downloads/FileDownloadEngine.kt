@@ -3,10 +3,6 @@ package dot.jcversa.novay.downloads
 import android.app.Notification
 import android.content.ContentValues
 import android.content.Context
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
-import android.media.MediaMuxer
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -29,7 +25,6 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
-import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 
 /**
@@ -42,8 +37,8 @@ import java.util.concurrent.TimeUnit
  *  1. playlist de la variante choisie (résolution du user) ;
  *  2. segments téléchargés un par un (reprise à l'octet près via
  *     segmentsDone persisté + fichiers temporaires) ;
- *  3. assemblage + remux MP4 natif (MediaExtractor/MediaMuxer) — repli
- *     honnête .ts si le flux résiste (TS se lit partout aussi) ;
+ *  3. assemblage + remux MP4 ffmpeg (recette du bot novabox : copie,
+ *     aac_adtstoasc, faststart — repli honnête .ts si le flux résiste) ;
  *  4. publication : MediaStore.Downloads (Android 10+, sans permission)
  *     ou Download/NoVaY/ classique (Android 7-9, permission stockage).
  *
@@ -314,19 +309,22 @@ object FileDownloadEngine {
             }
         }
 
-        // Remux MP4 natif (TS → MP4). fMP4 déjà lisible : gardé tel quel.
-        val isFragmented = File(dir, "init.bin").exists()
-        var extension = "ts"
-        var toPublish = combined
-        if (!isFragmented) {
-            val mp4 = File(dir, "remuxed.mp4")
-            if (remuxToMp4(combined, mp4)) {
-                extension = "mp4"
-                toPublish = mp4
-            }
-        } else {
-            extension = "mp4"
-        }
+        // V2.9 — REMUX FFMPEG UNIFIÉ (recette du bot novabox, palier 1
+        // copie + aac_adtstoasc + faststart, palier 2 audio AAC). TS et
+        // fMP4 passent par LE MÊME chemin éprouvé : l'ancienne publication
+        // d'une concaténation fMP4 renommée .mp4 (sans remux, sans index,
+        // sans faststart) produisait des fichiers qui saccadaient dans VLC
+        // et que les lecteurs stricts refusaient. Repli honnête : .ts brut,
+        // lisible dans VLC et dans notre lecteur VLC intégré.
+        val mp4 = File(dir, "remuxed.mp4")
+        val tier = NovayRemux.remuxWithFfmpeg(combined, mp4)
+        val toPublish = if (tier > 0) mp4 else combined
+        val extension = if (tier > 0) "mp4" else "ts"
+
+        // Diagnostic codec : remonté dans les métadonnées (badge écran
+        // téléchargements) — « HEVC » sur un appareil 32 bits ancien
+        // signifie décodage logiciel (son sans image, lag).
+        val codecLabel = NovayRemux.videoCodecLabel(NovayRemux.probeVideoMime(combined))
 
         val baseName = HlsPlaylist.buildEpisodeFileName(
             animeTitle = meta.animeTitle,
@@ -340,7 +338,8 @@ object FileDownloadEngine {
         val uri = writePublishedFile(context, toPublish, baseName)
         task.meta = meta.copy(
             localUri = uri.toString(),
-            fileName = displayNameOf(context, uri, baseName)
+            fileName = displayNameOf(context, uri, baseName),
+            videoCodec = codecLabel
         )
     }
 
@@ -394,75 +393,6 @@ object FileDownloadEngine {
                 }
             }
         })
-    }
-
-    // ── Remux TS → MP4 (MediaExtractor + MediaMuxer) ──────────────────────
-
-    /**
-     * Remuxe un flux TS concaténé en MP4 (pistes vidéo + audio copiées,
-     * sans réencodage). Retourne false si le conteneur résiste — l'appelant
-     * garde alors le .ts honnête (lisible partout).
-     */
-    private fun remuxToMp4(input: File, output: File): Boolean {
-        val extractor = MediaExtractor()
-        val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        return try {
-            extractor.setDataSource(input.absolutePath)
-            val trackMap = mutableMapOf<Int, Int>()
-            for (i in 0 until extractor.trackCount) {
-                val format = extractor.getTrackFormat(i)
-                val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
-                if (mime.startsWith("video/") || mime.startsWith("audio/")) {
-                    trackMap[i] = muxer.addTrack(format)
-                }
-            }
-            if (trackMap.isEmpty()) return false
-            muxer.start()
-            // V2.6 — ENTRELACEMENT (la leçon novabox/ffmpeg -c copy) :
-            // toutes les pistes sont sélectionnées ENSEMBLE, et MediaExtractor
-            // délivre alors les échantillons dans l'ORDRE DU FICHIER —
-            // l'alternance audio/vidéo naturelle du flux HLS. Chaque
-            // échantillon part vers sa piste via sampleTrackIndex et le MP4
-            // sort alterné image/son, exactement comme la sortie ffmpeg du
-            // bot. L'ancienne version écrivait toute une piste puis l'autre :
-            // le lecteur devait sauter en permanence entre deux zones
-            // éloignées du fichier — saccades vidéo ET son, et refus pur et
-            // simple du lecteur intégré.
-            trackMap.keys.forEach { extractor.selectTrack(it) }
-            val maxSample = trackMap.keys.maxOf { i ->
-                runCatching {
-                    extractor.getTrackFormat(i).getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
-                }.getOrDefault(0).coerceAtLeast(0)
-            }.coerceAtLeast(1 shl 20)
-            val buffer = ByteBuffer.allocateDirect(maxSample)
-            val info = MediaCodec.BufferInfo()
-            while (true) {
-                info.offset = 0
-                val size = extractor.readSampleData(buffer, 0)
-                if (size < 0) break
-                info.size = size
-                val dstTrack = trackMap[extractor.sampleTrackIndex]
-                val timeUs = extractor.sampleTime
-                val flags = extractor.sampleFlags and MediaCodec.BUFFER_FLAG_KEY_FRAME
-                if (dstTrack != null && timeUs >= 0) {
-                    info.presentationTimeUs = timeUs
-                    info.flags = flags
-                    muxer.writeSampleData(dstTrack, buffer, info)
-                }
-                extractor.advance()
-            }
-            muxer.stop()
-            true
-        } catch (_: Exception) {
-            false
-        } finally {
-            runCatching { muxer.release() }
-            runCatching { extractor.release() }
-            if (!output.exists() || output.length() == 0L) {
-                output.delete()
-                return false
-            }
-        }
     }
 
     // ── Publication dans Download/NoVaY/ ─────────────────────────────────

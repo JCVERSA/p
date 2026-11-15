@@ -339,8 +339,10 @@ private fun DownloadRow(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                    val codecBadge = meta?.videoCodec
                     Text(
                         text = when {
+                            info.isCompleted && codecBadge != null -> "Prêt hors-ligne · $codecBadge"
                             info.isCompleted -> "Prêt hors-ligne"
                             info.isFailed -> "Échec — relancer depuis la saison"
                             info.isActive -> {
@@ -356,6 +358,8 @@ private fun DownloadRow(
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = when {
+                            info.isCompleted && codecBadge == "HEVC" ->
+                                MaterialTheme.colorScheme.error
                             info.isCompleted -> MaterialTheme.colorScheme.tertiary
                             info.isFailed -> MaterialTheme.colorScheme.error
                             else -> MaterialTheme.colorScheme.onSurfaceVariant

@@ -25,7 +25,10 @@ data class EpisodeDownloadMeta(
     /** Nom du fichier publié dans Download/NoVaY/. */
     val fileName: String? = null,
     /** Résolution choisie (« 1080p ») — pour le nommage. */
-    val qualityLabel: String = ""
+    val qualityLabel: String = "",
+    /** V2.9 : codec vidéo sondé au remux (« H.264 », « HEVC ») — badge
+     *  diagnostic : HEVC sur un appareil ancien = décodage logiciel. */
+    val videoCodec: String? = null,
 ) {
     fun toJson(): String = JSONObject().apply {
         put("animeTitle", animeTitle)
@@ -41,6 +44,7 @@ data class EpisodeDownloadMeta(
         put("localUri", localUri ?: "")
         put("fileName", fileName ?: "")
         put("qualityLabel", qualityLabel)
+        put("videoCodec", videoCodec ?: "")
     }.toString()
 
     fun toStream(): ResolvedStream {
@@ -88,7 +92,8 @@ data class EpisodeDownloadMeta(
                     headers = headers,
                     localUri = o.optString("localUri").ifEmpty { null },
                     fileName = o.optString("fileName").ifEmpty { null },
-                    qualityLabel = o.optString("qualityLabel")
+                    qualityLabel = o.optString("qualityLabel"),
+                    videoCodec = o.optString("videoCodec").ifEmpty { null }
                 )
             } catch (_: Exception) {
                 null
