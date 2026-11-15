@@ -26,6 +26,9 @@ import java.io.File
  */
 object NovayRemux {
 
+    /** Résultat du remux isolé : palier gagnant (0 = repli .ts) + codec sondé. */
+    data class Outcome(val tier: Int, val codec: String?)
+
     /** Palier 1 — copie sans réencodage (le chemin du bot). */
     fun tier1Args(input: String, output: String): Array<String> = arrayOf(
         "-y",

@@ -1,14 +1,21 @@
 package dot.jcversa.novay.downloads
 
 import android.app.Notification
+import android.content.ComponentName
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.ResultReceiver
 import android.provider.MediaStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,8 +24,12 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -71,6 +82,9 @@ object FileDownloadEngine {
     private const val PREFS = "novay_file_downloads"
     private const val KEY = "tasks"
 
+    /** Délai max du remux isolé (copie d'un gros épisode sur stockage lent). */
+    private const val REMUX_TIMEOUT_MS = 180_000L
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pumpJob: Job? = null
 
@@ -104,11 +118,14 @@ object FileDownloadEngine {
         appContext = context.applicationContext
         wifiOnly = Downloads.isWifiOnly(context)
         tasksInternal = loadIndex(context).toMutableList()
-        // Une tâche interrompue par un kill reprend là où elle en était.
+        // Une tâche interrompue par un kill reprend là où elle en était —
+        // SAUF si elle est morte en FINALISATION (tous les segments reçus) :
+        // relancer le remux automatiquement à chaque ouverture est ce qui
+        // bouclait le crash constaté sur l'appareil du owner (V2.9). Elle
+        // passe en pause : l'utilisateur relance quand il veut, et la
+        // finalisation est désormais isolée dans le processus :remux.
         tasksInternal.forEach {
-            if (it.state == State.RUNNING || it.state == State.WAITING_WIFI) {
-                it.state = State.QUEUED
-            }
+            it.state = interruptedStateOnLoad(it.state, it.segmentsDone, it.segmentCount)
         }
         persist()
         watchNetwork()
@@ -195,7 +212,7 @@ object FileDownloadEngine {
         }
     }
 
-    private fun runTask(context: Context, task: Task) {
+    private suspend fun runTask(context: Context, task: Task) {
         // Android 7-9 : l'ecriture dans Download/NoVaY/ (API File publique)
         // exige WRITE_EXTERNAL_STORAGE. Si elle manque, on echoue proprement
         // et immediatement avec un message clair plutot qu'en cours de route.
@@ -218,8 +235,11 @@ object FileDownloadEngine {
             publish(context, task)
             task.state = State.DONE
             tempDir(context, task.id).deleteRecursively()
-        } catch (e: Exception) {
-            if (e is InterruptedException || e.message == CANCELLED) {
+        } catch (e: Throwable) {
+            // V2.9.1 : Throwable et plus Exception — un Error non rattrapé
+            // (UnsatisfiedLinkError d'une bibliothèque native récalcitrante)
+            // tuait l'application entière. Désormais : état FAILED propre.
+            if (e is InterruptedException || e is CancellationException || e.message == CANCELLED) {
                 task.state = State.PAUSED
             } else {
                 task.state = State.FAILED
@@ -232,6 +252,17 @@ object FileDownloadEngine {
 
     private const val CANCELLED = "novay-cancelled"
 
+    /**
+     * État d'une tâche interrompue au rechargement (PUR, testable JVM) :
+     * RUNNING mort pendant la FINALISATION (segments complets) → PAUSED
+     * (jamais de re-finalisation automatique à l'ouverture) ; sinon la
+     * reprise historique (segments → QUEUED).
+     */
+    fun interruptedStateOnLoad(state: State, segmentsDone: Int, segmentCount: Int): State = when {
+        state == State.RUNNING && segmentCount > 0 && segmentsDone >= segmentCount -> State.PAUSED
+        state == State.RUNNING || state == State.WAITING_WIFI -> State.QUEUED
+        else -> state
+    }
     /** Étape 1-2 : playlist + segments (reprise via segmentsDone). */
     private fun downloadSegments(context: Context, task: Task) {
         val meta = task.meta
@@ -294,7 +325,7 @@ object FileDownloadEngine {
     }
 
     /** Étape 3-4 : assemblage, remux MP4, publication. */
-    private fun publish(context: Context, task: Task) {
+    private suspend fun publish(context: Context, task: Task) {
         val meta = task.meta
         val dir = tempDir(context, task.id)
         val language = dot.jcversa.novay.data.sama.SamaParsers
@@ -317,14 +348,19 @@ object FileDownloadEngine {
         // et que les lecteurs stricts refusaient. Repli honnête : .ts brut,
         // lisible dans VLC et dans notre lecteur VLC intégré.
         val mp4 = File(dir, "remuxed.mp4")
-        val tier = NovayRemux.remuxWithFfmpeg(combined, mp4)
-        val toPublish = if (tier > 0) mp4 else combined
-        val extension = if (tier > 0) "mp4" else "ts"
+        // V2.9.1 : le remux et la sonde codec s'exécutent dans le PROCESSUS
+        // DÉDIÉ :remux (NovayRemuxService) — un crash natif de ffmpeg ou de
+        // MediaExtractor y tue ce processus seulement ; ici on reçoit le
+        // résultat (palier + codec) ou un repli honnête (.ts) si le service
+        // meurt (onServiceDisconnected) ou ne répond pas (délai).
+        val outcome = remuxIsolated(context, combined, mp4)
+        val toPublish = if (outcome.tier > 0) mp4 else combined
+        val extension = if (outcome.tier > 0) "mp4" else "ts"
 
         // Diagnostic codec : remonté dans les métadonnées (badge écran
         // téléchargements) — « HEVC » sur un appareil 32 bits ancien
         // signifie décodage logiciel (son sans image, lag).
-        val codecLabel = NovayRemux.videoCodecLabel(NovayRemux.probeVideoMime(combined))
+        val codecLabel = outcome.codec
 
         val baseName = HlsPlaylist.buildEpisodeFileName(
             animeTitle = meta.animeTitle,
@@ -341,6 +377,71 @@ object FileDownloadEngine {
             fileName = displayNameOf(context, uri, baseName),
             videoCodec = codecLabel
         )
+    }
+
+    // ── Remux isolé (processus :remux) ────────────────────────────────────
+
+    /**
+     * Exécute le remux dans NovayRemuxService (processus dédié) et attend
+     * son résultat, avec deux filets de sécurité :
+     *  - le processus :remux meurt (crash natif) → onServiceDisconnected ;
+     *  - aucune réponse (bibliothèque qui ne charge pas, service muet) → délai.
+     * Dans tous les cas de défaillance : palier 0 = repli .ts honnête,
+     * l'épisode reste disponible (VLC + lecteur intégré).
+     */
+    private suspend fun remuxIsolated(
+        context: Context,
+        input: File,
+        output: File,
+    ): NovayRemux.Outcome {
+        var conn: ServiceConnection? = null
+        try {
+            return withTimeoutOrNull(REMUX_TIMEOUT_MS) {
+                suspendCancellableCoroutine { cont ->
+                    val receiver = object : ResultReceiver(Handler(Looper.getMainLooper())) {
+                        override fun onReceiveResult(resultCode: Int, resultData: android.os.Bundle?) {
+                            runCatching { conn?.let { context.unbindService(it) } }
+                            if (cont.isActive) {
+                                cont.resume(
+                                    NovayRemux.Outcome(
+                                        tier = resultData?.getInt(NovayRemuxService.EXTRA_TIER) ?: 0,
+                                        codec = resultData?.getString(NovayRemuxService.EXTRA_CODEC),
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    val connection = object : ServiceConnection {
+                        override fun onServiceConnected(name: ComponentName?, service: IBinder?) = Unit
+
+                        override fun onServiceDisconnected(name: ComponentName?) {
+                            // Le processus :remux est MORT (crash natif) —
+                            // repli honnête, l'application survit.
+                            runCatching { conn?.let { context.unbindService(it) } }
+                            if (cont.isActive) cont.resume(NovayRemux.Outcome(0, null))
+                        }
+                    }
+                    conn = connection
+                    val intent = Intent(context, NovayRemuxService::class.java)
+                        .putExtra(NovayRemuxService.EXTRA_INPUT, input.absolutePath)
+                        .putExtra(NovayRemuxService.EXTRA_OUTPUT, output.absolutePath)
+                        .putExtra(NovayRemuxService.EXTRA_RECEIVER, receiver)
+                    try {
+                        if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
+                            cont.resume(NovayRemux.Outcome(0, null))
+                            return@suspendCancellableCoroutine
+                        }
+                        context.startService(intent)
+                    } catch (t: Throwable) {
+                        // Restriction de démarrage (app en arrière-plan
+                        // sans service au premier plan, etc.) → repli.
+                        if (cont.isActive) cont.resume(NovayRemux.Outcome(0, null))
+                    }
+                }
+            } ?: NovayRemux.Outcome(0, null) // délai écoulé
+        } finally {
+            runCatching { conn?.let { context.unbindService(it) } }
+        }
     }
 
     // ── Réseau ───────────────────────────────────────────────────────────

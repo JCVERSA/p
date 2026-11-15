@@ -59,6 +59,15 @@
             android:name=".downloads.NovayDownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- V2.9.1 : remux ffmpeg ISOLE dans son propre processus. Un crash
+             natif de la bibliotheque (constate sur l appareil du owner a la
+             finalisation d un telechargement) y tue ce processus seulement -
+             l application survit et publie le repli honnete .ts. -->
+        <service
+            android:name=".downloads.NovayRemuxService"
+            android:exported="false"
+            android:process=":remux" />
     </application>
 
 </manifest>
