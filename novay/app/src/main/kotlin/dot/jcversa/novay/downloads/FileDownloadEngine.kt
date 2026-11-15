@@ -48,8 +48,8 @@ import java.util.concurrent.TimeUnit
  *  1. playlist de la variante choisie (résolution du user) ;
  *  2. segments téléchargés un par un (reprise à l'octet près via
  *     segmentsDone persisté + fichiers temporaires) ;
- *  3. assemblage + remux MP4 ffmpeg (recette du bot novabox : copie,
- *     aac_adtstoasc, faststart — repli honnête .ts si le flux résiste) ;
+ *  3. assemblage + publication DIRECTE sans transformation (V2.9.3 :
+ *     .ts pour le HLS TS, .mp4 pour le HLS fMP4) + sonde codec isolée ;
  *  4. publication : MediaStore.Downloads (Android 10+, sans permission)
  *     ou Download/NoVaY/ classique (Android 7-9, permission stockage).
  *
@@ -82,8 +82,8 @@ object FileDownloadEngine {
     private const val PREFS = "novay_file_downloads"
     private const val KEY = "tasks"
 
-    /** Délai max du remux isolé (copie d'un gros épisode sur stockage lent). */
-    private const val REMUX_TIMEOUT_MS = 180_000L
+    /** Délai max de la sonde codec isolée (diagnostic, jamais bloquant). */
+    private const val PROBE_TIMEOUT_MS = 60_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pumpJob: Job? = null
@@ -120,10 +120,11 @@ object FileDownloadEngine {
         tasksInternal = loadIndex(context).toMutableList()
         // Une tâche interrompue par un kill reprend là où elle en était —
         // SAUF si elle est morte en FINALISATION (tous les segments reçus) :
-        // relancer le remux automatiquement à chaque ouverture est ce qui
-        // bouclait le crash constaté sur l'appareil du owner (V2.9). Elle
-        // passe en pause : l'utilisateur relance quand il veut, et la
-        // finalisation est désormais isolée dans le processus :remux.
+        // relancer la finalisation automatiquement à chaque ouverture est
+        // ce qui bouclait le crash constaté sur l'appareil du owner
+        // (V2.9). Elle passe en pause : l'utilisateur relance quand il
+        // veut, et la sonde codec est désormais isolée dans le processus
+        // :probe (V2.9.3 — la publication elle-même est sans risque).
         tasksInternal.forEach {
             it.state = interruptedStateOnLoad(it.state, it.segmentsDone, it.segmentCount)
         }
@@ -324,7 +325,7 @@ object FileDownloadEngine {
         return task.bytesDone + avg * remaining
     }
 
-    /** Étape 3-4 : assemblage, remux MP4, publication. */
+    /** Étape 3-4 : assemblage, publication directe, sonde codec isolée. */
     private suspend fun publish(context: Context, task: Task) {
         val meta = task.meta
         val dir = tempDir(context, task.id)
@@ -340,33 +341,21 @@ object FileDownloadEngine {
             }
         }
 
-        // V2.9 — REMUX FFMPEG UNIFIÉ (recette du bot novabox, palier 1
-        // copie + aac_adtstoasc + faststart, palier 2 audio AAC). TS et
-        // fMP4 passent par LE MÊME chemin éprouvé : l'ancienne publication
-        // d'une concaténation fMP4 renommée .mp4 (sans remux, sans index,
-        // sans faststart) produisait des fichiers qui saccadaient dans VLC
-        // et que les lecteurs stricts refusaient. Repli honnête : .ts brut,
-        // lisible dans VLC et dans notre lecteur VLC intégré.
-        val mp4 = File(dir, "remuxed.mp4")
-        // V2.9.1 : le remux et la sonde codec s'exécutent dans le PROCESSUS
-        // DÉDIÉ :remux (NovayRemuxService) — un crash natif de ffmpeg ou de
-        // MediaExtractor y tue ce processus seulement ; ici on reçoit le
-        // résultat (palier + codec) ou un repli honnête (.ts) si le service
-        // meurt (onServiceDisconnected) ou ne répond pas (délai).
-        val outcome = remuxIsolated(context, combined, mp4)
-        val toPublish = if (outcome.tier > 0) mp4 else combined
-        val extension = if (outcome.tier > 0) "mp4" else "ts"
+        // V2.9.3 — PUBLICATION DIRECTE, SANS AUCUNE TRANSFORMATION. Le
+        // flux assemblé (init éventuel + segments dans l'ordre du serveur)
+        // est publié TEL QUEL : « .ts » pour le HLS TS — la forme validée
+        // par l'owner (fluide partout : VLC téléphone et PC, lecteur
+        // intégré) — et « .mp4 » pour le HLS fMP4 (conteneur déjà MP4).
+        // ffmpeg a été retiré : son binaire arm32 ne chargeait pas sur
+        // l'appareil, et le repli maison MediaMuxer produisait des MP4
+        // défectueux (lag + coupures de son, téléphone ET PC). Zéro
+        // transformation = zéro défaut introduit par nous.
+        val extension = if (File(dir, "init.bin").exists()) "mp4" else "ts"
 
-        // Diagnostic codec : remonté dans les métadonnées (badge écran
-        // téléchargements) — « HEVC » sur un appareil 32 bits ancien
-        // signifie décodage logiciel (son sans image, lag).
-        val codecLabel = outcome.codec
-        // Note de remux affichée à l'owner : le repli n'est plus muet.
-        val remuxNote = when {
-            outcome.tier == 0 -> "TS · " + (outcome.diagnostic ?: "remux impossible")
-            outcome.tier == 3 -> "MP4 · repli natif"
-            else -> null
-        }
+        // Sonde codec ISOLÉE (processus :probe) pour le badge « H.264 /
+        // HEVC » : un plantage natif de MediaExtractor y tue ce processus
+        // seulement — l'épisode, lui, est déjà publié.
+        val codecLabel = probeIsolated(context, combined)
 
         val baseName = HlsPlaylist.buildEpisodeFileName(
             animeTitle = meta.animeTitle,
@@ -377,45 +366,35 @@ object FileDownloadEngine {
             extension = extension
         )
 
-        val uri = writePublishedFile(context, toPublish, baseName)
+        val uri = writePublishedFile(context, combined, baseName)
         task.meta = meta.copy(
             localUri = uri.toString(),
             fileName = displayNameOf(context, uri, baseName),
-            videoCodec = codecLabel,
-            remuxNote = remuxNote
+            videoCodec = codecLabel
         )
     }
 
-    // ── Remux isolé (processus :remux) ────────────────────────────────────
+    // ── Sonde codec isolée (processus :probe) ────────────────────────────
 
     /**
-     * Exécute le remux dans NovayRemuxService (processus dédié) et attend
-     * son résultat, avec deux filets de sécurité :
-     *  - le processus :remux meurt (crash natif) → onServiceDisconnected ;
-     *  - aucune réponse (bibliothèque qui ne charge pas, service muet) → délai.
-     * Dans tous les cas de défaillance : palier 0 = repli .ts honnête,
-     * l'épisode reste disponible (VLC + lecteur intégré).
+     * Sonde le codec dans NovayProbeService (processus dédié) et attend le
+     * badge, avec deux filets de sécurité :
+     *  - le processus :probe meurt (crash natif MediaExtractor) →
+     *    onServiceDisconnected ;
+     *  - aucune réponse (service muet) → délai.
+     * Dans tous les cas de défaillance : badge absent (null). La sonde est
+     * un diagnostic — elle ne doit JAMAIS retarder ni casser un épisode.
      */
-    private suspend fun remuxIsolated(
-        context: Context,
-        input: File,
-        output: File,
-    ): NovayRemux.Outcome {
+    private suspend fun probeIsolated(context: Context, input: File): String? {
         var conn: ServiceConnection? = null
         try {
-            return withTimeoutOrNull(REMUX_TIMEOUT_MS) {
+            return withTimeoutOrNull(PROBE_TIMEOUT_MS) {
                 suspendCancellableCoroutine { cont ->
                     val receiver = object : ResultReceiver(Handler(Looper.getMainLooper())) {
                         override fun onReceiveResult(resultCode: Int, resultData: android.os.Bundle?) {
                             runCatching { conn?.let { context.unbindService(it) } }
                             if (cont.isActive) {
-                                cont.resume(
-                                    NovayRemux.Outcome(
-                                        tier = resultData?.getInt(NovayRemuxService.EXTRA_TIER) ?: 0,
-                                        codec = resultData?.getString(NovayRemuxService.EXTRA_CODEC),
-                                        diagnostic = resultData?.getString(NovayRemuxService.EXTRA_DIAGNOSTIC),
-                                    )
-                                )
+                                cont.resume(resultData?.getString(NovayProbeService.EXTRA_CODEC))
                             }
                         }
                     }
@@ -423,30 +402,29 @@ object FileDownloadEngine {
                         override fun onServiceConnected(name: ComponentName?, service: IBinder?) = Unit
 
                         override fun onServiceDisconnected(name: ComponentName?) {
-                            // Le processus :remux est MORT (crash natif) —
-                            // repli honnête, l'application survit.
+                            // Le processus :probe est MORT (crash natif) —
+                            // badge absent, l'application survit.
                             runCatching { conn?.let { context.unbindService(it) } }
-                            if (cont.isActive) cont.resume(NovayRemux.Outcome(0, null))
+                            if (cont.isActive) cont.resume(null)
                         }
                     }
                     conn = connection
-                    val intent = Intent(context, NovayRemuxService::class.java)
-                        .putExtra(NovayRemuxService.EXTRA_INPUT, input.absolutePath)
-                        .putExtra(NovayRemuxService.EXTRA_OUTPUT, output.absolutePath)
-                        .putExtra(NovayRemuxService.EXTRA_RECEIVER, receiver)
+                    val intent = Intent(context, NovayProbeService::class.java)
+                        .putExtra(NovayProbeService.EXTRA_INPUT, input.absolutePath)
+                        .putExtra(NovayProbeService.EXTRA_RECEIVER, receiver)
                     try {
                         if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
-                            cont.resume(NovayRemux.Outcome(0, null))
+                            cont.resume(null)
                             return@suspendCancellableCoroutine
                         }
                         context.startService(intent)
                     } catch (t: Throwable) {
                         // Restriction de démarrage (app en arrière-plan
-                        // sans service au premier plan, etc.) → repli.
-                        if (cont.isActive) cont.resume(NovayRemux.Outcome(0, null))
+                        // sans service au premier plan, etc.) → sans badge.
+                        if (cont.isActive) cont.resume(null)
                     }
                 }
-            } ?: NovayRemux.Outcome(0, null) // délai écoulé
+            } ?: null // délai écoulé
         } finally {
             runCatching { conn?.let { context.unbindService(it) } }
         }

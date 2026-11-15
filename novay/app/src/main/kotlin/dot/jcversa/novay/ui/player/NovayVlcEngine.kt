@@ -170,10 +170,14 @@ class NovayVlcEngine(
                 mp.media = media
                 media.release()
                 mp.setRate(rate)
-                // V2.9 phase 2 : PAS de setTime avant play() — il forçait la
-                // création du thread d'input VLC et ralentissait le démarrage
-                // (pattern Fermata : la reprise de position s'applique sur
-                // l'événement Playing, via applyPendingSeekOnPlay).
+                // V2.9.3 : retour à la config V2.8 VALIDÉE sur l'appareil
+                // du owner — setTime AVANT play() (reprise en pause
+                // immédiatement honnête), en acquittant tout de suite pour
+                // que applyPendingSeekOnPlay ne cherche pas deux fois.
+                if (pendingSeekMs > 0L) {
+                    runCatching { mp.setTime(pendingSeekMs) }
+                    pendingSeekMs = 0L
+                }
                 if (autoPlay) {
                     requestFocus()
                     mp.play()
@@ -266,14 +270,6 @@ class NovayVlcEngine(
      * de VLC for Android 3.x : le natif ne comprend PAS `content://`, on
      * résout via le ContentResolver en descripteur de fichier ouvert en
      * lecture (`fd://N`, gardé ouvert pendant toute la lecture).
-     *
-     * V2.9 phase 2 — options de lecture éprouvées par les lecteurs VLC
-     * Android réels (pattern Fermata) :
-     *  - `:no-mediacodec-dr` / `:no-omxil-dr` : décodage matériel SANS
-     *    rendu direct. Le rendu direct MediaCodec est la cause classique
-     *    du « audio seul, écran noir » sur les appareils anciens 32 bits.
-     *  - `:input-fast-seek` : seek rapide (moindre précision pendant le
-     *    déplacement, précis au relâchement — le pattern de l'UI moderne).
      */
     private fun mediaFromUri(libvlc: LibVLC, uri: Uri): Media {
         val media = when {
@@ -290,9 +286,11 @@ class NovayVlcEngine(
             }
             else -> Media(libvlc, uri)
         }
-        media.addOption(":no-mediacodec-dr")
-        media.addOption(":no-omxil-dr")
-        media.addOption(":input-fast-seek")
+        // V2.9.3 : AUCUNE option media — retour EXACT à la config V2.8
+        // validée sur l'appareil du owner. Les options :no-mediacodec-dr /
+        // :no-omxil-dr / :input-fast-seek ajoutées en V2.9 coupaient le
+        // rendu vidéo (écran noir, son seul) sur son Android 7 32 bits :
+        // le rendu direct MediaCodec y est le chemin qui MARCHE.
         return media
     }
 
@@ -316,12 +314,11 @@ class NovayVlcEngine(
         val layout = videoLayout ?: return
         if (viewsAttached) return
         runCatching {
-            // V2.9.2 : SURFACEVIEW (et non TextureView) — le rendu de
-            // référence de VLC for Android. TextureView sur les GPU
-            // anciens des téléphones 32 bits affiche un écran noir alors
-            // que l'audio joue : exactement le symptôme constaté.
-            // Sous-titres désactivés (aucun fichier .srt embarqué).
-            mp.attachViews(layout, null, false, false)
+            // V2.9.3 : TEXTUREVIEW — retour à la config V2.8 validée sur
+            // l'appareil du owner (l'écran noir venait des options media
+            // ajoutées en V2.9, pas de la vue). Sous-titres désactivés
+            // (aucun fichier .srt embarqué).
+            mp.attachViews(layout, null, false, true)
             viewsAttached = true
         }.onFailure { e ->
             // Plus jamais d'échec silencieux : si la surface ne s'attache

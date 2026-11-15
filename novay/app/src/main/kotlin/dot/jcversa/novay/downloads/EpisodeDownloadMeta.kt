@@ -26,12 +26,9 @@ data class EpisodeDownloadMeta(
     val fileName: String? = null,
     /** Résolution choisie (« 1080p ») — pour le nommage. */
     val qualityLabel: String = "",
-    /** V2.9 : codec vidéo sondé au remux (« H.264 », « HEVC ») — badge
-     *  diagnostic : HEVC sur un appareil ancien = décodage logiciel. */
+    /** V2.9 : codec vidéo sondé à la publication (« H.264 », « HEVC ») —
+     *  badge diagnostic : HEVC sur un appareil ancien = décodage logiciel. */
     val videoCodec: String? = null,
-    /** V2.9.2 : note de remux (« TS · <raison> », « MP4 · repli natif ») —
-     *  le repli n'est plus muet, l'owner voit POURQUOI. */
-    val remuxNote: String? = null,
 ) {
     fun toJson(): String = JSONObject().apply {
         put("animeTitle", animeTitle)
@@ -48,7 +45,6 @@ data class EpisodeDownloadMeta(
         put("fileName", fileName ?: "")
         put("qualityLabel", qualityLabel)
         put("videoCodec", videoCodec ?: "")
-        put("remuxNote", remuxNote ?: "")
     }.toString()
 
     fun toStream(): ResolvedStream {
@@ -97,8 +93,7 @@ data class EpisodeDownloadMeta(
                     localUri = o.optString("localUri").ifEmpty { null },
                     fileName = o.optString("fileName").ifEmpty { null },
                     qualityLabel = o.optString("qualityLabel"),
-                    videoCodec = o.optString("videoCodec").ifEmpty { null },
-                    remuxNote = o.optString("remuxNote").ifEmpty { null }
+                    videoCodec = o.optString("videoCodec").ifEmpty { null }
                 )
             } catch (_: Exception) {
                 null

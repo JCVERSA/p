@@ -265,7 +265,7 @@ object Downloads {
             DefaultDataSource.Factory(context, httpFactory)
         }
         // Type explicite : le lecteur intégré n'a pas à deviner le
-        // conteneur d'un fichier local (MP4 remuxé ou repli TS).
+        // conteneur d'un fichier local (MP4 fMP4 ou TS brut).
         val item = MediaItem.Builder().setUri(url).apply {
             when {
                 url.endsWith(".mp4", true) -> setMimeType(MimeTypes.VIDEO_MP4)

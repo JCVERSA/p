@@ -339,11 +339,8 @@ private fun DownloadRow(
                         )
                     }
                     val codecBadge = meta?.videoCodec
-                    val remuxNote = meta?.remuxNote
                     Text(
                         text = when {
-                            info.isCompleted && codecBadge != null && remuxNote != null ->
-                                "Prêt hors-ligne · $codecBadge · $remuxNote"
                             info.isCompleted && codecBadge != null -> "Prêt hors-ligne · $codecBadge"
                             info.isCompleted -> "Prêt hors-ligne"
                             info.isFailed -> "Échec — relancer depuis la saison"
