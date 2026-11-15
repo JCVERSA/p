@@ -64,6 +64,7 @@ import dot.jcversa.novay.downloads.formatSpeed
 import dot.jcversa.novay.ui.LocalBottomChromePadding
 import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.NovayLottieIcon
+import dot.jcversa.novay.ui.components.NovayPlayPauseMorphIcon
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
@@ -278,12 +279,10 @@ fun DownloadsScreen(
                 containerColor = overlays.ctaContainer,
                 contentColor = overlays.onCtaContainer,
             ) {
-                NovayLottieIcon(
-                    res = R.raw.lottie_playpause,
-                    contentDescription = null,
+                NovayPlayPauseMorphIcon(
+                    isPlaying = !paused,
                     tint = overlays.onCtaContainer,
                     size = 20.dp,
-                    restartKey = paused,
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(text = if (paused) "Reprendre" else "Mettre en pause")
@@ -340,8 +339,11 @@ private fun DownloadRow(
                         )
                     }
                     val codecBadge = meta?.videoCodec
+                    val remuxNote = meta?.remuxNote
                     Text(
                         text = when {
+                            info.isCompleted && codecBadge != null && remuxNote != null ->
+                                "Prêt hors-ligne · $codecBadge · $remuxNote"
                             info.isCompleted && codecBadge != null -> "Prêt hors-ligne · $codecBadge"
                             info.isCompleted -> "Prêt hors-ligne"
                             info.isFailed -> "Échec — relancer depuis la saison"

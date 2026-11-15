@@ -361,6 +361,12 @@ object FileDownloadEngine {
         // téléchargements) — « HEVC » sur un appareil 32 bits ancien
         // signifie décodage logiciel (son sans image, lag).
         val codecLabel = outcome.codec
+        // Note de remux affichée à l'owner : le repli n'est plus muet.
+        val remuxNote = when {
+            outcome.tier == 0 -> "TS · " + (outcome.diagnostic ?: "remux impossible")
+            outcome.tier == 3 -> "MP4 · repli natif"
+            else -> null
+        }
 
         val baseName = HlsPlaylist.buildEpisodeFileName(
             animeTitle = meta.animeTitle,
@@ -375,7 +381,8 @@ object FileDownloadEngine {
         task.meta = meta.copy(
             localUri = uri.toString(),
             fileName = displayNameOf(context, uri, baseName),
-            videoCodec = codecLabel
+            videoCodec = codecLabel,
+            remuxNote = remuxNote
         )
     }
 
@@ -406,6 +413,7 @@ object FileDownloadEngine {
                                     NovayRemux.Outcome(
                                         tier = resultData?.getInt(NovayRemuxService.EXTRA_TIER) ?: 0,
                                         codec = resultData?.getString(NovayRemuxService.EXTRA_CODEC),
+                                        diagnostic = resultData?.getString(NovayRemuxService.EXTRA_DIAGNOSTIC),
                                     )
                                 )
                             }

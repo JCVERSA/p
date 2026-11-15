@@ -47,6 +47,22 @@ class NovayRemuxTest {
     }
 
     @Test
+    fun `diagnostic tronque premiere ligne utile, 80 caracteres max`() {
+        // Null / vide -> null (pas de note).
+        assertNull(NovayRemux.truncateDiagnostic(null))
+        assertNull(NovayRemux.truncateDiagnostic(""))
+        assertNull(NovayRemux.truncateDiagnostic("   \n  \n"))
+        // Premiere ligne non vide, espaces normalises.
+        assertEquals(
+            "java.lang.UnsatisfiedLinkError: libffmpegkit.so",
+            NovayRemux.truncateDiagnostic("  \njava.lang.UnsatisfiedLinkError: libffmpegkit.so\n  at ..."),
+        )
+        // Troncature a 80 caracteres.
+        val longue = "x".repeat(200)
+        assertEquals(80, NovayRemux.truncateDiagnostic(longue)!!.length)
+    }
+
+    @Test
     fun `etiquettes codec connues et inconnues`() {
         assertEquals("H.264", NovayRemux.videoCodecLabel("video/avc"))
         assertEquals("H.264", NovayRemux.videoCodecLabel("video/avc1.640028"))

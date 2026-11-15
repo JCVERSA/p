@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
@@ -154,7 +155,13 @@ class NovayVlcEngine(
         }
         main.post { callbacks.onVlcBuffering(true) }
         scope.launch {
-            val mp = ensurePlayer()
+            // V2.9.2 : le MediaPlayer est TOUJOURS créé sur le thread
+            // principal — le handler d'événements de VLCObject se lie au
+            // looper du thread créateur (pattern des lecteurs VLC Android
+            // réels). Créé sur un thread IO sans looper, la distribution
+            // des événements Playing/Paused/TimeChanged n'est pas garantie
+            // : c'est l'icône play/pause figée constatée par l'owner.
+            val mp = withContext(Dispatchers.Main) { ensurePlayer() }
             runCatching {
                 // Un média précédent peut encore tourner : arrêt propre.
                 runCatching { mp.stop() }
@@ -309,10 +316,21 @@ class NovayVlcEngine(
         val layout = videoLayout ?: return
         if (viewsAttached) return
         runCatching {
-            // Sous-titres désactivés (aucun fichier .srt embarqué),
-            // TextureView pour composer proprement avec le verre CinemaGlass.
-            mp.attachViews(layout, null, false, true)
+            // V2.9.2 : SURFACEVIEW (et non TextureView) — le rendu de
+            // référence de VLC for Android. TextureView sur les GPU
+            // anciens des téléphones 32 bits affiche un écran noir alors
+            // que l'audio joue : exactement le symptôme constaté.
+            // Sous-titres désactivés (aucun fichier .srt embarqué).
+            mp.attachViews(layout, null, false, false)
             viewsAttached = true
+        }.onFailure { e ->
+            // Plus jamais d'échec silencieux : si la surface ne s'attache
+            // pas, l'écran le dit (au lieu d'un écran noir inexpliqué).
+            main.post {
+                callbacks.onVlcError(
+                    "Surface vidéo impossible : ${e.message ?: e.javaClass.simpleName}",
+                )
+            }
         }
     }
 

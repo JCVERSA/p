@@ -70,6 +70,7 @@ import dev.chrisbanes.haze.rememberHazeState
 import dot.jcversa.novay.ui.components.AnimateEntrance
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayLottieIcon
+import dot.jcversa.novay.ui.components.NovayPlayPauseMorphIcon
 import dot.jcversa.novay.R
 import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.SwiftSlateSpinner
@@ -556,12 +557,14 @@ fun EmbeddedVideoPlayer(
                             .bounceClick(onClick = { playerManager.togglePlayPause() })
                             .testTag("embedded_play_pause_button"),
                     ) {
-                        NovayLottieIcon(
-                            res = R.raw.lottie_playpause,
-                            contentDescription = null,
+                        // V2.9.2 : morph VECTORIEL pilote par l ETAT —
+                        // toujours correct (instantane si animations
+                        // coupees), contrairement au morph Lottie qui
+                        // rejouait la meme animation dans les deux sens.
+                        NovayPlayPauseMorphIcon(
+                            isPlaying = playerManager.isPlaying,
                             tint = overlays.videoControlsInk,
                             size = 30.dp,
-                            restartKey = playerManager.isPlaying,
                         )
                     }
                 }
@@ -1143,12 +1146,10 @@ fun FullscreenPlayerOverlay(
                             .bounceClick(onClick = { playerManager.togglePlayPause() })
                             .testTag("player_play_pause_button"),
                     ) {
-                        NovayLottieIcon(
-                            res = R.raw.lottie_playpause,
-                            contentDescription = null,
+                        NovayPlayPauseMorphIcon(
+                            isPlaying = playerManager.isPlaying,
                             tint = overlays.videoControlsInk,
                             size = 38.dp,
-                            restartKey = playerManager.isPlaying,
                         )
                     }
                 }

@@ -42,21 +42,32 @@ class NovayRemuxService : Service() {
         // Paliers ffmpeg (recette du bot). Throwable : même une Error de
         // chargement de la bibliothèque doit ressortir en « repli », pas
         // en crash muet.
-        val tier = runCatching { NovayRemux.remuxWithFfmpeg(input, output) }.getOrDefault(0)
+        var outcome = runCatching { NovayRemux.remuxWithFfmpeg(input, output) }
+            .getOrElse { NovayRemux.Outcome(0, null, NovayRemux.truncateDiagnostic(it.message)) }
+
+        // Palier 3 — repli natif MediaMuxer (éprouvé V2.5→V2.8) si ffmpeg
+        // a résisté : les flux TS ressortent quand même en MP4 même sans
+        // ffmpeg sur l'appareil.
+        if (outcome.tier == 0 &&
+            runCatching { NovayRemux.remuxWithMediaMuxer(input, output) }.getOrDefault(false)
+        ) {
+            outcome = NovayRemux.Outcome(3, null, null)
+        }
 
         // Sonde codec sur le fichier FINAL (remuxé) si possible, sinon sur
         // le flux brut — dans CE processus, un plantage MediaExtractor ne
         // touche pas l'application.
         val codec = runCatching {
-            val probed = if (tier > 0) NovayRemux.probeVideoMime(output) else NovayRemux.probeVideoMime(input)
+            val probed = if (outcome.tier > 0) NovayRemux.probeVideoMime(output) else NovayRemux.probeVideoMime(input)
             NovayRemux.videoCodecLabel(probed)
         }.getOrNull()
 
         val bundle = Bundle().apply {
-            putInt(EXTRA_TIER, tier)
+            putInt(EXTRA_TIER, outcome.tier)
             putString(EXTRA_CODEC, codec)
+            putString(EXTRA_DIAGNOSTIC, outcome.diagnostic)
         }
-        runCatching { receiver.send(if (tier > 0) RESULT_OK else RESULT_FALLBACK, bundle) }
+        runCatching { receiver.send(if (outcome.tier > 0) RESULT_OK else RESULT_FALLBACK, bundle) }
         stopSelf()
         return START_NOT_STICKY
     }
@@ -67,6 +78,7 @@ class NovayRemuxService : Service() {
         const val EXTRA_RECEIVER = "novay.remux.receiver"
         const val EXTRA_TIER = "novay.remux.tier"
         const val EXTRA_CODEC = "novay.remux.codec"
+        const val EXTRA_DIAGNOSTIC = "novay.remux.diagnostic"
         const val RESULT_OK = 1
         const val RESULT_FALLBACK = 0
     }
