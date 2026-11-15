@@ -70,7 +70,7 @@ object NovayRemux {
 
     /**
      * Étiquette lisible du codec vidéo : « H.264 », « HEVC », ou le MIME
-     * brut tronqué. Null si inconnu — l'UI n'affiche alors rien.
+     * tronqué au premier séparateur. Null si inconnu — l'UI n'affiche rien.
      * HEVC se décline en plusieurs étiquettes MIME (hevc, hev1, hvc1).
      */
     fun videoCodecLabel(mime: String?): String? = when {
@@ -79,7 +79,8 @@ object NovayRemux {
         mime.startsWith("video/hevc", ignoreCase = true) ||
             mime.startsWith("video/hev1", ignoreCase = true) ||
             mime.startsWith("video/hvc1", ignoreCase = true) -> "HEVC"
-        else -> mime.take(12).takeIf { it.isNotBlank() }
+        else -> mime.takeWhile { it.isLetterOrDigit() || it == '/' }
+            .takeIf { it.length > "video/".length }
     }
 
     /**
