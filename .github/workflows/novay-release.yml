@@ -178,6 +178,7 @@ jobs:
         run: |
           set -e
           cd dist
+          ls -l
           sha256sum novay-*.apk novay-*.7z > SHA256SUMS
           cat SHA256SUMS
 
@@ -186,6 +187,10 @@ jobs:
       - name: Notes de release (FR)
         run: |
           set -e
+          # Diagnostic si l etape echoue : contenu du dossier + contexte.
+          trap 'echo "::error::generation des notes a echoue (voir ls ci-dessus)"' ERR
+          ls -l dist/ || true
+          [ -f dist/SHA256SUMS ] || { echo "::error::dist/SHA256SUMS absent"; exit 1; }
           tag="${GITHUB_REF_NAME}"
           titre="NoVaY ${tag#v}"
           {
@@ -218,7 +223,7 @@ jobs:
             echo "## Empreintes SHA-256"
             echo
             echo '```'
-            cat SHA256SUMS
+            cat dist/SHA256SUMS
             echo '```'
           } > dist/notes.md
           echo "--- notes generees ---"
@@ -231,12 +236,15 @@ jobs:
           set -e
           tag="${GITHUB_REF_NAME}"
           titre="NoVaY ${tag#v}"
-          gh release create "$tag" \
+          if ! gh release create "$tag" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$titre" \
             --notes-file dist/notes.md \
             dist/novay-universal-release.apk \
             dist/novay-universal-release.7z \
             dist/novay-arm32-release.apk \
-            dist/novay-arm32-release.7z
+            dist/novay-arm32-release.7z; then
+            echo "::error::gh release create a echoue pour $tag (deja existante ? permissions ?)"
+            exit 1
+          fi
           echo "::notice::Release $tag publiee avec 4 fichiers"
