@@ -6,12 +6,6 @@ on:
       - "novay/**"
       - ".github/workflows/novay.yml"
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Tag de la release a publier (ex: v2.9.5-alpha). Vide = build normal sans release."
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
@@ -158,34 +152,10 @@ jobs:
             exit 1
           fi
           cd dist
-          abis="arm32"
-          [ -f novay-universal-release.apk ] && abis="arm32 universal"
-          for abi in $abis; do
+          for abi in arm32; do
             "$SEVENZ" a -t7z -m0=lzma2 -mx=9 -md=128m -ms=on \
               "novay-${abi}-release.7z" "novay-${abi}-release.apk" > /dev/null
           done
-
-      # APK UNIVERSEL (uniquement pour les releases - demande owner 15/11) :
-      # arm32 + arm64 dans le meme APK (~90 Mo). Construit seulement quand
-      # le dispatch porte un tag de release : les builds quotidiens restent
-      # rapides et l'arm32 reste LA livraison legere.
-      - name: Build APK universel (arm32+arm64, release)
-        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
-        run: |
-          set +e
-          gradle :app:assembleRelease -PnovayAbi=armeabi-v7a,arm64-v8a --no-daemon 2>&1 | tee build-universal.log
-          status=${PIPESTATUS[0]}
-          set -e
-          if [ "$status" -ne 0 ]; then
-            grep -E "^e: |error: |FAILURE|What went wrong|Caused by|OutOfMemory|FAILED" build-universal.log | head -n 6 | while IFS= read -r line; do
-              echo "::error::${line:0:240}"
-            done
-            tail -n 40 build-universal.log | grep -v "^> Task" | tail -n 4 | while IFS= read -r line; do
-              echo "::error::${line:0:240}"
-            done
-            exit "$status"
-          fi
-          cp app/build/outputs/apk/release/app-release.apk dist/novay-universal-release.apk
 
       # Garde-fou + tailles visibles : l'APK d'une ABI ne doit contenir
       # AUCUNE native d'une autre ABI (sinon le filtre a echoue).
@@ -212,24 +182,6 @@ jobs:
           a32=$(mo novay-arm32-release.apk); z32=$(mo novay-arm32-release.7z)
           echo "::notice::arm32 (armeabi-v7a, Android 7+ 32 bits) : APK ${a32} Mo | 7z ${z32} Mo (-$(pct "$a32" "$z32") %)"
 
-          # Universel : les DEUX ABI presentes, AUCUNE fuite (x86 etc.).
-          if [ -f novay-universal-release.apk ]; then
-            fuite=$(unzip -l novay-universal-release.apk | grep "lib/" | grep -cvE "lib/(armeabi-v7a|arm64-v8a)/" || true)
-            if [ "${fuite:-0}" -ne 0 ]; then
-              echo "::error::novay-universal-release.apk embarque $fuite natives hors arm32/arm64 - filtre ABI en echec"
-              exit 1
-            fi
-            for abi in armeabi-v7a arm64-v8a; do
-              n=$(unzip -l novay-universal-release.apk | grep -c "lib/$abi/" || true)
-              if [ "${n:-0}" -eq 0 ]; then
-                echo "::error::novay-universal-release.apk ne contient aucune native $abi"
-                exit 1
-              fi
-            done
-            au=$(mo novay-universal-release.apk); zu=$(mo novay-universal-release.7z)
-            echo "::notice::universel (arm32+arm64, tous telephones Android 7+) : APK ${au} Mo | 7z ${zu} Mo"
-          fi
-
       - name: Upload APK arm32
         if: success()
         uses: actions/upload-artifact@v7
@@ -244,22 +196,6 @@ jobs:
         with:
           name: novay-release-arm32-7z
           path: novay/dist/novay-arm32-release.7z
-          if-no-files-found: error
-
-      - name: Upload APK universel
-        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: novay-release-universal-apk
-          path: novay/dist/novay-universal-release.apk
-          if-no-files-found: error
-
-      - name: Upload 7z universel
-        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: novay-release-universal-7z
-          path: novay/dist/novay-universal-release.7z
           if-no-files-found: error
 
       # Logs de build en artifact, meme en echec - plan B si les annotations
@@ -279,98 +215,6 @@ jobs:
           name: novay-test-log
           path: novay/test.log
           if-no-files-found: ignore
-
-  # Publication de la Release GitHub (demande owner 15/11) : les assets
-  # d'une Release PUBLIQUE sont telechargeables SANS compte GitHub, contra-
-  # riement aux artifacts de build - c'est le canal de partage. Job separe
-  # : permissions minimales (contents: write seulement ici, le job build
-  # reste a contents: read).
-  release:
-    name: Publication Release alpha
-    needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
-    permissions:
-      contents: write
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Recuperation des fichiers livres
-        uses: actions/download-artifact@v8
-        with:
-          pattern: novay-release-*
-          merge-multiple: true
-          path: dist
-
-      - name: Empreintes sha256
-        run: |
-          set -e
-          cd dist
-          ls -l
-          sha256sum novay-*.apk novay-*.7z > SHA256SUMS
-          cat SHA256SUMS
-
-      - name: Notes de release (FR)
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          set -e
-          tag="${RELEASE_TAG}"
-          titre="NoVaY ${tag#v}"
-          {
-            echo "# ${titre} (alpha)"
-            echo
-            echo "**NoVaY** : application Android de streaming et de telechargement d animes en francais (catalogues anime-sama et voiranime), avec lecteur integre, bibliotheque, historique et telechargements hors-ligne dans Download/NoVaY/."
-            echo
-            echo "## Quel fichier telecharger ?"
-            echo
-            echo "| Fichier | Pour qui |"
-            echo "|---|---|"
-            echo "| \`novay-universal-release.apk\` | **Recommande : tous les telephones** Android 7.0+ (32 et 64 bits) |"
-            echo "| \`novay-arm32-release.apk\` | Telephones anciens 32 bits uniquement (plus leger) |"
-            echo "| \`*.7z\` | Version compressee du meme fichier (connexion lente) - a decompresser avec 7-Zip ou ZArchiver |"
-            echo
-            echo "## Installation"
-            echo
-            echo "1. Telecharge l APK (ou le 7z, puis decompresses-le)."
-            echo "2. Ouvre l APK ; Android demande d autoriser l installation d applications inconnues pour ton navigateur - acceptes."
-            echo "3. Installes. Pour mettre a jour une version precedente : installes PAR-DESSUS, sans desinstaller (la signature est stable)."
-            echo
-            echo "Configuration minimale : **Android 7.0**. L application ne demande que les permissions reseau, notifications et (Android 7-9 uniquement) stockage pour les telechargements."
-            echo
-            echo "## Alpha - a savoir"
-            echo
-            echo "- Testee en conditions reelles sur un telephone Android 7 32 bits : streaming, telechargements (fichiers .ts lisibles partout, badge codec), lecture hors-ligne, historique."
-            echo "- Version alpha : certaines finitions visuelles restent en cours."
-            echo "- Les episodes telecharges sortent en \`.ts\` (H.264) : lisibles dans l application, VLC, MX Player et la plupart des lecteurs."
-            echo
-            echo "## Empreintes SHA-256"
-            echo
-            echo '```'
-            cat dist/SHA256SUMS
-            echo '```'
-          } > notes.md
-          echo "--- notes generees ---"
-          head -n 8 notes.md
-
-      - name: Publication de la release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          TARGET_SHA: ${{ github.sha }}
-        run: |
-          set -e
-          tag="${RELEASE_TAG}"
-          titre="NoVaY ${tag#v}"
-          # --target : le tag pointe sur le commit construit par CE run.
-          gh release create "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$TARGET_SHA" \
-            --title "$titre" \
-            --notes-file notes.md \
-            dist/novay-universal-release.apk \
-            dist/novay-universal-release.7z \
-            dist/novay-arm32-release.apk \
-            dist/novay-arm32-release.7z
-          echo "::notice::Release $tag publiee avec 4 fichiers"
 
   # Sonde reseau manuelle (workflow_dispatch ou push [probe]) : le runner a
   # internet ouvert - le sandbox n'a pas acces aux sites.
