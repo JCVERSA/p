@@ -28,7 +28,12 @@ android {
     val novayAbi = (findProperty("novayAbi") as? String)?.trim()
     if (!novayAbi.isNullOrEmpty()) {
       ndk {
-        abiFilters.add(novayAbi)
+        // Une seule ABI ("armeabi-v7a") ou plusieurs separees par des
+        // virgules ("armeabi-v7a,arm64-v8a" = APK universel telephones,
+        // construit par la CI pour les releases).
+        novayAbi.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach {
+          abiFilters.add(it)
+        }
       }
     }
   }
