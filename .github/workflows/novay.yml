@@ -96,6 +96,8 @@ jobs:
       # test se pend, le dernier STARTED sans verdict designe le coupable ;
       # on le publie en ANNOTATION (canal lisible sans telecharger les
       # artefacts).
+      # Relance CI (run 44921023637 : updatesScreen_empty... en timeout 5 s -
+      # test Robolectric/Compose charge, a determiner flaky vs systematique).
       - name: Diagnostic des tests (toujours)
         if: always()
         run: |
