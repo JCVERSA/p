@@ -110,6 +110,7 @@ jobs:
             done
             exit "$status"
           fi
+          mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk dist/novay-universal-release.apk
 
       # 7z (LZMA2 niveau 9) : le code natif se compresse d'environ moitie -
