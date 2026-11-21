@@ -55,6 +55,8 @@ import dot.jcversa.novay.data.AnimeDetails
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
+import dot.jcversa.novay.data.ScanChapter
+import dot.jcversa.novay.data.ScanPanel
 import dot.jcversa.novay.data.AnimeSource
 import dot.jcversa.novay.data.GenreCatalog
 import dot.jcversa.novay.data.ImageUrlSanitizer
@@ -85,6 +87,16 @@ import kotlinx.coroutines.withContext
  * et préservation intégrale des transitions et animations NoVaY.
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+/**
+ * Libellé du groupe des panneaux de scans dans la liste des saisons
+ * (V3.0 : les œuvres mangas listent leurs chapitres comme des saisons).
+ */
+internal const val SCANS_GROUP_LABEL = "Scans"
+
+/** Une « saison » est-elle un panneau de scans (URL …/scan/…) ? */
+internal fun isScanSeason(season: AnimeSeason): Boolean =
+    season.url.contains("/scan/", ignoreCase = true)
+
 @Composable
 fun ShowScreen(
     source: AnimeSource,
@@ -94,11 +106,13 @@ fun ShowScreen(
     onOpenPlayer: (AnimeSeason, AnimeEpisode, ResolvedStream?) -> Unit = { _, _, _ -> },
     onResume: (WatchHistoryEntry) -> Unit,
     onOpenShow: (AnimeSearchResult) -> Unit = {},
+    onOpenScanReader: (AnimeSeason, List<ScanChapter>, Int) -> Unit = { _, _, _ -> },
 ) {
     val context = LocalContext.current
     val motion = LocalSlateMotion.current
     val bottomChrome = LocalBottomChromePadding.current
     var seasons by remember(anime.url) { mutableStateOf<List<AnimeSeason>?>(null) }
+    var scanPanels by remember(anime.url) { mutableStateOf<List<ScanPanel>?>(null) }
     var details by remember(anime.url) {
         mutableStateOf(
             AnimeDetails(
@@ -201,8 +215,25 @@ fun ShowScreen(
         }
     }
 
-    val grouped = remember(seasons) {
-        seasons?.let(::orderByLanguage).orEmpty()
+    // V3.0 : panneaux de scans (manga) chargés en parallèle des saisons
+    // vidéo — même page d'œuvre, appels panneauScan(...).
+    LaunchedEffect(anime.url, retryKey) {
+        scanPanels = null
+        scanPanels = runCatching { source.scanPanels(anime) }.getOrDefault(emptyList())
+    }
+
+    val scanSeasons = remember(scanPanels) {
+        scanPanels.orEmpty().map {
+            AnimeSeason(name = it.name, url = it.url, language = it.language)
+        }
+    }
+    val grouped = remember(seasons, scanSeasons) {
+        seasons?.let(::orderByLanguage).orEmpty() +
+            if (scanSeasons.isEmpty()) {
+                emptyList()
+            } else {
+                listOf(SCANS_GROUP_LABEL to scanSeasons)
+            }
     }
 
     LaunchedEffect(seasons, resumeEntry, userSelectedSeason) {
@@ -272,7 +303,8 @@ fun ShowScreen(
     }
 
     val markSeasonSeen: (AnimeSeason) -> Unit = { season ->
-        scope.launch {
+        // Les panneaux de scans n'ont pas d'épisodes vidéo à marquer vus.
+        if (!isScanSeason(season)) scope.launch {
             val loadedCount = withContext(Dispatchers.IO) {
                 runCatching {
                     val eps = source.episodes(season)
@@ -293,7 +325,8 @@ fun ShowScreen(
             !details.releaseYear.isNullOrBlank() ||
             !details.format.isNullOrBlank() ||
             !details.alternativeTitle.isNullOrBlank() ||
-            !seasons.isNullOrEmpty()
+            !seasons.isNullOrEmpty() ||
+            scanSeasons.isNotEmpty()
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -310,7 +343,7 @@ fun ShowScreen(
                 navigateUp = onBack,
                 scrollBehavior = scrollBehavior,
                 actions = {
-                    if (!seasons.isNullOrEmpty()) {
+                    if (!seasons.isNullOrEmpty() || scanSeasons.isNotEmpty()) {
                         AppBarAction(
                             contentDescription = "Actions rapides",
                             icon = NovayIcons.Overflow,
@@ -324,8 +357,8 @@ fun ShowScreen(
             val seasonList = seasons
             val viewKey = when {
                 error != null -> "error"
-                seasonList == null -> "loading"
-                seasonList.isEmpty() -> "empty"
+                seasonList == null || (seasonList.isEmpty() && scanPanels == null) -> "loading"
+                seasonList.isEmpty() && scanSeasons.isEmpty() -> "empty"
                 else -> "loaded"
             }
 
@@ -417,7 +450,20 @@ fun ShowScreen(
                                     color = MaterialTheme.colorScheme.outlineVariant,
                                 )
                                 val active = selectedSeason ?: firstVisibleSeason
-                                if (active != null) {
+                                if (active != null && isScanSeason(active)) {
+                                    ScanChaptersPane(
+                                        source = source,
+                                        anime = effectiveAnime,
+                                        panel = active,
+                                        onOpenChapter = { chapters, index ->
+                                            onOpenScanReader(active, chapters, chapters[index].id)
+                                        },
+                                        modifier = Modifier
+                                            .weight(0.58f)
+                                            .fillMaxHeight(),
+                                        showHeader = true,
+                                    )
+                                } else if (active != null) {
                                     EpisodesPane(
                                         source = source,
                                         animeTitle = anime.title,

@@ -45,11 +45,36 @@ data class AnimeDetails(
     val related: List<AnimeSearchResult> = emptyList(),
 )
 
-/** Une saison/film d'un anime (langue structurelle du sous-chemin). */
+/**
+ * Une saison/film d'un anime (langue structurelle du sous-chemin).
+ */
 data class AnimeSeason(
     val name: String,
     val url: String,
     val language: String? = null
+)
+
+/**
+ * Un panneau de scans d'une œuvre (page catalogue : appels
+ * `panneauScan("Nom", "scan/vf")`), équivalent manga d'une saison.
+ */
+data class ScanPanel(
+    val name: String,            // libellé complet du panneau (« Scans VF (…) »)
+    val url: String,             // page du scan (…/catalogue/<slug>/scan/vf/)
+    val language: String? = null, // VF/VOSTFR déduit du sous-chemin
+    val scanlator: String? = null // groupe scantrad (libellé nettoyé)
+)
+
+/**
+ * Un chapitre d'un panneau de scans, auto-suffisant pour la lecture :
+ * les pages sont `<imageUrlPrefix><n>.jpg` pour n de 1 à [pageCount].
+ */
+data class ScanChapter(
+    val id: Int,                 // identifiant du chapitre côté serveur d'images
+    val number: String,          // « 12 », « 5.5 » ou libellé spécial
+    val label: String,           // « Chapitre 12 »
+    val pageCount: Int,          // nombre de pages (0 = inconnu)
+    val imageUrlPrefix: String   // …/s2/scans/<oeuvre>/<id>/ — pages <n>.jpg
 )
 
 /** Un épisode d'une saison. */
@@ -147,6 +172,17 @@ interface AnimeSource {
 
     /** Épisodes d'une saison. */
     suspend fun episodes(season: AnimeSeason): List<AnimeEpisode>
+
+    /**
+     * Panneaux de scans listés sur la page d'une œuvre (manga).
+     * Vide = l'œuvre n'a pas de scans (animé pur).
+     */
+    suspend fun scanPanels(anime: AnimeSearchResult): List<ScanPanel> = emptyList()
+
+    /**
+     * Chapitres d'un panneau de scans, avec leur nombre de pages.
+     */
+    suspend fun scanChapters(anime: AnimeSearchResult, panel: ScanPanel): List<ScanChapter> = emptyList()
 
     /** Résout le flux jouable d'un épisode (lecteur + qualités HLS). */
     suspend fun stream(episode: AnimeEpisode): ResolvedStream

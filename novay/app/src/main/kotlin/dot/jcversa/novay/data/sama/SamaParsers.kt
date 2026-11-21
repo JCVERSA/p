@@ -2,6 +2,8 @@ package dot.jcversa.novay.data.sama
 
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
+import dot.jcversa.novay.data.ScanChapter
+import dot.jcversa.novay.data.ScanPanel
 import dot.jcversa.novay.data.CatalogPage
 import dot.jcversa.novay.data.GenreCatalog
 import java.net.URI
@@ -662,6 +664,137 @@ object SamaParsers {
         }
         return out
     }
+
+    // ── Scans (panneaux + chapitres) ─────────────────────────────────────
+
+    private val PANNEAU_SCAN_RE =
+        Regex("panneauScan\\s*\\(\\s*[\"']([^\"']+)[\"']\\s*,\\s*[\"']([^\"']+)[\"']\\s*\\)")
+    private val SCAN_CREATE_LIST_RE = Regex("creerListe\\s*\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)")
+    private val SCAN_NEW_SP_RE = Regex("newSP\\s*\\(\\s*(?:\"([^\"]*)\"|(\\d+(?:\\.\\d+)?))\\s*\\)")
+    private val TITRE_OEUVRE_RE =
+        Regex("<h1[^>]*id=\"titreOeuvre\"[^>]*>(.*?)</h1>", RegexOption.DOT_MATCHES_ALL)
+
+    /**
+     * Appels panneauScan("Nom", "scan/vf") d'une page d'œuvre. Les
+     * sous-chemins « va » (version animée — lien vers l'animé du même
+     * univers) sont ignorés, comme le fait l'extension Mihon du site.
+     */
+    fun parseScanPanels(html: String, oeuvreUrl: String): List<ScanPanel> {
+        if (html.isEmpty()) return emptyList()
+        val base = oeuvreUrl.trimEnd('/') + "/"
+        val out = mutableListOf<ScanPanel>()
+        val seen = mutableSetOf<String>()
+        for (m in PANNEAU_SCAN_RE.findAll(html)) {
+            val name = m.groupValues[1]
+            val subPath = m.groupValues[2]
+            if (name.lowercase() == "nom" || subPath.lowercase() == "url") continue
+            // Dernier segment « va » = lien version animée, pas un scan.
+            if (subPath.trim('/').substringAfterLast('/').equals("va", ignoreCase = true)) continue
+            if (!seen.add(subPath)) continue
+            val scanlator = name.replace(Regex("(Scans|\\(|\\))"), "").trim()
+            out.add(
+                ScanPanel(
+                    name = name,
+                    url = base + subPath.trim('/') + "/",
+                    language = samaSubPathLanguage(subPath),
+                    scanlator = scanlator.ifEmpty { null }
+                )
+            )
+        }
+        return out
+    }
+
+    /**
+     * Titre d'œuvre réel d'une page de scan : premier nœud texte du
+     * `h1#titreOeuvre` (les badges/langues vivent dans des enfants).
+     * C'est ce titre que l'API d'images attend en paramètre `oeuvre`.
+     */
+    fun parseScanOeuvreTitle(html: String): String? {
+        val inner = TITRE_OEUVRE_RE.find(html)?.groupValues?.get(1) ?: return null
+        val text = inner.substringBefore('<')
+            .replace("&amp;", "&")
+            .replace("&#39;", "'")
+            .replace("&quot;", "\"")
+            .trim()
+        return text.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * Réponse de /s2/scans/get_nb_chap_et_img.php?oeuvre=… :
+     * { "1": 18, "2": 20 } — identifiant de chapitre → nombre de pages.
+     */
+    fun parseScanImageCounts(json: String): Map<String, Int> {
+        if (json.isBlank()) return emptyMap()
+        return try {
+            val obj = org.json.JSONObject(json)
+            val out = mutableMapOf<String, Int>()
+            for (key in obj.keys()) {
+                val count = obj.optInt(key, 0)
+                if (count > 0) out[key] = count
+            }
+            out
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    /**
+     * Chapitres d'une page de scan : commandes `creerListe(début, fin)` et
+     * `newSP(…)` après `resetListe()`, complétées par le compte de chapitres
+     * de l'API (des chapitres existent même quand la page ne les liste pas).
+     * Les identifiants sont POSITIONNELS (1 = premier chapitre listé) —
+     * c'est la clé du serveur d'images s2/scans/<oeuvre>/<id>/<n>.jpg.
+     */
+    fun parseScanChapters(
+        scanHtml: String,
+        imageCounts: Map<String, Int>,
+        imageBase: String,
+    ): List<ScanChapter> {
+        val out = mutableListOf<ScanChapter>()
+        var chapterDelay = 0
+        if (scanHtml.contains("resetListe()")) {
+            for (command in scanHtml.split(";")) {
+                val createMatch = SCAN_CREATE_LIST_RE.find(command)
+                if (createMatch != null) {
+                    val start = createMatch.groupValues[1].toIntOrNull()
+                    val end = createMatch.groupValues[2].toIntOrNull()
+                    if (start != null && end != null && end >= start) {
+                        for (i in start..end) {
+                            out += scanChapter(out.size + 1, i.toString(), imageCounts, imageBase)
+                        }
+                    }
+                } else {
+                    val spMatch = SCAN_NEW_SP_RE.find(command)
+                    if (spMatch != null) {
+                        val name = spMatch.groupValues[1].ifEmpty { spMatch.groupValues[2] }
+                        if (name.isNotEmpty()) {
+                            out += scanChapter(out.size + 1, name, imageCounts, imageBase)
+                            chapterDelay++
+                        }
+                    }
+                }
+            }
+        }
+        // Chapitres présents dans l'API mais pas dans les commandes listées.
+        while (out.size < imageCounts.size) {
+            val number = (out.size + 1 - chapterDelay).toString()
+            out += scanChapter(out.size + 1, number, imageCounts, imageBase)
+        }
+        return out
+    }
+
+    private fun scanChapter(
+        id: Int,
+        number: String,
+        imageCounts: Map<String, Int>,
+        imageBase: String,
+    ) = ScanChapter(
+        id = id,
+        number = number,
+        label = "Chapitre $number",
+        pageCount = imageCounts[id.toString()] ?: 0,
+        imageUrlPrefix = imageBase.trimEnd('/') + "/$id/"
+    )
 
     // ── Épisodes (tableaux inline + meta + jeton) ─────────────────────────
 

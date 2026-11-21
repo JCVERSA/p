@@ -15,6 +15,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
 import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
@@ -103,6 +104,8 @@ class SamaSource(
     private val showDetailsCache = LruTtlCache<String, dot.jcversa.novay.data.AnimeDetails>(64, SEASONS_TTL_MS, clockMs)
     private val seasonsCache = LruTtlCache<String, List<AnimeSeason>>(32, SEASONS_TTL_MS, clockMs)
     private val episodesCache = LruTtlCache<String, List<AnimeEpisode>>(32, EPISODES_TTL_MS, clockMs)
+    private val scanPanelsCache = LruTtlCache<String, List<dot.jcversa.novay.data.ScanPanel>>(32, SEASONS_TTL_MS, clockMs)
+    private val scanChaptersCache = LruTtlCache<String, List<dot.jcversa.novay.data.ScanChapter>>(32, EPISODES_TTL_MS, clockMs)
 
     // ── Origine dynamique ─────────────────────────────────────────────────
 
@@ -288,6 +291,80 @@ class SamaSource(
             genres = mergedGenres,
             posterUrl = mergedPoster,
         )
+    }
+
+    // ── Scans (V3.0 : lecture manga) ──────────────────────────────────────
+
+    /**
+     * Panneaux de scans de la page d'une œuvre : appels
+     * panneauScan("Nom", "scan/vf") — même page que les saisons vidéo.
+     */
+    override suspend fun scanPanels(anime: AnimeSearchResult): List<dot.jcversa.novay.data.ScanPanel> =
+        withContext(Dispatchers.IO) {
+            val cacheKey = anime.url.trimEnd('/') + "/scans"
+            scanPanelsCache.get(cacheKey)?.let { return@withContext it }
+            val base = origin()
+            val targetUrl = rewriteMirrorIfNeeded(anime.url, base)
+            val html = fetchBlocking(targetUrl, "$base/")
+            val panels = SamaParsers.parseScanPanels(html, targetUrl)
+            scanPanelsCache.put(cacheKey, panels)
+            panels
+        }
+
+    /**
+     * Chapitres d'un panneau de scans :
+     *  1. page du scan → titre d'œuvre réel (h1#titreOeuvre) ;
+     *  2. API get_nb_chap_et_img.php → identifiants et nombres de pages ;
+     *  3. commandes creerListe/newSP + complément par le compte API.
+     * Les chapitres sont auto-suffisants : imageUrlPrefix + <n>.jpg.
+     */
+    override suspend fun scanChapters(
+        anime: AnimeSearchResult,
+        panel: dot.jcversa.novay.data.ScanPanel,
+    ): List<dot.jcversa.novay.data.ScanChapter> = withContext(Dispatchers.IO) {
+        val cacheKey = panel.url.trimEnd('/')
+        scanChaptersCache.get(cacheKey)?.let { return@withContext it }
+        val base = origin()
+        val html = runCatching { fetchBlocking(panel.url, "$base/") }.getOrDefault("")
+        if (html.isEmpty()) return@withContext emptyList()
+        val oeuvreTitle = SamaParsers.parseScanOeuvreTitle(html) ?: anime.title.trim()
+        if (oeuvreTitle.isEmpty()) return@withContext emptyList()
+        val counts = fetchScanImageCounts(base, oeuvreTitle)
+        if (counts.isEmpty()) return@withContext emptyList()
+        val imageBase = scanImageBase(base, oeuvreTitle)
+        val chapters = SamaParsers.parseScanChapters(html, counts, imageBase)
+        scanChaptersCache.put(cacheKey, chapters)
+        chapters
+    }
+
+    /** /s2/scans/get_nb_chap_et_img.php?oeuvre=… : {id: nbPages}. */
+    private fun fetchScanImageCounts(base: String, oeuvre: String): Map<String, Int> = try {
+        val url = "$base/s2/scans/get_nb_chap_et_img.php?oeuvre=${urlEncode(oeuvre)}"
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", SamaParsers.UA)
+            .header("Referer", "$base/")
+            .header("X-Requested-With", "XMLHttpRequest")
+            .build()
+        http.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) return emptyMap()
+            SamaParsers.parseScanImageCounts(resp.body?.string() ?: return emptyMap())
+        }
+    } catch (_: Exception) {
+        emptyMap()
+    }
+
+    /** Base des images d'un scan, titre d'œuvre encodé pour l'URL. */
+    private fun scanImageBase(base: String, oeuvre: String): String = try {
+        (base.trimEnd('/') + "/s2/scans/")
+            .toHttpUrl()
+            .newBuilder()
+            .addPathSegment(oeuvre)
+            .build()
+            .toString()
+            .trimEnd('/')
+    } catch (_: Exception) {
+        base.trimEnd('/') + "/s2/scans/" + urlEncode(oeuvre)
     }
 
     override suspend fun catalogByGenre(genre: String): List<AnimeSearchResult> = withContext(Dispatchers.IO) {

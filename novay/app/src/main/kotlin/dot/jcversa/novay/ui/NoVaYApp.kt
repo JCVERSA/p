@@ -97,6 +97,7 @@ import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.ImageUrlSanitizer
 import dot.jcversa.novay.data.Library
 import dot.jcversa.novay.data.ResolvedStream
+import dot.jcversa.novay.data.ScanChapter
 import dot.jcversa.novay.data.WatchHistory
 import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.data.sama.SamaSource
@@ -128,6 +129,9 @@ import dot.jcversa.novay.ui.screens.HistoryScreen
 import dot.jcversa.novay.ui.screens.LibraryScreen
 import dot.jcversa.novay.ui.screens.MoreScreen
 import dot.jcversa.novay.ui.screens.PlayerScreen
+import dot.jcversa.novay.ui.screens.ScanChaptersScreen
+import dot.jcversa.novay.ui.screens.ScanReaderScreen
+import dot.jcversa.novay.ui.screens.isScanSeason
 import dot.jcversa.novay.ui.screens.ShowScreen
 import dot.jcversa.novay.ui.screens.UpdatesScreen
 import dot.jcversa.novay.ui.state.TopLevelDestination
@@ -157,6 +161,20 @@ sealed class Destination {
         val posterUrl: String?,
         val season: AnimeSeason,
         val anime: AnimeSearchResult? = null,
+    ) : Destination()
+
+    /** Panneau de scans (manga) — liste des chapitres (V3.0). */
+    data class ScanChapters(
+        val anime: AnimeSearchResult,
+        val panel: AnimeSeason,
+    ) : Destination()
+
+    /** Lecteur de scans — pages d'un chapitre (V3.0). */
+    data class ScanReader(
+        val anime: AnimeSearchResult,
+        val panel: AnimeSeason,
+        val chapters: List<ScanChapter> = emptyList(),
+        val initialChapterId: Int = 1,
     ) : Destination()
 
     data class Player(
@@ -204,6 +222,8 @@ private fun Destination.rank(): Int = when (this) {
     Destination.Downloads -> 1
     is Destination.Show -> 1
     is Destination.Episodes -> 2
+    is Destination.ScanChapters -> 2
+    is Destination.ScanReader -> 3
     is Destination.Player -> 3
 }
 
@@ -216,6 +236,8 @@ private fun Destination.key(): String = when (this) {
     Destination.Downloads -> "downloads"
     is Destination.Show -> "show_${anime.url}"
     is Destination.Episodes -> "episodes_${season.url}"
+    is Destination.ScanChapters -> "scanchapters_${panel.url}"
+    is Destination.ScanReader -> "scanreader_${panel.url}_${initialChapterId}"
     is Destination.Player -> "player_${season.url}_${episode.number}"
 }
 
@@ -238,7 +260,7 @@ class NovayAppState(
     }
 
     val showChrome: Boolean by derivedStateOf {
-        stack.last() !is Destination.Player
+        stack.last() !is Destination.Player && stack.last() !is Destination.ScanReader
     }
 
     val canNavigateBack: Boolean by derivedStateOf {
@@ -247,7 +269,8 @@ class NovayAppState(
 
     val isSecondaryScreen: Boolean by derivedStateOf {
         val last = stack.last()
-        stack.size > 1 && last !is Destination.Player && !last.isTab
+        stack.size > 1 && last !is Destination.Player &&
+            last !is Destination.ScanReader && !last.isTab
     }
 
     fun open(dest: Destination) {
@@ -513,7 +536,10 @@ fun NoVaYApp() {
                                                                 onExploreCatalog = { appState.openTab(TopLevelDestination.BROWSE) },
                                                             )
                                                             Destination.History -> HistoryScreen(
-                                                                onResume = { entry -> appState.open(playerDestination(entry)) }
+                                                                onResume = { entry ->
+                                                                    scanReaderDestination(entry)?.let { appState.open(it) }
+                                                                        ?: appState.open(playerDestination(entry))
+                                                                }
                                                             )
                                                             Destination.Browse -> BrowseScreen(
                                                                 source = source,
@@ -574,12 +600,31 @@ fun NoVaYApp() {
                                                                     appState.open(Destination.Show(targetAnime))
                                                                 },
                                                                 onOpenEpisodes = { season ->
+                                                                    if (isScanSeason(season)) {
+                                                                        appState.open(
+                                                                            Destination.ScanChapters(
+                                                                                anime = screen.anime,
+                                                                                panel = season,
+                                                                            )
+                                                                        )
+                                                                    } else {
+                                                                        appState.open(
+                                                                            Destination.Episodes(
+                                                                                animeTitle = screen.anime.title,
+                                                                                posterUrl = screen.anime.posterUrl,
+                                                                                season = season,
+                                                                                anime = screen.anime,
+                                                                            )
+                                                                        )
+                                                                    }
+                                                                },
+                                                                onOpenScanReader = { panel, chapters, chapterId ->
                                                                     appState.open(
-                                                                        Destination.Episodes(
-                                                                            animeTitle = screen.anime.title,
-                                                                            posterUrl = screen.anime.posterUrl,
-                                                                            season = season,
+                                                                        Destination.ScanReader(
                                                                             anime = screen.anime,
+                                                                            panel = panel,
+                                                                            chapters = chapters,
+                                                                            initialChapterId = chapterId,
                                                                         )
                                                                     )
                                                                 },
@@ -595,7 +640,10 @@ fun NoVaYApp() {
                                                                         )
                                                                     )
                                                                 },
-                                                                onResume = { entry -> appState.open(playerDestination(entry, screen.anime)) }
+                                                                onResume = { entry ->
+                                                                    scanReaderDestination(entry)?.let { appState.open(it) }
+                                                                        ?: appState.open(playerDestination(entry, screen.anime))
+                                                                }
                                                             )
                                                             is Destination.Episodes -> EpisodesScreen(
                                                                 source = source,
@@ -614,6 +662,30 @@ fun NoVaYApp() {
                                                                         )
                                                                     )
                                                                 }
+                                                            )
+                                                            is Destination.ScanChapters -> ScanChaptersScreen(
+                                                                source = source,
+                                                                anime = screen.anime,
+                                                                panel = screen.panel,
+                                                                onBack = appState::back,
+                                                                onOpenChapter = { chapters, index ->
+                                                                    appState.open(
+                                                                        Destination.ScanReader(
+                                                                            anime = screen.anime,
+                                                                            panel = screen.panel,
+                                                                            chapters = chapters,
+                                                                            initialChapterId = chapters[index].id,
+                                                                        )
+                                                                    )
+                                                                },
+                                                            )
+                                                            is Destination.ScanReader -> ScanReaderScreen(
+                                                                source = source,
+                                                                anime = screen.anime,
+                                                                panel = screen.panel,
+                                                                chapters = screen.chapters,
+                                                                initialChapterId = screen.initialChapterId,
+                                                                onBack = appState::back,
                                                             )
                                                             is Destination.Player -> PlayerScreen(
                                                                 playerManager = playerManager,
@@ -839,6 +911,27 @@ private fun TabMorphIconWithBadge(
             size = 24.dp,
         )
     }
+}
+
+/**
+ * Destination lecteur de scans pour une entrée d'historique (V3.0) :
+ * les chapitres lus sont enregistrés comme les épisodes — l'URL de
+ * « saison » est celle du panneau de scans (…/scan/…).
+ */
+private fun scanReaderDestination(entry: WatchHistoryEntry): Destination.ScanReader? {
+    if (!entry.seasonUrl.contains("/scan/", ignoreCase = true)) return null
+    val anime = AnimeSearchResult(
+        title = entry.animeTitle,
+        url = entry.animeUrl,
+        slug = entry.animeUrl.trimEnd('/').substringAfterLast('/', ""),
+        posterUrl = entry.posterUrl,
+    )
+    return Destination.ScanReader(
+        anime = anime,
+        panel = AnimeSeason(name = entry.seasonName, url = entry.seasonUrl),
+        chapters = emptyList(),
+        initialChapterId = entry.episodeNumber,
+    )
 }
 
 private fun playerDestination(
