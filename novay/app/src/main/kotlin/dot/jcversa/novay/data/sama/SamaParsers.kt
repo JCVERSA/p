@@ -703,7 +703,7 @@ object SamaParsers {
                     name = name,
                     url = base + subPath.trim('/') + "/",
                     language = samaSubPathLanguage(subPath),
-                    scanlator = scanlator.ifEmpty { null }
+                    scanlator = scanlator
                 )
             )
         }
