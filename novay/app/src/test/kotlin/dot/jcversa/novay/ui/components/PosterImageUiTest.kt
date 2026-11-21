@@ -18,6 +18,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.unit.dp
 import coil.Coil
 import dot.jcversa.novay.NovayImagePipeline
@@ -191,6 +192,11 @@ class PosterImageUiTest {
         composeRule.runOnUiThread {
             itemsState = initialItems.reversed()
         }
+        composeRule.waitForIdle()
+        // LazyColumn conserve la position par CLE : apres inversion, l'item
+        // ancre (anime-1, ancien index 0) part en fin de liste et le viewport
+        // saute en bas - on ramene le haut de la liste avant d'affirmer.
+        composeRule.onNodeWithTag("poster_test_lazy_list").performScrollToIndex(0)
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Anime 20").assertIsDisplayed()
     }

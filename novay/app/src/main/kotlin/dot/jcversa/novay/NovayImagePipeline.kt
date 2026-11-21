@@ -136,8 +136,13 @@ object NovayImagePipeline {
                     throw ioe
                 }
 
-                // Garde anti soft-404 / page HTML Cloudflare renvoyée en HTTP 200
-                if (response.isSuccessful && isHtmlContentType(response.header("Content-Type"))) {
+                // Garde anti soft-404 / page HTML Cloudflare renvoyée en HTTP 200.
+                // Le Content-Type peut venir de l'en-tete OU du corps : une
+                // reponse synthetisee par un intercepteur d'application
+                // (mock de test, reponse OkHttp fabricee) n'a pas l'en-tete.
+                val contentTypeHeader = response.header("Content-Type")
+                    ?: response.body?.contentType()?.toString()
+                if (response.isSuccessful && isHtmlContentType(contentTypeHeader)) {
                     response.close()
                     return syntheticNonCacheableError(original, 422, "HTML returned instead of image")
                 }

@@ -110,23 +110,26 @@ jobs:
           if [ "${{ steps.tests.outcome }}" = "success" ]; then
             exit 0
           fi
-          echo "::error::Etape Tests unitaires : ${{ steps.tests.outcome }} - derniers tests demarres ci-dessous (un STARTED sans PASSED/FAILED = test bloque)"
-          grep -E "> .*STARTED" test.log | tail -n 4 | while IFS= read -r ligne; do
-            echo "::error::DERNIER TEST : ${ligne:0:220}"
-          done
-          # Messages d echec des rapports XML (tests termines avant un eventuel blocage)
-          grep -lE '<failure|<error' app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | while read -r xf; do
+          # Un test en echec par ligne : nom + message exact (rapports XML)
+          for xf in app/build/test-results/testDebugUnitTest/*.xml; do
+            [ -e "$xf" ] || continue
             awk '{
               if (match($0, /<testcase name="[^"]*"/)) { tc = substr($0, RSTART + 16, RLENGTH - 17) }
-              if ($0 ~ /<failure|<error/) { print tc }
-            }' "$xf" | head -n 2 | while IFS= read -r nom; do
-              echo "::error::TEST EN ECHEC : ${nom:0:160}"
-            done
-            grep -oE '<failure message="[^"]{0,170}|<error message="[^"]{0,170}' "$xf" | head -n 2 | while IFS= read -r ligne; do
-              echo "::error::MESSAGE : ${ligne:0:220}"
-            done
+              if (match($0, /<(failure|error) message="[^"]*"/)) { print "ECHEC : " tc " -> " substr($0, RSTART, RLENGTH) }
+            }' "$xf"
+          done | head -n 8 | while IFS= read -r ligne; do
+            echo "::error::${ligne:0:240}"
           done
-          grep -E "^e: |error: |Execution failed" test.log | head -n 3 | while IFS= read -r ligne; do
+          # Si un test s est bloque : moins de verdicts que de demarrages
+          skipped=$(grep -cE "> .*SKIPPED" test.log || true)
+          verdicts=$((passed + failed + skipped))
+          if [ "$started" -gt "$verdicts" ] && [ "$started" -gt 0 ]; then
+            echo "::error::Un test est bloque ($started demarres, $verdicts verdicts) - derniers demarres :"
+            grep -E "> .*STARTED" test.log | tail -n 2 | while IFS= read -r ligne; do
+              echo "::error::DERNIER TEST : ${ligne:0:220}"
+            done
+          fi
+          grep -E "^e: |error: |Execution failed" test.log | head -n 2 | while IFS= read -r ligne; do
             echo "::error::${ligne:0:240}"
           done
 
