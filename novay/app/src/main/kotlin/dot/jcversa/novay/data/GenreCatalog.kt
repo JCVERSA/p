@@ -88,6 +88,13 @@ object GenreCatalog {
             .distinct()
             .toList()
 
+    fun isKnownCanonicalOrAlias(raw: String): Boolean {
+        val cleaned = raw.trim().replace(Regex("\\s+"), " ")
+        if (cleaned.isEmpty()) return false
+        val key = foldKey(cleaned)
+        return ALIASES.containsKey(key) || CORE_GENRES.any { foldKey(it) == key }
+    }
+
     fun matches(entryGenres: List<String>, selectedGenre: String?): Boolean {
         val target = selectedGenre?.let(::normalize)?.takeIf { it.isNotEmpty() } ?: return true
         val targetKey = foldKey(target)

@@ -502,12 +502,15 @@ fun NoVaYApp() {
                                                         when (screen) {
                                                             Destination.Library -> LibraryScreen(
                                                                 onOpenShow = { appState.open(Destination.Show(it)) },
-                                                                onResume = { entry -> appState.open(playerDestination(entry)) }
+                                                                onResume = { entry -> appState.open(playerDestination(entry)) },
+                                                                showBrandSeal = !useRail,
+                                                                onExploreCatalog = { appState.openTab(TopLevelDestination.BROWSE) },
                                                             )
                                                             Destination.Updates -> UpdatesScreen(
                                                                 source = source,
                                                                 onOpenShow = { appState.open(Destination.Show(it)) },
-                                                                onResume = { entry -> appState.open(playerDestination(entry)) }
+                                                                onResume = { entry -> appState.open(playerDestination(entry)) },
+                                                                onExploreCatalog = { appState.openTab(TopLevelDestination.BROWSE) },
                                                             )
                                                             Destination.History -> HistoryScreen(
                                                                 onResume = { entry -> appState.open(playerDestination(entry)) }
@@ -523,7 +526,8 @@ fun NoVaYApp() {
                                                                             season = season
                                                                         )
                                                                     )
-                                                                }
+                                                                },
+                                                                showBrandSeal = !useRail,
                                                             )
                                                             Destination.More -> MoreScreen(
                                                                 onOpenDownloads = { appState.open(Destination.Downloads) }
@@ -566,6 +570,9 @@ fun NoVaYApp() {
                                                                 source = source,
                                                                 anime = screen.anime,
                                                                 onBack = appState::back,
+                                                                onOpenShow = { targetAnime ->
+                                                                    appState.open(Destination.Show(targetAnime))
+                                                                },
                                                                 onOpenEpisodes = { season ->
                                                                     appState.open(
                                                                         Destination.Episodes(

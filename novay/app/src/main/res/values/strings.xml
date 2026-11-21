@@ -22,8 +22,46 @@
     <string name="filter_all">Tout</string>
     <string name="action_reset_filters">Réinitialiser les filtres</string>
     <string name="action_show_all">Tout afficher</string>
+    <string name="action_explore_catalog">Explorer le catalogue</string>
+    <string name="action_refresh">Actualiser</string>
+    <string name="action_dismiss">Fermer</string>
+
+    <!-- Identité & Marque -->
+    <string name="brand_tagline">Streaming &amp; hors-ligne · VF &amp; VOSTFR</string>
+    <string name="brand_version">v2.9.7</string>
 
     <!-- Permissions téléchargements -->
     <string name="permission_notifications_denied_notice">Notifications désactivées — tes téléchargements continuent en file.</string>
     <string name="permission_storage_denied_notice">Permission de stockage requise pour enregistrer les épisodes dans Téléchargements.</string>
+
+    <!-- Fiche anime & Épisodes -->
+    <string name="show_details_action">Infos</string>
+    <string name="show_details_sheet_title">Informations de l\'animé</string>
+    <string name="show_synopsis_read_more">Lire la suite</string>
+    <string name="show_synopsis_read_less">Réduire</string>
+    <string name="show_language_all">Tout</string>
+    <string name="show_related_heading">Dans le même univers</string>
+    <string name="show_seasons_heading">Saisons &amp; épisodes</string>
+    <string name="episode_active_badge">En cours</string>
+
+    <!-- Catalogue hybride & Filtres avancés -->
+    <string name="catalog_filter_button_cd">Filtres avancés</string>
+    <string name="catalog_filter_sheet_title">Filtres avancés</string>
+    <string name="catalog_filter_apply">Appliquer</string>
+    <string name="catalog_filter_reset">Réinitialiser</string>
+    <string name="catalog_filter_genres">Genres</string>
+    <string name="catalog_filter_language">Langue</string>
+    <string name="catalog_filter_format">Format</string>
+    <string name="catalog_filter_year">Année</string>
+    <string name="catalog_filter_status">Statut</string>
+    <string name="catalog_filter_sort">Trier par</string>
+    <string name="catalog_section_featured">Sélection du catalogue</string>
+    <string name="catalog_section_latest">Derniers épisodes</string>
+    <string name="catalog_section_trending">Tendances &amp; En cours</string>
+    <string name="catalog_section_random">Aléatoire</string>
+    <string name="catalog_section_complete">Catalogue complet</string>
+    <string name="catalog_pagination_loading">Chargement de la suite…</string>
+    <string name="catalog_pagination_error">Impossible de charger la page suivante</string>
+    <string name="catalog_empty_filtered_title">Aucun animé correspondant</string>
+    <string name="catalog_empty_filtered_subtitle">Essaie de retirer un critère ou réinitialise les filtres pour explorer tout le catalogue.</string>
 </resources>

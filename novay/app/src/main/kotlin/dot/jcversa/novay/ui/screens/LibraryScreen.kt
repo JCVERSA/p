@@ -1,7 +1,9 @@
 package dot.jcversa.novay.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -10,6 +12,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,6 +52,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberTopAppBarState
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -63,6 +68,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -88,6 +94,7 @@ import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.GenreFilterChipBar
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
+import dot.jcversa.novay.ui.components.NovayBrandSeal
 import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.PosterGridSkeleton
@@ -117,7 +124,9 @@ import kotlinx.coroutines.withContext
 @Composable
 fun LibraryScreen(
     onOpenShow: (AnimeSearchResult) -> Unit,
-    onResume: (WatchHistoryEntry) -> Unit
+    onResume: (WatchHistoryEntry) -> Unit,
+    showBrandSeal: Boolean = false,
+    onExploreCatalog: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val motion = LocalSlateMotion.current
@@ -202,6 +211,11 @@ fun LibraryScreen(
         refreshKey++
     }
 
+    BackHandler(enabled = selectionMode) {
+        selectionMode = false
+        selectedUrls.clear()
+    }
+
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
 
     Box(
@@ -216,6 +230,14 @@ fun LibraryScreen(
         ) {
             NovayAppBar(
                 titleContent = {
+                    if (showBrandSeal) {
+                        NovayBrandSeal(
+                            size = 28.dp,
+                            accessibleLabel = null,
+                            modifier = Modifier.testTag("library_brand_seal"),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                    }
                     AppBarTitle(title = "Bibliothèque")
                     val count = uiState.items.size
                     if (count > 0) {
@@ -261,7 +283,7 @@ fun LibraryScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     LibraryFilter.entries.forEach { f ->
@@ -269,10 +291,12 @@ fun LibraryScreen(
                         FilterChip(
                             selected = selected,
                             onClick = { filter = f },
-                            modifier = Modifier.testTag("library_filter_${f.name.lowercase()}"),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("library_filter_${f.name.lowercase()}"),
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                selectedLabelColor = NovayTheme.overlays.crimsonOnContainer,
                             ),
                             border = FilterChipDefaults.filterChipBorder(
                                 enabled = true,
@@ -328,6 +352,9 @@ fun LibraryScreen(
                         lottieRes = R.raw.lottie_bookmark,
                         headingText = "Ta bibliothèque t'attend",
                         subtitleText = "Explore le catalogue et touche le cœur sur un anime pour le suivre ici et détecter ses nouveaux épisodes.",
+                        actionLabel = if (onExploreCatalog != null) stringResource(R.string.action_explore_catalog) else null,
+                        onAction = onExploreCatalog,
+                        actionTestTag = "library_empty_browse_button",
                         modifier = Modifier.padding(bottom = bottomChrome),
                     )
                     stateKey.startsWith("filter_empty_") -> {
@@ -727,15 +754,29 @@ private fun ResumeCinemaBanner(
 ) {
     val shape = MaterialTheme.shapes.large
     val overlays = NovayTheme.overlays
+    val motion = LocalSlateMotion.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && !motion.reduceMotion) 0.985f else 1f,
+        animationSpec = motion.effectFloatSpec(),
+        label = "resume_banner_scale",
+    )
     val supportsBlur = Build.VERSION.SDK_INT >= 31
     Box(
         modifier = modifier
             .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .border(0.5.dp, overlays.glassBorder, shape)
             .semantics(mergeDescendants = true) {}
             .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(),
                 onClickLabel = "Reprendre ${entry.animeTitle} ${entry.episodeLabel}",
                 onClick = onClick,
             )

@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -94,3 +96,38 @@ fun Modifier.selectedBackground(
     selected: Boolean,
     color: Color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
 ): Modifier = if (selected) this.then(Modifier.background(color)) else this
+
+/**
+ * En-tête de section éditorial unifié : barre verticale d'accentuation 3dp,
+ * titre Display et emplacement optionnel d'action/compteur à droite.
+ */
+@Composable
+fun NovaySectionHeader(
+    title: String,
+    modifier: Modifier = Modifier,
+    accentColor: Color = MaterialTheme.colorScheme.primary,
+    textColor: Color = MaterialTheme.colorScheme.onBackground,
+    trailing: (@Composable RowScope.() -> Unit)? = null,
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(end = 8.dp)
+                .size(width = 3.dp, height = 14.dp)
+                .background(accentColor, CircleShape),
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = textColor,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
+        )
+        if (trailing != null) {
+            trailing()
+        }
+    }
+}

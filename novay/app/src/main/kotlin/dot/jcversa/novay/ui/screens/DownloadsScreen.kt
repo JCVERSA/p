@@ -69,13 +69,13 @@ import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayIcons
+import dot.jcversa.novay.ui.components.NovaySectionHeader
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.SlateMotion
 import dot.jcversa.novay.ui.state.DownloadSection
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.semantics.Role
 import dot.jcversa.novay.ui.theme.NovayTheme
-import dot.jcversa.novay.ui.theme.header
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -191,27 +191,21 @@ fun DownloadsScreen(
                                     key = "header_${section.animeTitle}",
                                     contentType = "download_section_header",
                                 ) {
-                                    Row(
+                                    NovaySectionHeader(
+                                        title = section.animeTitle,
+                                        textColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier
                                             .animateItem()
                                             .fillMaxWidth()
                                             .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Text(
-                                            text = section.animeTitle,
-                                            style = MaterialTheme.typography.header,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.weight(1f),
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Pill(
-                                            text = "${section.completedCount}/${section.items.size}",
-                                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                                        )
-                                    }
+                                        trailing = {
+                                            Pill(
+                                                text = "${section.completedCount}/${section.items.size}",
+                                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                                            )
+                                        },
+                                    )
                                 }
                                 items(
                                     section.items,

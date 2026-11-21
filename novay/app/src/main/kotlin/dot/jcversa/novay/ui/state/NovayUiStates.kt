@@ -98,6 +98,7 @@ sealed interface BrowseSearchState {
 
 enum class BrowseSearchDisplay {
     SpotlightIdle,
+    FilteredCatalog,
     FocusedEmptySuggestions,
     TypingSuggestions,
     LoadingResults,

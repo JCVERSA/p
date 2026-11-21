@@ -88,6 +88,37 @@ object NovayIcons {
         }
     }
 
+    /** Chevron bas architectural pour sections repliables. */
+    val ChevronDown: ImageVector by lazy {
+        buildIcon("ChevronDown") {
+            strokePath(width = 2f) {
+                moveTo(5.5f, 9f)
+                lineTo(12f, 15.5f)
+                lineTo(18.5f, 9f)
+            }
+        }
+    }
+
+    /** Sceau d'information circulaire minimal. */
+    val Info: ImageVector by lazy {
+        buildIcon("Info") {
+            strokePath(width = 1.8f) {
+                moveTo(12f, 3.2f)
+                arcTo(8.8f, 8.8f, 0f, true, true, 11.99f, 3.2f)
+                close()
+                moveTo(12f, 11f)
+                lineTo(12f, 16.5f)
+            }
+            fillPath {
+                moveTo(11.1f, 7.2f)
+                lineTo(12.9f, 7.2f)
+                lineTo(12.9f, 9f)
+                lineTo(11.1f, 9f)
+                close()
+            }
+        }
+    }
+
     /** Croix calligraphique nette. */
     val Close: ImageVector by lazy {
         buildIcon("Close") {
@@ -495,6 +526,21 @@ object NovayIcons {
                 moveTo(4f, 6.5f); lineTo(20f, 6.5f)
                 moveTo(4f, 12f); lineTo(14.5f, 12f)
                 moveTo(4f, 17.5f); lineTo(9.5f, 17.5f)
+            }
+        }
+    }
+
+    /** Filtre architectural biseauté pour les critères avancés du catalogue. */
+    val FilterFunnel: ImageVector by lazy {
+        buildIcon("FilterFunnel") {
+            strokePath(width = 1.85f) {
+                moveTo(3.5f, 5.2f)
+                lineTo(20.5f, 5.2f)
+                lineTo(14.2f, 12.6f)
+                lineTo(14.2f, 19.2f)
+                lineTo(9.8f, 17.2f)
+                lineTo(9.8f, 12.6f)
+                close()
             }
         }
     }

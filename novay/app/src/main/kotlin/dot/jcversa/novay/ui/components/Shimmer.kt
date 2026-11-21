@@ -213,14 +213,14 @@ fun ShowScreenSkeleton(modifier: Modifier = Modifier) {
             .widthIn(max = 840.dp)
             .padding(16.dp)
             .semantics { contentDescription = "Chargement de la fiche" },
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.Bottom,
         ) {
             ShimmerBox(
-                modifier = Modifier.size(width = 112.dp, height = 168.dp),
+                modifier = Modifier.size(width = 116.dp, height = 174.dp),
                 shape = MaterialTheme.shapes.medium,
                 progressProvider = shimmerProgress,
             )
@@ -230,17 +230,25 @@ fun ShowScreenSkeleton(modifier: Modifier = Modifier) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 ShimmerBox(
-                    modifier = Modifier.fillMaxWidth(0.85f).height(26.dp),
+                    modifier = Modifier.fillMaxWidth(0.88f).height(28.dp),
                     progressProvider = shimmerProgress,
                 )
                 ShimmerBox(
-                    modifier = Modifier.fillMaxWidth(0.55f).height(16.dp),
+                    modifier = Modifier.fillMaxWidth(0.62f).height(15.dp),
                     progressProvider = shimmerProgress,
                 )
-                ShimmerBox(
-                    modifier = Modifier.width(88.dp).height(22.dp),
-                    progressProvider = shimmerProgress,
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ShimmerBox(
+                        modifier = Modifier.width(46.dp).height(22.dp),
+                        shape = MaterialTheme.shapes.extraLarge,
+                        progressProvider = shimmerProgress,
+                    )
+                    ShimmerBox(
+                        modifier = Modifier.width(64.dp).height(22.dp),
+                        shape = MaterialTheme.shapes.extraLarge,
+                        progressProvider = shimmerProgress,
+                    )
+                }
             }
         }
         Row(
@@ -256,8 +264,38 @@ fun ShowScreenSkeleton(modifier: Modifier = Modifier) {
             )
             ShimmerBox(
                 modifier = Modifier
-                    .width(110.dp)
+                    .width(106.dp)
                     .height(48.dp),
+                shape = MaterialTheme.shapes.extraLarge,
+                progressProvider = shimmerProgress,
+            )
+            ShimmerBox(
+                modifier = Modifier
+                    .size(48.dp),
+                shape = MaterialTheme.shapes.extraLarge,
+                progressProvider = shimmerProgress,
+            )
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            ShimmerBox(
+                modifier = Modifier.fillMaxWidth().height(13.dp),
+                shape = MaterialTheme.shapes.extraSmall,
+                progressProvider = shimmerProgress,
+            )
+            ShimmerBox(
+                modifier = Modifier.fillMaxWidth(0.82f).height(13.dp),
+                shape = MaterialTheme.shapes.extraSmall,
+                progressProvider = shimmerProgress,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ShimmerBox(
+                modifier = Modifier.width(86.dp).height(34.dp),
+                shape = MaterialTheme.shapes.extraLarge,
+                progressProvider = shimmerProgress,
+            )
+            ShimmerBox(
+                modifier = Modifier.width(96.dp).height(34.dp),
                 shape = MaterialTheme.shapes.extraLarge,
                 progressProvider = shimmerProgress,
             )
@@ -266,7 +304,7 @@ fun ShowScreenSkeleton(modifier: Modifier = Modifier) {
             ShimmerBox(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(62.dp),
+                    .height(64.dp),
                 shape = MaterialTheme.shapes.medium,
                 progressProvider = shimmerProgress,
             )

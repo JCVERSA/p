@@ -2,6 +2,8 @@ package dot.jcversa.novay.data.sama
 
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
+import dot.jcversa.novay.data.CatalogPage
+import dot.jcversa.novay.data.GenreCatalog
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
@@ -165,10 +167,11 @@ object SamaParsers {
             // Titre réel : <h3 class="asn-search-result-title"><mark>…</mark></h3>.
             val title = classText(anchor.groupValues[2], "asn-search-result-title")
             if (title.length < 2) continue
-            // Sous-titre réel : <p class="asn-search-result-subtitle">…</p>,
-            // repli sur la méta (<p class="asn-search-meta">Anime · 2002</p>).
-            val subtitle = classText(anchor.groupValues[2], "asn-search-result-subtitle")
-                .ifEmpty { classText(anchor.groupValues[2], "asn-search-meta") }
+            val rawSubtitle = classText(anchor.groupValues[2], "asn-search-result-subtitle")
+            val rawMeta = classText(anchor.groupValues[2], "asn-search-meta")
+            val subtitle = rawSubtitle.ifEmpty { rawMeta }
+            val combinedMeta = listOf(rawMeta, rawSubtitle).filter { it.isNotBlank() }.joinToString(" · ")
+            val extractedMeta = extractCardMetadata(combinedMeta, anchor.groupValues[2])
             // Affiche réelle : <img class="asn-search-result-img" ...>
             // (data-src / data-lazy-src / data-original / src / srcset via extractBestImageUrl).
             val rawPoster = classTagAttr(
@@ -186,8 +189,14 @@ object SamaParsers {
                     title = title,
                     url = url,
                     slug = url.trimEnd('/').substringAfterLast('/', ""),
+                    language = extractedMeta.language,
                     subtitle = subtitle.ifEmpty { null },
-                    posterUrl = posterUrl
+                    isVf = extractedMeta.language.equals("VF", ignoreCase = true),
+                    posterUrl = posterUrl,
+                    genres = extractedMeta.genres,
+                    format = extractedMeta.format,
+                    releaseYear = extractedMeta.releaseYear,
+                    status = extractedMeta.status,
                 )
             )
             if (out.size >= 30) break
@@ -197,9 +206,14 @@ object SamaParsers {
 
     /**
      * Parse les cartes d'animés d'une page catalogue / accueil anime-sama
-     * (`.../catalogue/<slug>/`) pour alimenter le carrousel « À la une » réel.
+     * (`.../catalogue/<slug>/`) pour alimenter le carrousel « À la une » et
+     * la grille complète paginée.
      */
-    fun parseSamaCatalogueCards(html: String, origin: String): List<AnimeSearchResult> {
+    fun parseSamaCatalogueCards(
+        html: String,
+        origin: String,
+        limit: Int = 60,
+    ): List<AnimeSearchResult> {
         if (html.isEmpty()) return emptyList()
         val out = mutableListOf<AnimeSearchResult>()
         val seen = mutableSetOf<String>()
@@ -229,19 +243,131 @@ object SamaParsers {
                     dot.jcversa.novay.data.ImageUrlSanitizer.sanitizePosterUrl(it, origin)
                 }
             val cardGenres = extractGenresFromChunk(body)
+            val bodyWithoutTitle = body.replace(rawTitle, " ")
+            val bodyText = decodeHtmlEntities(stripTags(bodyWithoutTitle))
+            val extractedMeta = extractCardMetadata(bodyText, body)
+            val mergedGenres = if (cardGenres.isNotEmpty()) cardGenres else extractedMeta.genres
+            val subtitle = listOfNotNull(
+                extractedMeta.format,
+                extractedMeta.releaseYear,
+                extractedMeta.status,
+            ).distinct().joinToString(" · ").takeIf { it.isNotBlank() }
 
             out.add(
                 AnimeSearchResult(
                     title = title,
                     url = url,
                     slug = afterCat,
+                    language = extractedMeta.language,
+                    subtitle = subtitle,
+                    isVf = extractedMeta.language.equals("VF", ignoreCase = true),
                     posterUrl = posterUrl,
-                    genres = cardGenres,
+                    genres = mergedGenres,
+                    format = extractedMeta.format,
+                    releaseYear = extractedMeta.releaseYear,
+                    status = extractedMeta.status,
                 )
             )
-            if (out.size >= 48) break
+            if (out.size >= limit) break
         }
         return out
+    }
+
+    /**
+     * Parse une page paginée du catalogue (`/catalogue/?page=N`) et détecte
+     * s'il existe une page suivante réelle dans les contrôles de pagination.
+     */
+    fun parseCatalogPage(
+        html: String,
+        origin: String,
+        page: Int,
+    ): CatalogPage {
+        val items = parseSamaCatalogueCards(html, origin, limit = 60)
+        val hasNext = items.isNotEmpty() && detectHasNextCatalogPage(html, page)
+        return CatalogPage(
+            items = items,
+            page = page,
+            hasNextPage = hasNext,
+        )
+    }
+
+    private fun detectHasNextCatalogPage(html: String, currentPage: Int): Boolean {
+        if (html.isBlank()) return false
+        val nextPage = currentPage + 1
+        val nextPageParamRe = Regex("""[?&]page=$nextPage(?:[&#"'\s]|$)""", RegexOption.IGNORE_CASE)
+        if (nextPageParamRe.containsMatchIn(html)) return true
+        if (Regex("""<link\b[^>]*rel\s*=\s*["']next["']|<a\b[^>]*rel\s*=\s*["']next["']""", RegexOption.IGNORE_CASE).containsMatchIn(html)) {
+            return true
+        }
+        val paginationSection = Regex(
+            """<(?:div|nav|ul)\b[^>]*(?:id|class)\s*=\s*["'][^"']*(?:pagination|list_pagination|page-numbers)[^"']*["'][^>]*>([\s\S]{0,4000}?)</(?:div|nav|ul)>""",
+            RegexOption.IGNORE_CASE,
+        ).find(html)?.groupValues?.get(1) ?: return false
+        if (Regex(""">\s*$nextPage\s*<""").containsMatchIn(paginationSection)) return true
+        val activeNextLink = Regex(
+            """<a\b(?![^>]*disabled)[^>]*>\s*(?:Suivant|Next|»|›)\s*</a>""",
+            RegexOption.IGNORE_CASE,
+        )
+        return activeNextLink.containsMatchIn(paginationSection)
+    }
+
+    private data class CardExtractedMeta(
+        val language: String? = null,
+        val format: String? = null,
+        val releaseYear: String? = null,
+        val status: String? = null,
+        val genres: List<String> = emptyList(),
+    )
+
+    private val CARD_LANG_RE = Regex("\\b(VOSTFR|VF)\\b", RegexOption.IGNORE_CASE)
+    private val CARD_FORMAT_RE = Regex("\\b(Anime|Film|OAV|Scans|Série)\\b", RegexOption.IGNORE_CASE)
+    private val CARD_STATUS_RE = Regex(
+        "\\b(En\\s+cours|Termin[ée]|À\\s+venir|A\\s+venir|En\\s+pause)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun extractCardMetadata(text: String, rawHtml: String): CardExtractedMeta {
+        val cleanText = decodeHtmlEntities(text).trim()
+        val lang = CARD_LANG_RE.find(cleanText)?.groupValues?.get(1)?.uppercase()
+            ?: Regex("""class\s*=\s*["'][^"']*badge[^"']*["'][^>]*>\s*(VOSTFR|VF)\s*<""", RegexOption.IGNORE_CASE)
+                .find(rawHtml)?.groupValues?.get(1)?.uppercase()
+        val formatRaw = FORMAT_LABEL_RE.find(rawHtml)?.groupValues?.get(1)
+            ?.let { decodeHtmlEntities(stripTags(it)).trim() }
+            ?: CARD_FORMAT_RE.find(cleanText)?.groupValues?.get(1)
+        val format = formatRaw?.let { normalizeFormatLabel(it) }
+        val year = YEAR_LABEL_RE.find(rawHtml)?.groupValues?.get(1)
+            ?: YEAR_RE.find(cleanText)?.groupValues?.get(1)
+        val statusRaw = STATUS_LABEL_RE.find(rawHtml)?.groupValues?.get(1)
+            ?.let { decodeHtmlEntities(stripTags(it)).trim() }
+            ?: CARD_STATUS_RE.find(cleanText)?.groupValues?.get(1)
+        val status = statusRaw?.let { normalizeStatusLabel(it) }
+        val knownGenres = cleanText.split(",", "·", "•", "|", " - ", "/")
+            .map { it.trim() }
+            .filter { GenreCatalog.isKnownCanonicalOrAlias(it) }
+            .let { GenreCatalog.normalizeList(it) }
+        return CardExtractedMeta(
+            language = lang,
+            format = format,
+            releaseYear = year,
+            status = status,
+            genres = knownGenres,
+        )
+    }
+
+    private fun normalizeFormatLabel(raw: String): String? = when {
+        raw.equals("anime", ignoreCase = true) || raw.equals("série", ignoreCase = true) -> "Anime"
+        raw.equals("film", ignoreCase = true) -> "Film"
+        raw.equals("oav", ignoreCase = true) -> "OAV"
+        raw.equals("scans", ignoreCase = true) -> "Scans"
+        else -> raw.takeIf { it.length in 2..24 }
+    }
+
+    private fun normalizeStatusLabel(raw: String): String? = when {
+        raw.contains("cours", ignoreCase = true) -> "En cours"
+        raw.contains("termin", ignoreCase = true) -> "Terminé"
+        raw.contains("venir", ignoreCase = true) -> "À venir"
+        raw.contains("pause", ignoreCase = true) -> "En pause"
+        else -> raw.takeIf { it.length in 2..28 }
     }
 
     /**
@@ -299,6 +425,118 @@ object SamaParsers {
             }
         }
         return dot.jcversa.novay.data.GenreCatalog.normalizeList(raw)
+    }
+
+    private val ALT_TITLE_RE = Regex(
+        "<(?:h[1-4]|p|span|div)\\b[^>]*(?:id\\s*=\\s*[\"']titreAlter[\"']|class\\s*=\\s*[\"'][^\"']*titreAlter[^\"']*[\"'])[^>]*>([\\s\\S]*?)</(?:h[1-4]|p|span|div)>",
+        RegexOption.IGNORE_CASE,
+    )
+    private val SYNOPSIS_HEADING_P_RE = Regex(
+        "<h[2-4][^>]*>\\s*Synopsis\\s*</h[2-4]>\\s*(?:<[^>]+>\\s*)*?<p\\b[^>]*>([\\s\\S]*?)</p>",
+        RegexOption.IGNORE_CASE,
+    )
+    private val SYNOPSIS_CLASS_RE = Regex(
+        "<(?:p|div)\\b[^>]*class\\s*=\\s*[\"'][^\"']*(?:synopsis|resume|description-oeuvre)[^\"']*[\"'][^>]*>([\\s\\S]*?)</(?:p|div)>",
+        RegexOption.IGNORE_CASE,
+    )
+    private val RELATED_SECTION_RE = Regex(
+        "<h[2-4][^>]*>\\s*(?:(?:Œuvres?|Oeuvres?|Titres?)\\s*(?:associ[ée]e?s?|similaires?|recommand[ée]e?s?)|Recommandations?|Suggestions?)\\s*</h[2-4]>([\\s\\S]{0,6000}?)(?:<h2\\b|</main>|</footer>|$)",
+        RegexOption.IGNORE_CASE,
+    )
+    private val YEAR_RE = Regex("\\b(19[6-9]\\d|20[0-3]\\d)\\b")
+    private val STATUS_LABEL_RE = Regex(
+        "(?:Statut|Status|État|Etat)\\s*[:\\-]\\s*([^<\\n\\r]{2,40})",
+        RegexOption.IGNORE_CASE,
+    )
+    private val FORMAT_LABEL_RE = Regex(
+        "(?:Format|Type|Cat[ée]gorie)\\s*[:\\-]\\s*([^<\\n\\r]{2,36})",
+        RegexOption.IGNORE_CASE,
+    )
+    private val YEAR_LABEL_RE = Regex(
+        "(?:Ann[ée]e|Sortie|Date)\\s*[:\\-]\\s*[^<\\n\\r]{0,16}?\\b(19[6-9]\\d|20[0-3]\\d)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+    private val META_SHOW_BLOCK_RE = Regex(
+        "<(?:p|div|span)\\b[^>]*class\\s*=\\s*[\"'][^\"']*(?:asn-search-meta|anime-meta|oeuvre-meta|info-oeuvre|badge-info)[^\"']*[\"'][^>]*>([\\s\\S]*?)</(?:p|div|span)>",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * Extrait les métadonnées réelles de la page fiche (`/catalogue/<slug>/`)
+     * anime-sama sans jamais inventer les champs manquants.
+     */
+    fun parseAnimeDetails(
+        html: String,
+        animeUrl: String,
+        origin: String,
+    ): dot.jcversa.novay.data.AnimeDetails {
+        if (html.isBlank()) return dot.jcversa.novay.data.AnimeDetails()
+        val posterUrl = parseAnimePoster(html, origin)
+        val genres = parseAnimeGenres(html)
+
+        val altTitle = ALT_TITLE_RE.find(html)?.groupValues?.get(1)
+            ?.let { decodeHtmlEntities(stripTags(it)).trim() }
+            ?.takeIf {
+                it.length >= 2 &&
+                    !it.equals("nom", ignoreCase = true) &&
+                    !it.equals("...", ignoreCase = true)
+            }
+
+        val rawSynopsis = SYNOPSIS_HEADING_P_RE.find(html)?.groupValues?.get(1)
+            ?: SYNOPSIS_CLASS_RE.find(html)?.groupValues?.get(1)
+        val synopsis = rawSynopsis
+            ?.let { decodeHtmlEntities(stripTags(it)).trim() }
+            ?.takeIf {
+                it.length >= 20 &&
+                    !it.equals("synopsis", ignoreCase = true) &&
+                    !it.contains("aucun synopsis", ignoreCase = true)
+            }
+
+        val status = STATUS_LABEL_RE.find(html)?.groupValues?.get(1)
+            ?.let { decodeHtmlEntities(stripTags(it)).trim() }
+            ?.takeIf { it.length in 2..36 }
+
+        val metaBlockText = META_SHOW_BLOCK_RE.find(html)?.groupValues?.get(1)
+            ?.let { decodeHtmlEntities(stripTags(it)).trim() }
+
+        val format = FORMAT_LABEL_RE.find(html)?.groupValues?.get(1)
+            ?.let { decodeHtmlEntities(stripTags(it)).trim() }
+            ?.takeIf { it.length in 2..32 }
+            ?: metaBlockText?.split("·", "|", "•")
+                ?.map { it.trim() }
+                ?.firstOrNull { token ->
+                    token.equals("Anime", ignoreCase = true) ||
+                        token.equals("Film", ignoreCase = true) ||
+                        token.equals("OAV", ignoreCase = true) ||
+                        token.equals("Série", ignoreCase = true)
+                }
+
+        val releaseYear = YEAR_LABEL_RE.find(html)?.groupValues?.get(1)
+            ?: metaBlockText?.let { YEAR_RE.find(it)?.groupValues?.get(1) }
+
+        val selfKey = animeUrl.trim().trimEnd('/').substringAfter("/catalogue/", "").lowercase()
+        val relatedChunk = RELATED_SECTION_RE.find(html)?.groupValues?.get(1).orEmpty()
+        val related = if (relatedChunk.isNotBlank()) {
+            parseSamaCatalogueCards(relatedChunk, origin)
+                .filter { card ->
+                    val cardKey = card.url.trim().trimEnd('/').substringAfter("/catalogue/", "").lowercase()
+                    cardKey.isNotEmpty() && cardKey != selfKey
+                }
+                .take(12)
+        } else {
+            emptyList()
+        }
+
+        return dot.jcversa.novay.data.AnimeDetails(
+            synopsis = synopsis,
+            genres = genres,
+            status = status,
+            releaseYear = releaseYear,
+            format = format,
+            alternativeTitle = altTitle,
+            posterUrl = posterUrl,
+            related = related,
+        )
     }
 
     // ── Variantes de requête (portage 9.18kkk de animeSources.ts) ─────────

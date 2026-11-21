@@ -446,4 +446,84 @@ class SamaParsersTest {
         val html = """<a href="/catalogue/x/"><img src="/img/x.webp"/></a>"""
         assertTrue(SamaParsers.parseSamaCatalogueCards(html, "https://anime-sama.to").isEmpty())
     }
+
+    @Test
+    fun `parseSamaCatalogueCards et parseSamaSearch extraient les metadonnees reelles si presentes`() {
+        val searchHtml = """
+            <a href="https://anime-sama.to/catalogue/frieren/" class="asn-search-result">
+              <div class="asn-search-result-content">
+                <h3 class="asn-search-result-title">Frieren</h3>
+                <p class="asn-search-meta">Anime · 2023 · VOSTFR</p>
+                <p class="asn-search-result-subtitle">Aventure - Fantastique</p>
+              </div>
+            </a>
+        """.trimIndent()
+        val searchResults = SamaParsers.parseSamaSearch(searchHtml, "https://anime-sama.to")
+        assertEquals(1, searchResults.size)
+        assertEquals("Anime", searchResults[0].format)
+        assertEquals("2023", searchResults[0].releaseYear)
+        assertEquals("VOSTFR", searchResults[0].language)
+        assertEquals(listOf("Aventure", "Fantastique"), searchResults[0].genres)
+
+        val catalogHtml = """
+            <div class="catalog-grid">
+              <a href="/catalogue/solo-leveling/">
+                <img src="/img/solo.webp" />
+                <span class="badge-lang">VF</span>
+                <h3 class="card-title">Solo Leveling</h3>
+                <p class="card-meta">Anime · 2024 · En cours</p>
+                <p class="genre-list">Action, Fantastique</p>
+              </a>
+              <a href="/catalogue/bare-show/">
+                <img src="/img/bare.webp" />
+                <h3 class="card-title">Bare Show</h3>
+              </a>
+            </div>
+        """.trimIndent()
+        val cards = SamaParsers.parseSamaCatalogueCards(catalogHtml, "https://anime-sama.to")
+        assertEquals(2, cards.size)
+        assertEquals("VF", cards[0].language)
+        assertEquals(true, cards[0].isVf)
+        assertEquals("Anime", cards[0].format)
+        assertEquals("2024", cards[0].releaseYear)
+        assertEquals("En cours", cards[0].status)
+        assertEquals(listOf("Action", "Fantastique"), cards[0].genres)
+
+        // Aucun champ inventé quand absent du HTML
+        assertNull(cards[1].language)
+        assertNull(cards[1].format)
+        assertNull(cards[1].releaseYear)
+        assertNull(cards[1].status)
+    }
+
+    @Test
+    fun `parseCatalogPage detecte la pagination reelle`() {
+        val page1Html = """
+            <div>
+              <a href="/catalogue/frieren/"><h3 class="card-title">Frieren</h3></a>
+              <div class="pagination">
+                <a href="/catalogue/?page=1">1</a>
+                <a href="/catalogue/?page=2">2</a>
+                <a href="/catalogue/?page=2">Suivant</a>
+              </div>
+            </div>
+        """.trimIndent()
+        val page1 = SamaParsers.parseCatalogPage(page1Html, "https://anime-sama.to", page = 1)
+        assertEquals(1, page1.items.size)
+        assertEquals(1, page1.page)
+        assertTrue(page1.hasNextPage)
+
+        val lastPageHtml = """
+            <div>
+              <a href="/catalogue/last-show/"><h3 class="card-title">Last Show</h3></a>
+              <div class="pagination">
+                <a href="/catalogue/?page=1">1</a>
+                <span>2</span>
+              </div>
+            </div>
+        """.trimIndent()
+        val lastPage = SamaParsers.parseCatalogPage(lastPageHtml, "https://anime-sama.to", page = 2)
+        assertEquals(1, lastPage.items.size)
+        assertEquals(false, lastPage.hasNextPage)
+    }
 }

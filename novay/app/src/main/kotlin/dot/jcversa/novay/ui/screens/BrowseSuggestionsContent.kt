@@ -324,7 +324,7 @@ private fun QuerySuggestionRow(
     onRemove: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val highlightColor = MaterialTheme.colorScheme.primary
+    val highlightColor = NovayTheme.overlays.crimsonOnContainer
     val annotatedTitle = remember(item.query, item.spans, highlightColor) {
         buildHighlightedText(item.query, item.spans, highlightColor)
     }
@@ -408,7 +408,7 @@ private fun AnimeSuggestionRow(
     modifier: Modifier = Modifier,
 ) {
     val overlays = NovayTheme.overlays
-    val highlightColor = MaterialTheme.colorScheme.primary
+    val highlightColor = overlays.crimsonOnContainer
     val annotatedTitle = remember(item.anime.title, item.spans, highlightColor) {
         buildHighlightedText(item.anime.title, item.spans, highlightColor)
     }
@@ -537,7 +537,7 @@ private fun QuickJumpAnimeChipCard(
             Text(
                 text = item.origin.label,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
+                color = overlays.crimsonOnContainer,
                 maxLines = 1,
             )
         }

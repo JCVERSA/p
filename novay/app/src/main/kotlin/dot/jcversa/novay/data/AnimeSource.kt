@@ -19,7 +19,30 @@ data class AnimeSearchResult(
     val isVf: Boolean = false,
     // Affiche du catalogue (URL absolue, résolue contre l'origine).
     val posterUrl: String? = null,
-    val genres: List<String> = emptyList()
+    val genres: List<String> = emptyList(),
+    val synopsis: String? = null,
+    val format: String? = null,
+    val releaseYear: String? = null,
+    val status: String? = null,
+)
+
+/** Page paginée du catalogue complet d'une source. */
+data class CatalogPage(
+    val items: List<AnimeSearchResult> = emptyList(),
+    val page: Int = 1,
+    val hasNextPage: Boolean = false,
+)
+
+/** Métadonnées détaillées extraites de la fiche d'un anime (champs absents = null/vides). */
+data class AnimeDetails(
+    val synopsis: String? = null,
+    val genres: List<String> = emptyList(),
+    val status: String? = null,
+    val releaseYear: String? = null,
+    val format: String? = null,
+    val alternativeTitle: String? = null,
+    val posterUrl: String? = null,
+    val related: List<AnimeSearchResult> = emptyList(),
 )
 
 /** Une saison/film d'un anime (langue structurelle du sous-chemin). */
@@ -148,6 +171,35 @@ interface AnimeSource {
 
     /** Catalogue filtré par genre (vide si non supporté par la source). */
     suspend fun catalogByGenre(genre: String): List<AnimeSearchResult> = emptyList()
+
+    /**
+     * Page paginée du catalogue complet avec filtres pris en charge par la source.
+     * Repli par défaut sur [featured] (page 1 uniquement, sans pagination).
+     */
+    suspend fun catalogPage(
+        page: Int = 1,
+        genres: Set<String> = emptySet(),
+        language: String? = null,
+        format: String? = null,
+    ): CatalogPage {
+        if (page > 1) return CatalogPage(items = emptyList(), page = page, hasNextPage = false)
+        val items = if (genres.size == 1) {
+            runCatching { catalogByGenre(genres.first()) }.getOrDefault(emptyList())
+        } else {
+            featured()
+        }
+        return CatalogPage(items = items, page = 1, hasNextPage = false)
+    }
+
+    /**
+     * Métadonnées détaillées de la fiche anime (synopsis, statut, année,
+     * œuvres associées) lues depuis les données réelles de la source.
+     */
+    suspend fun details(anime: AnimeSearchResult): AnimeDetails = AnimeDetails(
+        synopsis = anime.synopsis,
+        genres = anime.genres,
+        posterUrl = anime.posterUrl,
+    )
 
     /**
      * Résout l'affiche canonique depuis la fiche de l'animé quand [anime.posterUrl]

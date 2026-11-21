@@ -52,8 +52,8 @@ import dot.jcversa.novay.ui.components.NovayLottieIcon
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayBrandEditorialHeader
 import dot.jcversa.novay.ui.components.NovayIcons
+import dot.jcversa.novay.ui.components.NovaySectionHeader
 import dot.jcversa.novay.ui.theme.NovayThemeState
-import dot.jcversa.novay.ui.theme.header
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -201,11 +201,12 @@ fun MoreScreen(
 
 @Composable
 private fun SectionLabel(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.header,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+    NovaySectionHeader(
+        title = text,
+        textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 8.dp),
     )
 }
 

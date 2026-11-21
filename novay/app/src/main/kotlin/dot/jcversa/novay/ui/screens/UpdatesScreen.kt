@@ -42,6 +42,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -78,7 +79,8 @@ import kotlinx.coroutines.withContext
 fun UpdatesScreen(
     source: AnimeSource,
     onOpenShow: (AnimeSearchResult) -> Unit,
-    onResume: (WatchHistoryEntry) -> Unit
+    onResume: (WatchHistoryEntry) -> Unit,
+    onExploreCatalog: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val bottomChrome = LocalBottomChromePadding.current
@@ -190,6 +192,9 @@ fun UpdatesScreen(
                     lottieRes = R.raw.lottie_notification,
                     headingText = "Aucun animé suivi",
                     subtitleText = "Ajoute des animés en bibliothèque depuis le catalogue pour recevoir ici les nouveaux épisodes.",
+                    actionLabel = if (onExploreCatalog != null) stringResource(R.string.action_explore_catalog) else null,
+                    onAction = onExploreCatalog,
+                    actionTestTag = "updates_empty_browse_button",
                     modifier = Modifier.padding(bottom = bottomChrome),
                 )
                 "up_to_date" -> EmptyScreen(
@@ -199,8 +204,11 @@ fun UpdatesScreen(
                     subtitleText = if (checkError != null) {
                         "Dernière vérification incomplète : $checkError"
                     } else {
-                        "Aucun nouvel épisode détecté. Touche Actualiser en haut à droite pour vérifier."
+                        "Aucun nouvel épisode détecté depuis ta dernière vérification."
                     },
+                    actionLabel = stringResource(R.string.action_refresh),
+                    onAction = { checkAll() },
+                    actionTestTag = "updates_empty_refresh_button",
                     modifier = Modifier.padding(bottom = bottomChrome),
                 )
                 else -> Box(

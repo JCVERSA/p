@@ -59,11 +59,12 @@ import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayIcons
+import dot.jcversa.novay.ui.components.NovaySectionHeader
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.RowListSkeleton
 import dot.jcversa.novay.ui.state.HistoryDayGroup
-import dot.jcversa.novay.ui.theme.header
+import dot.jcversa.novay.ui.theme.NovayTheme
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -164,11 +165,11 @@ fun HistoryScreen(
                                 contentType = "history_day_header",
                             ) {
                                 val headerMod = if (motion.reduceMotion) Modifier else Modifier.animateItem()
-                                Text(
-                                    text = group.dayLabel,
-                                    style = MaterialTheme.typography.header,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                NovaySectionHeader(
+                                    title = group.dayLabel,
+                                    textColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = headerMod
+                                        .fillMaxWidth()
                                         .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp),
                                 )
                             }
@@ -320,7 +321,7 @@ private fun HistoryRow(
                     Text(
                         text = "Reprise à ${formatMillis(entry.positionMs)}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = NovayTheme.overlays.crimsonOnContainer,
                     )
                 }
             }

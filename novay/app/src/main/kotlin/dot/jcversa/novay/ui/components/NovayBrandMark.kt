@@ -63,44 +63,44 @@ fun NovayBrandSeal(
 ) {
     val leftPillar = remember {
         Path().apply {
-            moveTo(34.5f, 33f)
-            lineTo(42.5f, 33f)
-            lineTo(42.5f, 70.5f)
-            lineTo(34.5f, 75f)
+            moveTo(34f, 34f)
+            lineTo(42f, 34f)
+            lineTo(42f, 69.5f)
+            lineTo(34f, 74f)
             close()
         }
     }
     val rightPillar = remember {
         Path().apply {
-            moveTo(65.5f, 37.5f)
-            lineTo(73.5f, 33f)
-            lineTo(73.5f, 75f)
-            lineTo(65.5f, 75f)
+            moveTo(66f, 38.5f)
+            lineTo(74f, 34f)
+            lineTo(74f, 74f)
+            lineTo(66f, 74f)
             close()
         }
     }
     val diagonalRibbon = remember {
         Path().apply {
-            moveTo(44.7f, 33f)
-            lineTo(51.8f, 33f)
-            lineTo(63.3f, 60.2f)
-            lineTo(63.3f, 75f)
-            lineTo(56.2f, 75f)
-            lineTo(44.7f, 47.8f)
+            moveTo(45f, 34f)
+            lineTo(52f, 34f)
+            lineTo(63f, 59.5f)
+            lineTo(63f, 74f)
+            lineTo(56f, 74f)
+            lineTo(45f, 48.5f)
             close()
         }
     }
     val glint = remember {
         Path().apply {
-            moveTo(34.5f, 33f)
-            lineTo(42.5f, 33f)
-            lineTo(42.5f, 34.8f)
-            lineTo(34.5f, 34.8f)
+            moveTo(34f, 34f)
+            lineTo(42f, 34f)
+            lineTo(42f, 35.8f)
+            lineTo(34f, 35.8f)
             close()
-            moveTo(65.5f, 37.5f)
-            lineTo(73.5f, 33f)
-            lineTo(73.5f, 35.1f)
-            lineTo(65.5f, 39.6f)
+            moveTo(66f, 38.5f)
+            lineTo(74f, 34f)
+            lineTo(74f, 36.1f)
+            lineTo(66f, 40.6f)
             close()
         }
     }
@@ -139,14 +139,14 @@ fun NovayBrandSeal(
             val oy = -18f
 
             if (showHankoRing) {
-                val strokeW = 2.6f
+                val strokeW = 2.8f
                 drawArc(
                     color = ringColor,
                     startAngle = -68f,
                     sweepAngle = 104f,
                     useCenter = false,
-                    topLeft = Offset(23.7f + ox, 23.7f + oy),
-                    size = Size(60.6f, 60.6f),
+                    topLeft = Offset(21.6f + ox, 21.6f + oy),
+                    size = Size(64.8f, 64.8f),
                     style = Stroke(width = strokeW, cap = StrokeCap.Butt),
                 )
                 drawArc(
@@ -154,8 +154,8 @@ fun NovayBrandSeal(
                     startAngle = 112f,
                     sweepAngle = 104f,
                     useCenter = false,
-                    topLeft = Offset(23.7f + ox, 23.7f + oy),
-                    size = Size(60.6f, 60.6f),
+                    topLeft = Offset(21.6f + ox, 21.6f + oy),
+                    size = Size(64.8f, 64.8f),
                     style = Stroke(width = strokeW, cap = StrokeCap.Butt),
                 )
             }
@@ -239,7 +239,7 @@ fun NovayBrandEditorialHeader(
                         text = "NoVaY",
                         style = MaterialTheme.typography.headlineMedium.copy(
                             fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.6.sp,
+                            letterSpacing = 0.4.sp,
                         ),
                         color = MaterialTheme.colorScheme.onBackground,
                     )
@@ -252,18 +252,27 @@ fun NovayBrandEditorialHeader(
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.SemiBold,
                             ),
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            color = overlays.crimsonOnContainer,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ) {
+                        Text(
+                            text = androidx.compose.ui.res.stringResource(dot.jcversa.novay.R.string.brand_version),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
                         )
                     }
                 }
                 Spacer(Modifier.height(1.dp))
                 Text(
-                    text = "CINEMA MIDNIGHT NOIR",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        letterSpacing = 1.6.sp,
-                    ),
-                    color = primary,
+                    text = androidx.compose.ui.res.stringResource(dot.jcversa.novay.R.string.brand_tagline),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

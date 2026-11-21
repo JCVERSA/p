@@ -3,6 +3,7 @@ package dot.jcversa.novay.ui.screens
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -47,6 +48,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -194,6 +196,8 @@ fun EpisodesPane(
     val scope = rememberCoroutineScope()
 
     var positions by remember(season.url) { mutableStateOf<Map<Int, Long>>(emptyMap()) }
+    var durations by remember(season.url) { mutableStateOf<Map<Int, Long>>(emptyMap()) }
+    var activeResumeEpisode by remember(season.url) { mutableStateOf<Int?>(null) }
     var selectionMode by remember(season.url) { mutableStateOf(false) }
     val selected = remember(season.url) { mutableStateListOf<Int>() }
     var dialog by remember { mutableStateOf<QualityDialogState?>(null) }
@@ -227,11 +231,13 @@ fun EpisodesPane(
     }
 
     LaunchedEffect(season.url) {
-        positions = withContext(Dispatchers.IO) {
+        val seasonEntries = withContext(Dispatchers.IO) {
             WatchHistory.recent(context)
                 .filter { it.seasonUrl.trimEnd('/') == season.url.trimEnd('/') }
-                .associate { it.episodeNumber to it.positionMs }
         }
+        positions = seasonEntries.associate { it.episodeNumber to it.positionMs }
+        durations = seasonEntries.associate { it.episodeNumber to it.durationMs }
+        activeResumeEpisode = seasonEntries.firstOrNull()?.episodeNumber
     }
 
     LaunchedEffect(toast) {
@@ -247,6 +253,11 @@ fun EpisodesPane(
 
     val motion = LocalSlateMotion.current
     val overlays = NovayTheme.overlays
+
+    BackHandler(enabled = selectionMode) {
+        selectionMode = false
+        selected.clear()
+    }
     val seasonUrl = season.url.trimEnd('/')
     val seasonInfos = remember(infos, seasonUrl) {
         infos.filter { it.meta?.seasonUrl?.trimEnd('/') == seasonUrl }
@@ -386,27 +397,55 @@ fun EpisodesPane(
             )
         }
 
-        toast?.let {
+        toast?.let { message ->
             Surface(
-                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                shape = MaterialTheme.shapes.small,
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                shape = MaterialTheme.shapes.medium,
             ) {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp, top = 4.dp, end = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = NovayIcons.ErrorSeal,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(
+                        onClick = { toast = null },
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("episodes_toast_dismiss"),
+                    ) {
+                        Icon(
+                            imageVector = NovayIcons.Close,
+                            contentDescription = stringResource(R.string.action_dismiss),
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
             }
         }
         if (resolvingBatch) {
             Text(
                 text = "Analyse des lecteurs disponibles…",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
+                color = overlays.crimsonOnContainer,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
@@ -414,7 +453,7 @@ fun EpisodesPane(
             Text(
                 text = "Mise en file $it",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
+                color = overlays.crimsonOnContainer,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
@@ -489,6 +528,8 @@ fun EpisodesPane(
                                 dlState = state,
                                 dlPercent = info?.percent ?: 0f,
                                 resumeMs = positions[episode.number] ?: 0L,
+                                durationMs = durations[episode.number] ?: 0L,
+                                isActiveResume = activeResumeEpisode == episode.number,
                                 selectionMode = selectionMode,
                                 isSelected = selected.contains(episode.number),
                                 onDownload = { download(episode) },
@@ -650,6 +691,8 @@ private fun EpisodeRow(
     dlState: EpDl,
     dlPercent: Float,
     resumeMs: Long,
+    durationMs: Long,
+    isActiveResume: Boolean,
     selectionMode: Boolean,
     isSelected: Boolean,
     onDownload: () -> Unit,
@@ -659,22 +702,34 @@ private fun EpisodeRow(
 ) {
     val shape = MaterialTheme.shapes.medium
     val motion = LocalSlateMotion.current
+    val overlays = NovayTheme.overlays
     val interactionSource = remember { MutableInteractionSource() }
     val hovered by interactionSource.collectIsHoveredAsState()
     val containerColor by animateColorAsState(
         targetValue = when {
             isSelected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+            isActiveResume -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.56f)
             hovered -> MaterialTheme.colorScheme.surfaceContainer
             else -> MaterialTheme.colorScheme.surfaceContainerLow
         },
         animationSpec = motion.colorSpec(180),
         label = "episode_row_bg",
     )
+    val rowBorder = when {
+        isSelected -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+        isActiveResume -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.65f))
+        else -> null
+    }
+    val resumeProgress = if (resumeMs > 0L && durationMs > 0L) {
+        (resumeMs.toFloat() / durationMs.toFloat()).coerceIn(0.02f, 1f)
+    } else {
+        null
+    }
 
     Surface(
         shape = shape,
         color = containerColor,
-        border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+        border = rowBorder,
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -688,61 +743,114 @@ private fun EpisodeRow(
             )
             .minimumInteractiveComponentSize(),
     ) {
-        Row(
-            modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 6.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (selectionMode) {
-                NovayLottieIcon(
-                    res = R.raw.lottie_checkbox,
-                    contentDescription = if (isSelected) "Sélectionné" else "Non sélectionné",
-                    tint = if (isSelected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    size = 22.dp,
-                    restartKey = isSelected,
-                    modifier = Modifier.padding(end = 10.dp),
-                )
-            }
-            Surface(
-                shape = MaterialTheme.shapes.extraSmall,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        Column {
+            Row(
+                modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 6.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "EP ${episode.number.toString().padStart(2, '0')}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = episode.label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (resumeMs > 0L) {
-                    Text(
-                        text = "Reprise à ${formatPosition(resumeMs)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
+                if (selectionMode) {
+                    NovayLottieIcon(
+                        res = R.raw.lottie_checkbox,
+                        contentDescription = if (isSelected) "Sélectionné" else "Non sélectionné",
+                        tint = if (isSelected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        size = 22.dp,
+                        restartKey = isSelected,
+                        modifier = Modifier.padding(end = 10.dp),
                     )
                 }
+                Surface(
+                    shape = MaterialTheme.shapes.extraSmall,
+                    color = if (isActiveResume) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                ) {
+                    Text(
+                        text = "EP ${episode.number.toString().padStart(2, '0')}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isActiveResume) {
+                            overlays.crimsonOnContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = episode.label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (isActiveResume) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                                modifier = Modifier.testTag("episode_active_resume_badge"),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = NovayIcons.Play,
+                                        contentDescription = null,
+                                        tint = overlays.crimsonOnContainer,
+                                        modifier = Modifier.size(10.dp),
+                                    )
+                                    Text(
+                                        text = stringResource(R.string.episode_active_badge),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = overlays.crimsonOnContainer,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (resumeMs > 0L) {
+                        Text(
+                            text = "Reprise à ${formatPosition(resumeMs)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = overlays.crimsonOnContainer,
+                            maxLines = 1,
+                        )
+                    }
+                }
+                EpisodeDownloadIndicator(
+                    state = dlState,
+                    percent = dlPercent,
+                    onDownload = onDownload,
+                )
             }
-            EpisodeDownloadIndicator(
-                state = dlState,
-                percent = dlPercent,
-                onDownload = onDownload,
-            )
+            if (resumeProgress != null) {
+                LinearProgressIndicator(
+                    progress = { resumeProgress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                )
+            }
         }
     }
 }

@@ -74,6 +74,11 @@ fun ContinueReadingButton(
             onClick = onClick,
             modifier = Modifier
                 .size(size)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.background.copy(alpha = 0.8f),
+                    shape = CircleShape,
+                )
                 .testTag("continue_reading_button"),
             shape = CircleShape,
             colors = IconButtonDefaults.filledIconButtonColors(
@@ -102,6 +107,9 @@ fun AnimeComfortableGridItem(
     isSelected: Boolean = false,
     newEpisodes: Int = 0,
     downloadedCount: Int = 0,
+    languageBadge: String? = null,
+    metaBadge: String? = null,
+    inLibrary: Boolean = false,
     onClickContinue: (() -> Unit)? = null,
 ) {
     val shape = MaterialTheme.shapes.small
@@ -173,8 +181,29 @@ fun AnimeComfortableGridItem(
             AnimeCoverBadges(
                 newEpisodes = newEpisodes,
                 downloadedCount = downloadedCount,
+                languageBadge = languageBadge,
+                inLibrary = inLibrary,
                 modifier = Modifier.align(Alignment.TopStart),
             )
+            if (metaBadge != null && onClickContinue == null) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.background.copy(alpha = 0.84f),
+                    border = BorderStroke(0.5.dp, NovayTheme.overlays.glassBorder),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp),
+                ) {
+                    Text(
+                        text = metaBadge,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                    )
+                }
+            }
             if (onClickContinue != null) {
                 ContinueReadingButton(
                     size = 32.dp,
@@ -277,11 +306,11 @@ fun AnimeCompactGridItem(
                 .background(
                     Brush.verticalGradient(
                         0f to Color.Transparent,
-                        0.45f to MaterialTheme.colorScheme.background.copy(alpha = 0.48f),
-                        1f to MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
+                        0.40f to MaterialTheme.colorScheme.background.copy(alpha = 0.56f),
+                        1f to MaterialTheme.colorScheme.background.copy(alpha = 0.96f),
                     ),
                 )
-                .fillMaxHeight(0.55f)
+                .fillMaxHeight(0.60f)
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter),
         )
@@ -294,7 +323,7 @@ fun AnimeCompactGridItem(
             text = title,
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 8.dp, end = if (onClickContinue != null) 46.dp else 8.dp, bottom = 8.dp),
+                .padding(start = 8.dp, end = if (onClickContinue != null) 50.dp else 8.dp, bottom = 8.dp),
             style = MaterialTheme.typography.titleSmall.copy(
                 color = MaterialTheme.colorScheme.onBackground,
                 shadow = Shadow(color = Color.Black, blurRadius = 6f),
@@ -308,7 +337,9 @@ fun AnimeCompactGridItem(
                 size = 30.dp,
                 iconSize = 17.dp,
                 onClick = onClickContinue,
-                modifier = Modifier.align(Alignment.BottomEnd),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(2.dp),
             )
         }
     }
@@ -442,12 +473,38 @@ fun AnimeListItem(
 private fun BoxScope.AnimeCoverBadges(
     newEpisodes: Int,
     downloadedCount: Int,
+    languageBadge: String? = null,
+    inLibrary: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    if (newEpisodes <= 0 && downloadedCount <= 0) return
+    val cleanLang = languageBadge?.trim()?.takeIf { it.isNotEmpty() }
+    if (newEpisodes <= 0 && downloadedCount <= 0 && cleanLang == null && !inLibrary) return
     BadgeGroup(
         modifier = modifier.padding(6.dp),
     ) {
+        if (cleanLang != null) {
+            val isVf = cleanLang.equals("VF", ignoreCase = true)
+            NovayBadge(
+                text = cleanLang.uppercase(),
+                color = if (isVf) {
+                    MaterialTheme.colorScheme.secondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.background.copy(alpha = 0.86f)
+                },
+                textColor = if (isVf) {
+                    NovayTheme.overlays.crimsonOnContainer
+                } else {
+                    MaterialTheme.colorScheme.onBackground
+                },
+            )
+        }
+        if (inLibrary) {
+            NovayBadge(
+                text = "Suivi",
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.90f),
+                textColor = MaterialTheme.colorScheme.onPrimary,
+            )
+        }
         if (downloadedCount > 0) {
             NovayBadge(
                 text = "$downloadedCount",
