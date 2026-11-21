@@ -6,9 +6,11 @@ on:
       - "novay/**"
       - ".github/workflows/novay.yml"
   workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -235,6 +237,20 @@ jobs:
           pct() { awk -v a="$1" -v b="$2" 'BEGIN {printf "%.0f", (a-b)*100/a}'; }
           au=$(mo novay-universal-release.apk); zu=$(mo novay-universal-release.7z)
           echo "::notice::universel (tous telephones Android 7+) : APK ${au} Mo | 7z ${zu} Mo (-$(pct "$au" "$zu") %)"
+
+      # Publication automatique dans la GitHub Release qui a declenche ce build.
+      # Le checkout est fait sur le tag de la release ; les fichiers ne sont joints
+      # que si le build et les verifications precedentes ont reussi.
+      - name: Publier APK et archive dans la Release
+        if: github.event_name == 'release' && success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" \\
+            "dist/novay-universal-release.apk" \\
+            "dist/novay-universal-release.7z" \\
+            --clobber
 
       - name: Upload APK universel
         if: success()
