@@ -209,7 +209,7 @@ fun ScanReaderScreen(
                             contentScale = ContentScale.FillWidth,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .testTag("scan_page_$page"),
+                                .testTag("scan_page_${index + 1}"),
                         )
                     }
                 }
