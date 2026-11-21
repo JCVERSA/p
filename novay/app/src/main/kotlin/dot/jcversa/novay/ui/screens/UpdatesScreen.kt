@@ -56,10 +56,13 @@ import dot.jcversa.novay.ui.LocalBottomChromePadding
 import dot.jcversa.novay.ui.components.AppBarAction
 import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.EmptyScreen
+import dot.jcversa.novay.ui.components.LocalNovayToast
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayBadge
 import dot.jcversa.novay.ui.components.NovayIcons
+import dot.jcversa.novay.ui.components.NovayToastTone
+import dot.jcversa.novay.ui.components.PartialLoadingBanner
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.RowListSkeleton
@@ -83,6 +86,7 @@ fun UpdatesScreen(
     onExploreCatalog: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val toast = LocalNovayToast.current
     val bottomChrome = LocalBottomChromePadding.current
     var entries by remember { mutableStateOf<List<LibraryEntry>?>(null) }
     var checking by remember { mutableStateOf(false) }
@@ -104,6 +108,7 @@ fun UpdatesScreen(
         }
         checking = true
         scope.launch {
+            var errorOccurred: String? = null
             try {
                 for (entry in favorites) {
                     val counts = mutableMapOf<String, Int>()
@@ -119,10 +124,26 @@ fun UpdatesScreen(
                     Library.recordCounts(context, entry.url, counts)
                 }
             } catch (e: Exception) {
-                checkError = e.message ?: "Vérification impossible"
+                errorOccurred = e.message ?: "Vérification impossible"
+                checkError = errorOccurred
             } finally {
                 checking = false
                 refreshKey++
+                if (errorOccurred != null) {
+                    toast.show("Vérification incomplète", NovayToastTone.ERROR)
+                } else {
+                    val found = withContext(Dispatchers.IO) {
+                        Library.all(context).sumOf { it.newEpisodes }
+                    }
+                    if (found > 0) {
+                        toast.show(
+                            "$found nouveau${if (found > 1) "x" else ""} épisode${if (found > 1) "s" else ""}",
+                            NovayToastTone.SUCCESS,
+                        )
+                    } else {
+                        toast.show("Tout est à jour", NovayToastTone.INFO)
+                    }
+                }
             }
         }
     }
@@ -168,6 +189,12 @@ fun UpdatesScreen(
                     )
                 }
             },
+        )
+
+        PartialLoadingBanner(
+            visible = checking && entries != null,
+            message = "Vérification des nouveautés…",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
         )
 
         val viewKey = when {

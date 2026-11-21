@@ -2,23 +2,28 @@ package dot.jcversa.novay.ui.screens
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -56,10 +61,12 @@ import dot.jcversa.novay.ui.LocalBottomChromePadding
 import dot.jcversa.novay.ui.components.AppBarAction
 import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.EmptyScreen
+import dot.jcversa.novay.ui.components.LocalNovayToast
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.NovaySectionHeader
+import dot.jcversa.novay.ui.components.NovayToastTone
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.RowListSkeleton
@@ -81,6 +88,7 @@ fun HistoryScreen(
     onResume: (WatchHistoryEntry) -> Unit
 ) {
     val context = LocalContext.current
+    val toast = LocalNovayToast.current
     val bottomChrome = LocalBottomChromePadding.current
     var entries by remember { mutableStateOf<List<WatchHistoryEntry>?>(null) }
     var refreshKey by remember { mutableIntStateOf(0) }
@@ -160,6 +168,7 @@ fun HistoryScreen(
                         contentPadding = PaddingValues(bottom = 24.dp + bottomChrome),
                     ) {
                         groups.forEach { group ->
+                            val isToday = group.dayLabel == "Aujourd'hui"
                             item(
                                 key = "header_${group.dayLabel}",
                                 contentType = "history_day_header",
@@ -167,21 +176,34 @@ fun HistoryScreen(
                                 val headerMod = if (motion.reduceMotion) Modifier else Modifier.animateItem()
                                 NovaySectionHeader(
                                     title = group.dayLabel,
-                                    textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textColor = if (isToday) {
+                                        NovayTheme.overlays.crimsonOnContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    trailing = {
+                                        Pill(
+                                            text = "${group.entries.size} vu${if (group.entries.size > 1) "s" else ""}",
+                                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    },
                                     modifier = headerMod
                                         .fillMaxWidth()
                                         .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp),
                                 )
                             }
-                            items(
+                            itemsIndexed(
                                 group.entries,
-                                key = { "${it.seasonUrl}#${it.episodeNumber}" },
-                                contentType = { "history_row" },
-                            ) { entry ->
+                                key = { _, it -> "${it.seasonUrl}#${it.episodeNumber}" },
+                                contentType = { _, _ -> "history_row" },
+                            ) { index, entry ->
                                 val itemMod = if (motion.reduceMotion) Modifier else Modifier.animateItem()
-                                HistoryRow(
-                                    modifier = itemMod,
+                                HistoryTimelineItem(
                                     entry = entry,
+                                    isToday = isToday,
+                                    isFirst = index == 0,
+                                    isLast = index == group.entries.lastIndex,
                                     onResume = { onResume(entry) },
                                     onRemove = {
                                         WatchHistory.remove(
@@ -190,7 +212,9 @@ fun HistoryScreen(
                                             entry.episodeNumber
                                         )
                                         refreshKey++
+                                        toast.show("Épisode retiré de l'historique", NovayToastTone.INFO)
                                     },
+                                    modifier = itemMod,
                                 )
                             }
                         }
@@ -223,6 +247,7 @@ fun HistoryScreen(
                         WatchHistory.clear(context)
                         confirmClear = false
                         refreshKey++
+                        toast.show("Historique effacé", NovayToastTone.INFO)
                     },
                     colors = ButtonDefaults.textButtonColors(
                         contentColor = MaterialTheme.colorScheme.error,
@@ -236,6 +261,75 @@ fun HistoryScreen(
                     modifier = Modifier.minimumInteractiveComponentSize(),
                 ) { Text("Annuler") }
             },
+        )
+    }
+}
+
+@Composable
+private fun HistoryTimelineItem(
+    entry: WatchHistoryEntry,
+    isToday: Boolean,
+    isFirst: Boolean,
+    isLast: Boolean,
+    onResume: () -> Unit,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val inProgress = entry.durationMs > 0 && entry.positionMs > 0
+    val railColor = MaterialTheme.colorScheme.outlineVariant
+    val dotColor = if (isToday || inProgress) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.outline
+    }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(18.dp)
+                .fillMaxHeight(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                modifier = Modifier.fillMaxHeight(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(1.5.dp)
+                        .weight(1f)
+                        .background(
+                            if (isFirst) androidx.compose.ui.graphics.Color.Transparent else railColor
+                        ),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(if (inProgress) 9.dp else 7.dp)
+                        .clip(CircleShape)
+                        .background(dotColor),
+                )
+                Box(
+                    modifier = Modifier
+                        .width(1.5.dp)
+                        .weight(1f)
+                        .background(
+                            if (isLast) androidx.compose.ui.graphics.Color.Transparent else railColor
+                        ),
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        HistoryRow(
+            entry = entry,
+            onResume = onResume,
+            onRemove = onRemove,
+            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -262,7 +356,6 @@ private fun HistoryRow(
         color = containerColor,
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
             .clip(shape)
             .clickable(
                 interactionSource = interactionSource,

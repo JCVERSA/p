@@ -1,6 +1,7 @@
 package dot.jcversa.novay.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.ReportDrawn
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -106,15 +107,20 @@ import dot.jcversa.novay.ui.components.PosterRecoveryCoordinator
 import dot.jcversa.novay.ui.components.PosterResolver
 import dot.jcversa.novay.ui.components.LocalAnimatedVisibilityScope
 import dot.jcversa.novay.ui.components.LocalNovayHazeState
+import dot.jcversa.novay.ui.components.LocalNovayToast
 import dot.jcversa.novay.ui.components.LocalSharedTransitionScope
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayBrandSeal
 import dot.jcversa.novay.ui.components.NovayTabMorphIcon
+import dot.jcversa.novay.performance.PerformanceProfileProvider
+import dot.jcversa.novay.ui.components.NovayToastHost
 import dot.jcversa.novay.ui.components.PredictiveBackContainer
+import dot.jcversa.novay.ui.components.SharedShimmerScope
 import dot.jcversa.novay.ui.components.SlateMotion
 import dot.jcversa.novay.ui.components.SlateMotionProvider
 import dot.jcversa.novay.ui.components.novayCinemaGlass
 import dot.jcversa.novay.ui.components.novayHazeSource
+import dot.jcversa.novay.ui.components.rememberNovayToastController
 import dot.jcversa.novay.ui.player.FloatingMiniPlayer
 import dot.jcversa.novay.ui.player.FullscreenPlayerOverlay
 import dot.jcversa.novay.ui.player.PlayerOrientationController
@@ -378,13 +384,17 @@ fun NoVaYApp() {
     val stateHolder = rememberSaveableStateHolder()
     val shellHazeState = rememberHazeState()
 
-    SlateMotionProvider {
-        val motion = LocalSlateMotion.current
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background,
-        ) {
-            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    ReportDrawn()
+
+    PerformanceProfileProvider {
+        SlateMotionProvider {
+            SharedShimmerScope {
+                val motion = LocalSlateMotion.current
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val useRail = maxWidth >= 600.dp
                 val showAppChrome = appState.showChrome && !isFullscreen
                 val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -399,11 +409,13 @@ fun NoVaYApp() {
                         PosterRecoveryCoordinator.resolveAndPersist(context, source, target)
                     }
                 }
+                val toastController = rememberNovayToastController()
 
                 CompositionLocalProvider(
                     LocalNovayHazeState provides shellHazeState,
                     LocalBottomChromePadding provides bottomChromePadding,
                     LocalPosterResolver provides posterResolver,
+                    LocalNovayToast provides toastController,
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Row(modifier = Modifier.fillMaxSize()) {
@@ -553,6 +565,11 @@ fun NoVaYApp() {
                                                                         )
                                                                     )
                                                                 },
+                                                                onResume = { entry ->
+                                                                    scanReaderDestination(entry)?.let { appState.open(it) }
+                                                                        ?: appState.open(playerDestination(entry))
+                                                                },
+                                                                onOpenDownloads = { appState.open(Destination.Downloads) },
                                                                 showBrandSeal = !useRail,
                                                             )
                                                             Destination.More -> MoreScreen(
@@ -562,7 +579,7 @@ fun NoVaYApp() {
                                                                 canBack = canBack,
                                                                 onBack = appState::back,
                                                                 onPlay = { season, episode, stream ->
-                                                                    // V3.0 : un chapitre de scans téléchargé ouvre le
+                                                                    // V3.1 : un chapitre de scans téléchargé ouvre le
                                                                     // lecteur manga, pas le lecteur vidéo.
                                                                     if (isScanSeason(season)) {
                                                                         val scanAnimeUrl = ImageUrlSanitizer.extractAnimeUrlFromSeasonUrl(season.url)
@@ -770,8 +787,20 @@ fun NoVaYApp() {
                                 videoSurfaceSlot = singleVideoSurface,
                             )
                         }
+
+                        NovayToastHost(
+                            controller = toastController,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(
+                                    start = if (showAppChrome && useRail) 88.dp else 0.dp,
+                                    bottom = bottomChromePadding + 12.dp,
+                                ),
+                        )
                     }
                 }
+            }
+        }
             }
         }
     }

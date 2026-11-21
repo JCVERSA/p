@@ -44,6 +44,16 @@ data class LibraryEntry(
 }
 
 /**
+ * Collection personnalisée d'animés dans la bibliothèque.
+ */
+data class LibraryCollection(
+    val id: String,
+    val name: String,
+    val animeUrls: List<String> = emptyList(),
+    val createdAt: Long = 0L,
+)
+
+/**
  * Bibliothèque NoVaY : PURES pour l'encode/décode/la fusion (testées
  * JVM), persistance SharedPreferences — même convention que
  * [WatchHistory].
@@ -52,6 +62,7 @@ object Library {
 
     private const val PREFS = "novay_library"
     private const val KEY = "entries"
+    private const val KEY_COLLECTIONS = "collections"
 
     /** Fusionne [entry] : l'anime passe en tête, l'ancien état (compteurs)
      *  est conservé, la liste reste bornée. */
@@ -164,6 +175,116 @@ object Library {
         }
     }
 
+    // ── Collections pures ─────────────────────────────────────────────────
+
+    fun defaultCollections(): List<LibraryCollection> = listOf(
+        LibraryCollection(id = "coups_de_coeur", name = "Coups de cœur"),
+        LibraryCollection(id = "a_voir", name = "À regarder"),
+    )
+
+    fun upsertCollection(
+        collections: List<LibraryCollection>,
+        collection: LibraryCollection,
+    ): List<LibraryCollection> {
+        val cleanName = collection.name.trim()
+        if (cleanName.isEmpty()) return collections
+        val normalizedUrls = collection.animeUrls.map { it.trimEnd('/') }.distinct()
+        val updated = collection.copy(name = cleanName, animeUrls = normalizedUrls)
+        val index = collections.indexOfFirst { it.id == updated.id }
+        return if (index >= 0) {
+            collections.toMutableList().apply { set(index, updated) }
+        } else {
+            collections + updated
+        }
+    }
+
+    fun deleteCollection(
+        collections: List<LibraryCollection>,
+        collectionId: String,
+    ): List<LibraryCollection> = collections.filterNot { it.id == collectionId }
+
+    fun toggleAnimeInCollection(
+        collections: List<LibraryCollection>,
+        collectionId: String,
+        animeUrl: String,
+    ): List<LibraryCollection> {
+        val normalized = animeUrl.trimEnd('/')
+        if (normalized.isEmpty()) return collections
+        return collections.map { col ->
+            if (col.id != collectionId) {
+                col
+            } else {
+                val existing = col.animeUrls.map { it.trimEnd('/') }
+                val nextUrls = if (normalized in existing) {
+                    existing.filterNot { it == normalized }
+                } else {
+                    (existing + normalized).distinct()
+                }
+                col.copy(animeUrls = nextUrls)
+            }
+        }
+    }
+
+    fun addAnimesToCollection(
+        collections: List<LibraryCollection>,
+        collectionId: String,
+        animeUrls: List<String>,
+    ): List<LibraryCollection> {
+        val normalizedTargets = animeUrls.map { it.trimEnd('/') }.filter { it.isNotEmpty() }
+        if (normalizedTargets.isEmpty()) return collections
+        return collections.map { col ->
+            if (col.id != collectionId) {
+                col
+            } else {
+                val merged = (col.animeUrls.map { it.trimEnd('/') } + normalizedTargets).distinct()
+                col.copy(animeUrls = merged)
+            }
+        }
+    }
+
+    fun encodeCollections(collections: List<LibraryCollection>): String {
+        val arr = JSONArray()
+        for (c in collections) {
+            arr.put(
+                JSONObject()
+                    .put("id", c.id)
+                    .put("name", c.name)
+                    .put("animeUrls", JSONArray(c.animeUrls))
+                    .put("createdAt", c.createdAt)
+            )
+        }
+        return arr.toString()
+    }
+
+    fun decodeCollections(raw: String?): List<LibraryCollection> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id").trim()
+                val name = o.optString("name").trim()
+                if (id.isEmpty() || name.isEmpty()) return@mapNotNull null
+                val urlsArr = o.optJSONArray("animeUrls")
+                val urls = if (urlsArr == null) {
+                    emptyList()
+                } else {
+                    (0 until urlsArr.length()).mapNotNull { idx ->
+                        (urlsArr.opt(idx) as? String)?.trimEnd('/')?.takeIf { it.isNotEmpty() }
+                    }.distinct()
+                }
+                LibraryCollection(
+                    id = id,
+                    name = name,
+                    animeUrls = urls,
+                    createdAt = o.optLong("createdAt"),
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     private const val MAX = 100
 
     private fun countsJson(counts: Map<String, Int>): JSONObject {
@@ -182,6 +303,7 @@ object Library {
     // ── Persistance (SharedPreferences + cache mémoire) ───────────────────
 
     @Volatile private var cachedEntries: List<LibraryEntry>? = null
+    @Volatile private var cachedCollections: List<LibraryCollection>? = null
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -200,6 +322,78 @@ object Library {
             if (cachedEntries == entries) return
             cachedEntries = entries
             prefs(context).edit().putString(KEY, encode(entries)).apply()
+        }
+    }
+
+    fun collections(context: Context): List<LibraryCollection> {
+        cachedCollections?.let { return it }
+        return synchronized(this) {
+            cachedCollections ?: run {
+                val p = prefs(context)
+                val loaded = if (!p.contains(KEY_COLLECTIONS)) {
+                    defaultCollections().also {
+                        p.edit().putString(KEY_COLLECTIONS, encodeCollections(it)).apply()
+                    }
+                } else {
+                    decodeCollections(p.getString(KEY_COLLECTIONS, null))
+                }
+                cachedCollections = loaded
+                loaded
+            }
+        }
+    }
+
+    fun saveCollections(context: Context, collections: List<LibraryCollection>) {
+        synchronized(this) {
+            cachedCollections = collections
+            prefs(context).edit().putString(KEY_COLLECTIONS, encodeCollections(collections)).apply()
+        }
+    }
+
+    fun createCollection(context: Context, name: String): LibraryCollection? {
+        val clean = name.trim()
+        if (clean.isEmpty()) return null
+        return synchronized(this) {
+            val current = collections(context)
+            val baseSlug = clean.lowercase()
+                .replace(Regex("[^a-z0-9]+"), "_")
+                .trim('_')
+                .ifEmpty { "collection" }
+            val uniqueId = if (current.none { it.id == baseSlug }) {
+                baseSlug
+            } else {
+                "${baseSlug}_${System.currentTimeMillis()}"
+            }
+            val created = LibraryCollection(
+                id = uniqueId,
+                name = clean,
+                createdAt = System.currentTimeMillis(),
+            )
+            saveCollections(context, upsertCollection(current, created))
+            created
+        }
+    }
+
+    fun removeCollection(context: Context, collectionId: String) {
+        synchronized(this) {
+            val next = deleteCollection(collections(context), collectionId)
+            saveCollections(context, next)
+        }
+    }
+
+    fun toggleInCollection(context: Context, collectionId: String, animeUrl: String): Boolean {
+        val normalized = animeUrl.trimEnd('/')
+        return synchronized(this) {
+            val next = toggleAnimeInCollection(collections(context), collectionId, normalized)
+            saveCollections(context, next)
+            next.firstOrNull { it.id == collectionId }?.animeUrls?.contains(normalized) == true
+        }
+    }
+
+    fun addManyToCollection(context: Context, collectionId: String, animeUrls: List<String>) {
+        synchronized(this) {
+            val next = addAnimesToCollection(collections(context), collectionId, animeUrls)
+            saveCollections(context, next)
         }
     }
 

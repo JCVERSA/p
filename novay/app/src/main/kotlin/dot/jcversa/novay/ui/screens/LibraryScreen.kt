@@ -3,11 +3,13 @@ package dot.jcversa.novay.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,11 +32,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,9 +47,12 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -81,6 +89,7 @@ import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.GenreCatalog
 import dot.jcversa.novay.data.Library
+import dot.jcversa.novay.data.LibraryCollection
 import dot.jcversa.novay.data.WatchHistory
 import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.downloads.Downloads
@@ -92,15 +101,18 @@ import dot.jcversa.novay.ui.components.AppBarAction
 import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.GenreFilterChipBar
+import dot.jcversa.novay.ui.components.LocalNovayToast
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayBrandSeal
 import dot.jcversa.novay.ui.components.NovayIcons
+import dot.jcversa.novay.ui.components.NovayToastTone
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.PosterGridSkeleton
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.RowListSkeleton
 import dot.jcversa.novay.ui.components.SlateMotion
+import dot.jcversa.novay.ui.components.novayCinemaGlass
 import dot.jcversa.novay.ui.components.novaySharedPoster
 import dot.jcversa.novay.ui.state.LibraryDisplay
 import dot.jcversa.novay.ui.state.LibraryFilter
@@ -130,14 +142,19 @@ fun LibraryScreen(
 ) {
     val context = LocalContext.current
     val motion = LocalSlateMotion.current
+    val toast = LocalNovayToast.current
     val bottomChrome = LocalBottomChromePadding.current
 
     var uiState by remember { mutableStateOf(LibraryUiState()) }
     var display by rememberSaveable { mutableStateOf(LibraryDisplay.COMFORTABLE_GRID) }
     var filter by rememberSaveable { mutableStateOf(LibraryFilter.ALL) }
     var selectedGenre by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedCollectionId by rememberSaveable { mutableStateOf<String?>(null) }
     var sort by rememberSaveable { mutableStateOf(LibrarySort.RECENT) }
     var showDisplaySheet by remember { mutableStateOf(false) }
+    var showCreateCollectionDialog by remember { mutableStateOf(false) }
+    var showAssignCollectionSheet by remember { mutableStateOf(false) }
+    var newCollectionName by remember { mutableStateOf("") }
 
     var selectionMode by remember { mutableStateOf(false) }
     val selectedUrls = remember { mutableStateListOf<String>() }
@@ -146,6 +163,7 @@ fun LibraryScreen(
     LaunchedEffect(refreshKey) {
         val loaded = withContext(Dispatchers.IO) {
             val lib = Library.all(context)
+            val cols = Library.collections(context)
             val downloads = runCatching { Downloads.snapshot(context) }.getOrDefault(emptyList())
             val history = WatchHistory.recent(context)
             val libUrls = lib.map { it.url.trimEnd('/') }.toSet()
@@ -191,13 +209,17 @@ fun LibraryScreen(
                 hasVf = lib.any { e -> e.languages.any { it.equals("VF", true) } },
                 hasVostfr = lib.any { e -> e.languages.any { it.equals("VOSTFR", true) } },
                 availableGenres = GenreCatalog.mergeGenresForBar(lib.flatMap { it.genres }),
+                collections = cols,
             )
         }
         uiState = loaded
     }
 
-    val filtered = remember(uiState.items, filter, sort, selectedGenre) {
-        computeLibraryItems(uiState.items, filter, sort, selectedGenre)
+    val selectedCollection = remember(uiState.collections, selectedCollectionId) {
+        uiState.collections.firstOrNull { it.id == selectedCollectionId }
+    }
+    val filtered = remember(uiState.items, filter, sort, selectedGenre, selectedCollection) {
+        computeLibraryItems(uiState.items, filter, sort, selectedGenre, selectedCollection)
     }
 
     fun deleteSelected() {
@@ -209,6 +231,12 @@ fun LibraryScreen(
         selectionMode = false
         selectedUrls.clear()
         refreshKey++
+        if (urls.isNotEmpty()) {
+            toast.show(
+                message = "${urls.size} animé${if (urls.size > 1) "s" else ""} retiré${if (urls.size > 1) "s" else ""}",
+                tone = NovayToastTone.INFO,
+            )
+        }
     }
 
     BackHandler(enabled = selectionMode) {
@@ -310,6 +338,16 @@ fun LibraryScreen(
                 }
             }
 
+            if (uiState.items.isNotEmpty() && uiState.collections.isNotEmpty()) {
+                LibraryCollectionsBar(
+                    collections = uiState.collections,
+                    items = uiState.items,
+                    selectedCollectionId = selectedCollectionId,
+                    onSelectCollection = { selectedCollectionId = it },
+                    onCreateCollection = { showCreateCollectionDialog = true },
+                )
+            }
+
             if (uiState.items.isNotEmpty()) {
                 GenreFilterChipBar(
                     genres = uiState.availableGenres.ifEmpty { GenreCatalog.CORE_GENRES },
@@ -323,7 +361,7 @@ fun LibraryScreen(
             val viewKey = when {
                 uiState.isLoading -> "loading_${display.name}"
                 uiState.items.isEmpty() -> "empty"
-                filtered.isEmpty() -> "filter_empty_${filter.name}_${selectedGenre.orEmpty()}"
+                filtered.isEmpty() -> "filter_empty_${filter.name}_${selectedGenre.orEmpty()}_${selectedCollectionId.orEmpty()}"
                 else -> "content_${display.name}"
             }
 
@@ -359,7 +397,12 @@ fun LibraryScreen(
                     )
                     stateKey.startsWith("filter_empty_") -> {
                         val activeGenre = selectedGenre
+                        val activeCollection = selectedCollection
                         val emptyHeading = when {
+                            activeCollection != null && activeCollection.animeUrls.isEmpty() ->
+                                "Collection « ${activeCollection.name} » vide"
+                            activeCollection != null ->
+                                "Aucun animé dans « ${activeCollection.name} »"
                             activeGenre != null && filter != LibraryFilter.ALL ->
                                 "Aucun anime $activeGenre en ${filter.label}"
                             activeGenre != null ->
@@ -367,10 +410,13 @@ fun LibraryScreen(
                             else ->
                                 "Aucun anime en ${filter.label}"
                         }
-                        val emptySubtitle = if (activeGenre != null) {
-                            "Ouvre une fiche d'animé pour actualiser ses genres ou réinitialise les filtres pour tout afficher."
-                        } else {
-                            "Change de filtre de langue pour afficher tes autres animés suivis."
+                        val emptySubtitle = when {
+                            activeCollection != null && activeCollection.animeUrls.isEmpty() ->
+                                "Appuie longuement sur un animé de ta bibliothèque pour l'ajouter à cette collection."
+                            activeGenre != null ->
+                                "Ouvre une fiche d'animé pour actualiser ses genres ou réinitialise les filtres pour tout afficher."
+                            else ->
+                                "Change de filtre pour afficher tes autres animés suivis."
                         }
                         EmptyScreen(
                             icon = NovayIcons.LibraryShelf,
@@ -381,6 +427,7 @@ fun LibraryScreen(
                             onAction = {
                                 filter = LibraryFilter.ALL
                                 selectedGenre = null
+                                selectedCollectionId = null
                             },
                             actionTestTag = "library_reset_filters_button",
                             modifier = Modifier.padding(bottom = bottomChrome),
@@ -589,6 +636,19 @@ fun LibraryScreen(
                         ) {
                             Text("Tout")
                         }
+                        OutlinedButton(
+                            enabled = selectedUrls.isNotEmpty(),
+                            onClick = { showAssignCollectionSheet = true },
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("library_assign_collection_button"),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.library_collection_add_action),
+                                maxLines = 1,
+                            )
+                        }
                         Spacer(Modifier.weight(1f))
                         val overlays = NovayTheme.overlays
                         Button(
@@ -610,7 +670,7 @@ fun LibraryScreen(
                             Spacer(Modifier.width(6.dp))
                             Text("Retirer (${selectedUrls.size})")
                         }
-                        Spacer(Modifier.width(6.dp))
+                        Spacer(Modifier.width(4.dp))
                         TextButton(
                             onClick = {
                                 selectionMode = false
@@ -743,6 +803,176 @@ fun LibraryScreen(
             }
         }
     }
+
+    if (showAssignCollectionSheet) {
+        val assignSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showAssignCollectionSheet = false },
+            sheetState = assignSheetState,
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .padding(bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.library_collections_label),
+                        style = MaterialTheme.typography.header,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = {
+                            showAssignCollectionSheet = false
+                            showCreateCollectionDialog = true
+                        },
+                        modifier = Modifier.minimumInteractiveComponentSize(),
+                    ) {
+                        Text("+ Nouvelle")
+                    }
+                }
+                uiState.collections.forEach { collection ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.medium)
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                            .clickable {
+                                Library.addManyToCollection(
+                                    context = context,
+                                    collectionId = collection.id,
+                                    animeUrls = selectedUrls.toList(),
+                                )
+                                showAssignCollectionSheet = false
+                                selectionMode = false
+                                val addedCount = selectedUrls.size
+                                selectedUrls.clear()
+                                refreshKey++
+                                toast.show(
+                                    message = "$addedCount animé${if (addedCount > 1) "s" else ""} ajouté${if (addedCount > 1) "s" else ""} à « ${collection.name} »",
+                                    tone = NovayToastTone.SUCCESS,
+                                )
+                            }
+                            .minimumInteractiveComponentSize()
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                            .testTag("library_assign_collection_${collection.id}"),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        CollectionCoverMosaic(
+                            posterUrls = resolveCollectionPosters(collection, uiState.items),
+                            size = 38.dp,
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = collection.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "${collection.animeUrls.size} animé${if (collection.animeUrls.size > 1) "s" else ""}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (collection.id !in setOf("coups_de_coeur", "a_voir")) {
+                            IconButton(
+                                onClick = {
+                                    Library.removeCollection(context, collection.id)
+                                    if (selectedCollectionId == collection.id) {
+                                        selectedCollectionId = null
+                                    }
+                                    refreshKey++
+                                    toast.show("Collection « ${collection.name} » supprimée", NovayToastTone.INFO)
+                                },
+                                modifier = Modifier.minimumInteractiveComponentSize(),
+                            ) {
+                                Icon(
+                                    imageVector = NovayIcons.DeleteTrash,
+                                    contentDescription = "Supprimer ${collection.name}",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showCreateCollectionDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showCreateCollectionDialog = false
+                newCollectionName = ""
+            },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            title = {
+                Text(
+                    text = stringResource(R.string.library_collection_new),
+                    style = MaterialTheme.typography.titleLarge,
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    value = newCollectionName,
+                    onValueChange = { newCollectionName = it },
+                    singleLine = true,
+                    placeholder = { Text("Ex. Chef-d'œuvre, Week-end…") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("library_collection_name_input"),
+                )
+            },
+            confirmButton = {
+                Button(
+                    enabled = newCollectionName.trim().isNotEmpty(),
+                    onClick = {
+                        val created = Library.createCollection(context, newCollectionName)
+                        if (created != null) {
+                            if (selectionMode && selectedUrls.isNotEmpty()) {
+                                Library.addManyToCollection(context, created.id, selectedUrls.toList())
+                                selectionMode = false
+                                selectedUrls.clear()
+                            } else {
+                                selectedCollectionId = created.id
+                            }
+                            refreshKey++
+                            toast.show("Collection « ${created.name} » créée", NovayToastTone.SUCCESS)
+                        }
+                        showCreateCollectionDialog = false
+                        newCollectionName = ""
+                    },
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("library_collection_confirm_create"),
+                ) {
+                    Text("Créer")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showCreateCollectionDialog = false
+                        newCollectionName = ""
+                    },
+                    modifier = Modifier.minimumInteractiveComponentSize(),
+                ) {
+                    Text("Annuler")
+                }
+            },
+        )
+    }
 }
 
 /** Bannière rapide compacte « Reprendre la séance » sans bordure dure. */
@@ -762,7 +992,7 @@ private fun ResumeCinemaBanner(
         animationSpec = motion.effectFloatSpec(),
         label = "resume_banner_scale",
     )
-    val supportsBlur = Build.VERSION.SDK_INT >= 31
+    val supportsBlur = dot.jcversa.novay.performance.LocalPerformanceProfile.current.allowAtmosphericBackdropBlur
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -787,6 +1017,8 @@ private fun ResumeCinemaBanner(
             contentDescription = null,
             animeUrl = entry.animeUrl,
             animeTitle = entry.animeTitle,
+            decodeWidthDp = 72.dp,
+            decodeHeightDp = 108.dp,
             modifier = Modifier
                 .matchParentSize()
                 .then(if (supportsBlur) Modifier.blur(16.dp) else Modifier)
@@ -814,6 +1046,8 @@ private fun ResumeCinemaBanner(
                 contentDescription = null,
                 animeUrl = entry.animeUrl,
                 animeTitle = entry.animeTitle,
+                decodeWidthDp = 52.dp,
+                decodeHeightDp = 76.dp,
                 modifier = Modifier
                     .size(width = 52.dp, height = 76.dp)
                     .novaySharedPoster(entry.animeUrl)
@@ -875,6 +1109,235 @@ private fun ResumeCinemaBanner(
             }
         }
     }
+}
+
+@Composable
+private fun LibraryCollectionsBar(
+    collections: List<LibraryCollection>,
+    items: List<LibraryItemUi>,
+    selectedCollectionId: String?,
+    onSelectCollection: (String?) -> Unit,
+    onCreateCollection: () -> Unit,
+) {
+    val overlays = NovayTheme.overlays
+    val motion = LocalSlateMotion.current
+
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("library_collections_row"),
+    ) {
+        item(key = "col_all") {
+            val selected = selectedCollectionId == null
+            val borderColor by animateColorAsState(
+                targetValue = if (selected) MaterialTheme.colorScheme.primary else overlays.glassBorder,
+                animationSpec = motion.colorSpec(180),
+                label = "col_all_border",
+            )
+            val fill by animateColorAsState(
+                targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+                animationSpec = motion.colorSpec(180),
+                label = "col_all_bg",
+            )
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = fill,
+                border = BorderStroke(0.8.dp, borderColor),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onSelectCollection(null) }
+                    .minimumInteractiveComponentSize()
+                    .testTag("library_collection_all"),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.library_collection_all),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (selected) overlays.crimsonOnContainer else MaterialTheme.colorScheme.onSurface,
+                    )
+                    Pill(
+                        text = "${items.size}",
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        items(collections, key = { it.id }) { collection ->
+            val selected = selectedCollectionId == collection.id
+            val posters = remember(collection.animeUrls, items) {
+                resolveCollectionPosters(collection, items)
+            }
+            val borderColor by animateColorAsState(
+                targetValue = if (selected) MaterialTheme.colorScheme.primary else overlays.glassBorder,
+                animationSpec = motion.colorSpec(180),
+                label = "col_border_${collection.id}",
+            )
+            val fill by animateColorAsState(
+                targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+                animationSpec = motion.colorSpec(180),
+                label = "col_bg_${collection.id}",
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .novayCinemaGlass(
+                        shape = RoundedCornerShape(14.dp),
+                        tint = fill,
+                        borderColor = borderColor,
+                        showBorder = true,
+                    )
+                    .clickable {
+                        onSelectCollection(if (selected) null else collection.id)
+                    }
+                    .minimumInteractiveComponentSize()
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .testTag("library_collection_chip_${collection.id}"),
+            ) {
+                CollectionCoverMosaic(posterUrls = posters, size = 34.dp)
+                Column {
+                    Text(
+                        text = collection.name,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (selected) overlays.crimsonOnContainer else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "${collection.animeUrls.size}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        item(key = "col_new") {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(0.6.dp, overlays.glassBorder),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable(onClick = onCreateCollection)
+                    .minimumInteractiveComponentSize()
+                    .testTag("library_collection_new_button"),
+            ) {
+                Box(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "+ Nouvelle",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CollectionCoverMosaic(
+    posterUrls: List<String>,
+    size: androidx.compose.ui.unit.Dp,
+) {
+    val shape = RoundedCornerShape(8.dp)
+    if (posterUrls.isEmpty()) {
+        Surface(
+            shape = shape,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.size(size),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = NovayIcons.LibraryShelf,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(size * 0.5f),
+                )
+            }
+        }
+    } else if (posterUrls.size == 1) {
+        PosterImage(
+            url = posterUrls.first(),
+            contentDescription = null,
+            modifier = Modifier
+                .size(size)
+                .clip(shape),
+        )
+    } else {
+        Column(
+            modifier = Modifier
+                .size(size)
+                .clip(shape),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                PosterImage(
+                    url = posterUrls.getOrNull(0),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize(),
+                )
+                PosterImage(
+                    url = posterUrls.getOrNull(1) ?: posterUrls.getOrNull(0),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize(),
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                PosterImage(
+                    url = posterUrls.getOrNull(2) ?: posterUrls.getOrNull(1) ?: posterUrls.getOrNull(0),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize(),
+                )
+                PosterImage(
+                    url = posterUrls.getOrNull(3) ?: posterUrls.getOrNull(0),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize(),
+                )
+            }
+        }
+    }
+}
+
+private fun resolveCollectionPosters(
+    collection: LibraryCollection,
+    items: List<LibraryItemUi>,
+): List<String> {
+    if (collection.animeUrls.isEmpty() || items.isEmpty()) return emptyList()
+    val posterByUrl = items.associate { it.entry.url.trimEnd('/') to it.entry.posterUrl }
+    return collection.animeUrls.asSequence()
+        .mapNotNull { posterByUrl[it.trimEnd('/')] }
+        .take(4)
+        .toList()
 }
 
 private fun toggleSelect(list: androidx.compose.runtime.snapshots.SnapshotStateList<String>, url: String) {

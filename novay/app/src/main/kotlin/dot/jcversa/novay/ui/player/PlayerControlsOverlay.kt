@@ -31,6 +31,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Surface
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -370,23 +374,32 @@ fun EmbeddedVideoPlayer(
         }
 
         if (playerManager.isFastForwardHold) {
-            Box(
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 12.dp)
                     .novayCinemaGlass(
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(999.dp),
                         hazeState = hazeState,
                         tint = overlays.glassSurfaceElevated,
                         borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.65f),
                         showBorder = true,
-                    ),
+                    )
+                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                    .testTag("embedded_speed_hud"),
             ) {
+                Icon(
+                    imageVector = NovayIcons.SpeedGauge,
+                    contentDescription = null,
+                    tint = overlays.crimsonOnContainer,
+                    modifier = Modifier.size(16.dp),
+                )
                 Text(
-                    text = "2×",
-                    style = MaterialTheme.typography.titleMedium,
+                    text = "2× · Avance rapide",
+                    style = MaterialTheme.typography.labelLarge,
                     color = overlays.videoControlsInk,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                 )
             }
         }
@@ -397,16 +410,18 @@ fun EmbeddedVideoPlayer(
                     .align(if (fb.deltaMs >= 0) Alignment.CenterEnd else Alignment.CenterStart)
                     .padding(horizontal = 18.dp)
                     .novayCinemaGlass(
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(16.dp),
                         hazeState = hazeState,
                         tint = overlays.glassSurfaceElevated,
                         borderColor = overlays.glassBorder,
                         showBorder = true,
-                    ),
+                    )
+                    .testTag("embedded_seek_hud"),
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     Text(
                         text = (if (fb.deltaMs >= 0) "+" else "−") + "${abs(fb.deltaMs) / 1000} s",
@@ -893,24 +908,33 @@ fun FullscreenPlayerOverlay(
         }
 
         if (playerManager.isFastForwardHold) {
-            Box(
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .windowInsetsPadding(WindowInsets.safeDrawing)
                     .padding(top = 64.dp)
                     .novayCinemaGlass(
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(999.dp),
                         hazeState = hazeState,
                         tint = overlays.glassSurfaceElevated,
                         borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.65f),
                         showBorder = true,
-                    ),
+                    )
+                    .padding(horizontal = 18.dp, vertical = 8.dp)
+                    .testTag("player_speed_hud"),
             ) {
+                Icon(
+                    imageVector = NovayIcons.SpeedGauge,
+                    contentDescription = null,
+                    tint = overlays.crimsonOnContainer,
+                    modifier = Modifier.size(18.dp),
+                )
                 Text(
-                    text = "2×",
-                    style = MaterialTheme.typography.titleLarge,
+                    text = "2× · Avance rapide",
+                    style = MaterialTheme.typography.titleMedium,
                     color = overlays.videoControlsInk,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
                 )
             }
         }
@@ -920,23 +944,46 @@ fun FullscreenPlayerOverlay(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .novayCinemaGlass(
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(18.dp),
                         hazeState = hazeState,
                         tint = overlays.glassSurfaceElevated,
                         borderColor = overlays.glassBorder,
                         showBorder = true,
-                    ),
+                    )
+                    .testTag("player_vertical_hud"),
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                    modifier = Modifier
+                        .widthIn(min = 144.dp)
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    NovayLottieIcon(
-                        res = if (vf.isBrightness) R.raw.lottie_sun else R.raw.lottie_volume,
-                        contentDescription = null,
-                        tint = overlays.videoControlsInk,
-                        size = 24.dp,
-                        loop = false,
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        NovayLottieIcon(
+                            res = if (vf.isBrightness) R.raw.lottie_sun else R.raw.lottie_volume,
+                            contentDescription = null,
+                            tint = overlays.videoControlsInk,
+                            size = 24.dp,
+                            loop = false,
+                        )
+                        Text(
+                            text = if (vf.isBrightness) "Luminosité" else "Volume",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = overlays.videoControlsMutedInk,
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = { (vf.percentage / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .width(108.dp)
+                            .height(4.dp)
+                            .clip(CircleShape),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = overlays.videoTrackInactive,
                     )
                     Text(
                         text = "${vf.percentage} %",
@@ -954,16 +1001,18 @@ fun FullscreenPlayerOverlay(
                     .windowInsetsPadding(WindowInsets.safeDrawing)
                     .padding(horizontal = 28.dp)
                     .novayCinemaGlass(
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(18.dp),
                         hazeState = hazeState,
                         tint = overlays.glassSurfaceElevated,
                         borderColor = overlays.glassBorder,
                         showBorder = true,
-                    ),
+                    )
+                    .testTag("player_seek_hud"),
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     Text(
                         text = (if (fb.deltaMs >= 0) "+" else "−") + "${abs(fb.deltaMs) / 1000} s",

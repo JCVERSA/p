@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dot.jcversa.novay.R
+import dot.jcversa.novay.performance.LocalPerformanceProfile
 import dot.jcversa.novay.ui.theme.NovayTheme
 import androidx.compose.ui.res.stringResource
 
@@ -174,6 +175,8 @@ fun AnimeComfortableGridItem(
                 contentDescription = title,
                 animeUrl = animeUrl.ifBlank { null },
                 animeTitle = title,
+                decodeWidthDp = 180.dp,
+                decodeHeightDp = 270.dp,
                 modifier = Modifier
                     .matchParentSize()
                     .alpha(if (isSelected) 0.72f else 1f),
@@ -292,11 +295,14 @@ fun AnimeCompactGridItem(
                 onLongClick = onLongClick,
             ),
     ) {
+        val allowShadowBlur = LocalPerformanceProfile.current.allowCardTextShadowBlur
         PosterImage(
             url = posterUrl,
             contentDescription = title,
             animeUrl = animeUrl.ifBlank { null },
             animeTitle = title,
+            decodeWidthDp = 156.dp,
+            decodeHeightDp = 234.dp,
             modifier = Modifier
                 .matchParentSize()
                 .alpha(if (isSelected) 0.72f else 1f),
@@ -306,8 +312,8 @@ fun AnimeCompactGridItem(
                 .background(
                     Brush.verticalGradient(
                         0f to Color.Transparent,
-                        0.40f to MaterialTheme.colorScheme.background.copy(alpha = 0.56f),
-                        1f to MaterialTheme.colorScheme.background.copy(alpha = 0.96f),
+                        0.40f to MaterialTheme.colorScheme.background.copy(alpha = if (allowShadowBlur) 0.56f else 0.64f),
+                        1f to MaterialTheme.colorScheme.background.copy(alpha = if (allowShadowBlur) 0.96f else 0.98f),
                     ),
                 )
                 .fillMaxHeight(0.60f)
@@ -326,7 +332,7 @@ fun AnimeCompactGridItem(
                 .padding(start = 8.dp, end = if (onClickContinue != null) 50.dp else 8.dp, bottom = 8.dp),
             style = MaterialTheme.typography.titleSmall.copy(
                 color = MaterialTheme.colorScheme.onBackground,
-                shadow = Shadow(color = Color.Black, blurRadius = 6f),
+                shadow = if (allowShadowBlur) Shadow(color = Color.Black, blurRadius = 6f) else null,
             ),
             minLines = 1,
             maxLines = 2,
@@ -416,6 +422,8 @@ fun AnimeListItem(
                 contentDescription = title,
                 animeUrl = animeUrl.ifBlank { null },
                 animeTitle = title,
+                decodeWidthDp = 58.dp,
+                decodeHeightDp = 84.dp,
                 modifier = Modifier
                     .size(width = 58.dp, height = 84.dp)
                     .novaySharedPoster(animeUrl = animeUrl, enabled = sharedTransitionEnabled)

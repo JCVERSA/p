@@ -1,5 +1,6 @@
 package dot.jcversa.novay.ui.player
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector2D
 import androidx.compose.animation.core.Spring
@@ -173,6 +174,16 @@ fun FloatingMiniPlayer(
             }
         } ?: ""
 
+        val borderGlowColor by animateColorAsState(
+            targetValue = if (isDragging) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+            } else {
+                overlays.glassBorder
+            },
+            animationSpec = motion.colorSpec(180),
+            label = "mini_player_border_glow",
+        )
+
         Surface(
             shape = shape,
             shadowElevation = if (isDragging) 18.dp else 12.dp,
@@ -181,7 +192,7 @@ fun FloatingMiniPlayer(
             modifier = Modifier
                 .offset { IntOffset(offsetAnim.value.x.roundToInt(), offsetAnim.value.y.roundToInt()) }
                 .size(width = miniWidthDp, height = miniHeightDp)
-                .border(0.75.dp, overlays.glassBorder, shape)
+                .border(if (isDragging) 1.25.dp else 0.75.dp, borderGlowColor, shape)
                 .semantics {
                     if (sessionTitle.isNotBlank()) stateDescription = sessionTitle
                     customActions = listOf(

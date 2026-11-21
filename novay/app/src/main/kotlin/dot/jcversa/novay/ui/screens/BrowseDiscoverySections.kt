@@ -3,7 +3,15 @@
 package dot.jcversa.novay.ui.screens
 
 import android.os.Build
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -32,12 +40,17 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -48,7 +61,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,6 +72,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -71,6 +89,7 @@ import dot.jcversa.novay.data.CatalogCard
 import dot.jcversa.novay.data.CatalogHero
 import dot.jcversa.novay.data.CatalogHome
 import dot.jcversa.novay.data.GenreCatalog
+import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.data.sama.SamaParsers
 import dot.jcversa.novay.ui.components.AnimeComfortableGridItem
 import dot.jcversa.novay.ui.components.EmptyScreen
@@ -78,15 +97,23 @@ import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayBadge
 import dot.jcversa.novay.ui.components.NovayIcons
 import dot.jcversa.novay.ui.components.NovaySectionHeader
+import dot.jcversa.novay.ui.components.PartialLoadingBanner
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.ShimmerBox
 import dot.jcversa.novay.ui.components.SwiftSlateSpinner
+import dot.jcversa.novay.ui.components.bounceClick
+import dot.jcversa.novay.ui.components.novayCinemaGlass
 import dot.jcversa.novay.ui.components.novaySharedPoster
 import dot.jcversa.novay.ui.state.BrowseFeaturedState
+import dot.jcversa.novay.ui.state.BrowseMood
 import dot.jcversa.novay.ui.state.CatalogFilterEngine
 import dot.jcversa.novay.ui.state.CatalogPageUiState
 import dot.jcversa.novay.ui.state.CatalogSortOption
+import dot.jcversa.novay.ui.state.filterItemsByMood
 import dot.jcversa.novay.ui.theme.NovayTheme
+import dot.jcversa.novay.ui.theme.NovayThemePreset
+import dot.jcversa.novay.ui.theme.NovayThemeState
+import dot.jcversa.novay.ui.theme.rememberPosterPalette
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
@@ -94,6 +121,7 @@ internal fun HybridBrowseCatalog(
     featured: BrowseFeaturedState,
     home: CatalogHome?,
     catalogPage: CatalogPageUiState,
+    watchHistory: List<WatchHistoryEntry>,
     libraryUrls: Set<String>,
     randomSeed: Int,
     bottomChrome: Dp,
@@ -103,9 +131,12 @@ internal fun HybridBrowseCatalog(
     onLoadMoreCatalog: () -> Unit,
     onOpenShow: (AnimeSearchResult) -> Unit,
     onOpenEpisodes: (animeTitle: String, posterUrl: String?, season: AnimeSeason) -> Unit,
+    onResumeHistory: (WatchHistoryEntry) -> Unit,
 ) {
     val motion = LocalSlateMotion.current
     val gridState = rememberLazyGridState()
+    var selectedMood by rememberSaveable { mutableStateOf(BrowseMood.ALL) }
+
     val heroParallaxOffsetState = remember(gridState, motion.reduceMotion) {
         derivedStateOf {
             if (motion.reduceMotion || gridState.firstVisibleItemIndex > 1) {
@@ -124,6 +155,20 @@ internal fun HybridBrowseCatalog(
         } else {
             (featured as? BrowseFeaturedState.Loaded)?.items.orEmpty()
         }
+    }
+
+    val continueItems = remember(watchHistory) {
+        watchHistory
+            .distinctBy { "${it.seasonUrl.trimEnd('/')}_${it.episodeNumber}" }
+            .take(8)
+    }
+
+    val moodPool = remember(featured, catalogItems) {
+        val feat = (featured as? BrowseFeaturedState.Loaded)?.items.orEmpty()
+        CatalogFilterEngine.mergeUniqueItems(feat, catalogItems)
+    }
+    val moodItems = remember(moodPool, selectedMood) {
+        filterItemsByMood(moodPool, selectedMood).take(14)
     }
 
     val trendingItems = remember(featured, cards, catalogItems) {
@@ -188,7 +233,21 @@ internal fun HybridBrowseCatalog(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        // ── 1. Héros « À la une » ─────────────────────────────────────────
+        // ── 0. Bandeau de rafraîchissement partiel non bloquant ────────────
+        if (catalogPage.isLoading && catalogItems.isNotEmpty()) {
+            item(
+                key = "browse_partial_loading",
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "partial_loading",
+            ) {
+                PartialLoadingBanner(
+                    visible = true,
+                    message = "Actualisation du catalogue en cours…",
+                )
+            }
+        }
+
+        // ── 1. Héros cinématique « À la une » ──────────────────────────────
         when (featured) {
             BrowseFeaturedState.Loading -> {
                 item(
@@ -241,7 +300,7 @@ internal fun HybridBrowseCatalog(
             }
 
             is BrowseFeaturedState.Loaded -> {
-                val lead = featured.items.first()
+                val heroSlides = featured.items.take(5)
                 val rest = featured.items.drop(1)
                 item(
                     key = "spotlight_hero",
@@ -252,11 +311,11 @@ internal fun HybridBrowseCatalog(
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center,
                     ) {
-                        SpotlightHeroCard(
-                            anime = lead,
+                        CinematicSpotlightCarousel(
+                            heroes = heroSlides,
                             parallaxOffsetProvider = parallaxProvider,
                             modifier = Modifier.widthIn(max = 840.dp),
-                            onClick = { onOpenShow(lead) },
+                            onOpenShow = onOpenShow,
                         )
                     }
                 }
@@ -286,6 +345,26 @@ internal fun HybridBrowseCatalog(
             }
         }
 
+        // ── 1b. Reprendre la lecture 2.0 ──────────────────────────────────
+        if (continueItems.isNotEmpty()) {
+            item(
+                key = "continue_watching_section",
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "continue_watching",
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NovaySectionHeader(
+                        title = stringResource(R.string.catalog_section_continue_watching),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    ContinueWatchingRail(
+                        entries = continueItems,
+                        onResume = onResumeHistory,
+                    )
+                }
+            }
+        }
+
         // ── 2. Derniers épisodes ──────────────────────────────────────────
         if (cards.isNotEmpty()) {
             item(
@@ -306,6 +385,25 @@ internal fun HybridBrowseCatalog(
                 HomeCardRail(
                     cards = cards.take(24),
                     onOpenEpisodes = onOpenEpisodes,
+                )
+            }
+        }
+
+        // ── 2b. Ambiances & Découverte (Mood Discovery) ───────────────────
+        if (moodPool.isNotEmpty()) {
+            item(
+                key = "mood_discovery_section",
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "mood_discovery",
+            ) {
+                MoodDiscoverySection(
+                    selectedMood = selectedMood,
+                    moodItems = moodItems,
+                    libraryUrls = libraryUrls,
+                    onSelectMood = { next ->
+                        selectedMood = if (selectedMood == next) BrowseMood.ALL else next
+                    },
+                    onOpenShow = onOpenShow,
                 )
             }
         }
@@ -485,6 +583,301 @@ internal fun HybridBrowseCatalog(
 }
 
 @Composable
+private fun CinematicSpotlightCarousel(
+    heroes: List<AnimeSearchResult>,
+    parallaxOffsetProvider: () -> Float,
+    onOpenShow: (AnimeSearchResult) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (heroes.size <= 1) {
+        val only = heroes.firstOrNull() ?: return
+        SpotlightHeroCard(
+            anime = only,
+            parallaxOffsetProvider = parallaxOffsetProvider,
+            modifier = modifier,
+            onClick = { onOpenShow(only) },
+        )
+        return
+    }
+    val pagerState = rememberPagerState(pageCount = { heroes.size })
+    val motion = LocalSlateMotion.current
+    val overlays = NovayTheme.overlays
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        HorizontalPager(
+            state = pagerState,
+            pageSpacing = 12.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) { page ->
+            val anime = heroes[page]
+            SpotlightHeroCard(
+                anime = anime,
+                parallaxOffsetProvider = parallaxOffsetProvider,
+                testTagName = if (page == pagerState.currentPage) "browse_spotlight_hero" else null,
+                onClick = { onOpenShow(anime) },
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.testTag("browse_spotlight_indicators"),
+        ) {
+            heroes.indices.forEach { idx ->
+                val selected = idx == pagerState.currentPage
+                val widthDp by animateDpAsState(
+                    targetValue = if (selected) 20.dp else 6.dp,
+                    animationSpec = motion.dockDpSpec(),
+                    label = "hero_dot_w_$idx",
+                )
+                val dotColor by animateColorAsState(
+                    targetValue = if (selected) overlays.crimsonOnContainer else MaterialTheme.colorScheme.outlineVariant,
+                    animationSpec = motion.colorSpec(180),
+                    label = "hero_dot_c_$idx",
+                )
+                Box(
+                    modifier = Modifier
+                        .size(width = widthDp, height = 6.dp)
+                        .clip(CircleShape)
+                        .background(dotColor),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContinueWatchingRail(
+    entries: List<WatchHistoryEntry>,
+    onResume: (WatchHistoryEntry) -> Unit,
+) {
+    val overlays = NovayTheme.overlays
+    val motion = LocalSlateMotion.current
+
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.testTag("browse_continue_watching_rail"),
+    ) {
+        items(
+            items = entries,
+            key = { "${it.seasonUrl.trimEnd('/')}_${it.episodeNumber}" },
+            contentType = { "continue_card" },
+        ) { entry ->
+            val progress = if (entry.durationMs > 0L) {
+                (entry.positionMs.toFloat() / entry.durationMs.toFloat()).coerceIn(0.02f, 1f)
+            } else {
+                0f
+            }
+            val remainingMin = if (entry.durationMs > entry.positionMs && entry.durationMs > 0L) {
+                ((entry.durationMs - entry.positionMs) / 60_000L).coerceAtLeast(1L)
+            } else {
+                0L
+            }
+            val cardShape = MaterialTheme.shapes.medium
+            val mod = if (motion.reduceMotion) Modifier else Modifier.animateItem()
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = mod
+                    .widthIn(min = 256.dp, max = 284.dp)
+                    .novayCinemaGlass(
+                        shape = cardShape,
+                        tint = MaterialTheme.colorScheme.surfaceContainerLow,
+                        borderColor = overlays.glassBorder,
+                        showBorder = true,
+                    )
+                    .bounceClick(onClick = { onResume(entry) })
+                    .padding(10.dp)
+                    .testTag("browse_continue_card_${entry.episodeNumber}"),
+            ) {
+                PosterImage(
+                    url = entry.posterUrl,
+                    contentDescription = entry.animeTitle,
+                    animeUrl = entry.animeUrl,
+                    animeTitle = entry.animeTitle,
+                    modifier = Modifier
+                        .size(width = 52.dp, height = 74.dp)
+                        .novaySharedPoster(entry.animeUrl)
+                        .clip(MaterialTheme.shapes.extraSmall),
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = entry.animeTitle,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "Ep. ${entry.episodeNumber} · ${entry.seasonName}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = overlays.crimsonOnContainer,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (progress > 0f) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            strokeCap = StrokeCap.Round,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp),
+                        )
+                    }
+                    if (remainingMin > 0L) {
+                        Text(
+                            text = "${remainingMin} min restantes",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Surface(
+                    shape = CircleShape,
+                    color = overlays.ctaContainer,
+                    contentColor = overlays.onCtaContainer,
+                    modifier = Modifier.size(34.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = NovayIcons.Play,
+                            contentDescription = stringResource(R.string.action_resume_episode),
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MoodDiscoverySection(
+    selectedMood: BrowseMood,
+    moodItems: List<AnimeSearchResult>,
+    libraryUrls: Set<String>,
+    onSelectMood: (BrowseMood) -> Unit,
+    onOpenShow: (AnimeSearchResult) -> Unit,
+) {
+    val overlays = NovayTheme.overlays
+    val motion = LocalSlateMotion.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("browse_mood_section"),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        NovaySectionHeader(
+            title = stringResource(R.string.catalog_section_moods),
+            modifier = Modifier.fillMaxWidth(),
+            trailing = if (selectedMood != BrowseMood.ALL) {
+                {
+                    Text(
+                        text = "${moodItems.size} titre${if (moodItems.size > 1) "s" else ""}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = overlays.crimsonOnContainer,
+                    )
+                }
+            } else {
+                null
+            },
+        )
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            items(
+                items = BrowseMood.entries,
+                key = { it.id },
+            ) { mood ->
+                val isSelected = selectedMood == mood
+                val bgColor by animateColorAsState(
+                    targetValue = if (isSelected) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerLow
+                    },
+                    animationSpec = motion.colorSpec(180),
+                    label = "mood_bg_${mood.id}",
+                )
+                val fgColor by animateColorAsState(
+                    targetValue = if (isSelected) {
+                        overlays.crimsonOnContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    animationSpec = motion.colorSpec(180),
+                    label = "mood_fg_${mood.id}",
+                )
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { onSelectMood(mood) },
+                    label = {
+                        Text(
+                            text = mood.label,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = bgColor,
+                        labelColor = fgColor,
+                        selectedContainerColor = bgColor,
+                        selectedLabelColor = fgColor,
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = isSelected,
+                        borderColor = MaterialTheme.colorScheme.outlineVariant,
+                        selectedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                    ),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("browse_mood_${mood.id}"),
+                )
+            }
+        }
+        AnimatedVisibility(
+            visible = selectedMood != BrowseMood.ALL,
+            enter = if (motion.reduceMotion) fadeIn() else expandVertically() + fadeIn(motion.enterSpec(200)),
+            exit = if (motion.reduceMotion) fadeOut() else shrinkVertically() + fadeOut(motion.exitSpec(140)),
+        ) {
+            if (moodItems.isEmpty()) {
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(0.5.dp, overlays.glassBorder),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "Aucun animé déjà chargé ne correspond à « ${selectedMood.label} ».",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(14.dp),
+                    )
+                }
+            } else {
+                AnimeDiscoveryRail(
+                    items = moodItems,
+                    libraryUrls = libraryUrls,
+                    onOpenShow = onOpenShow,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 internal fun CatalogResultsGrid(
     results: List<AnimeSearchResult>,
     libraryUrls: Set<String>,
@@ -549,12 +942,18 @@ internal fun CatalogResultsGrid(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = if (results.size == 1) "1 animé" else "${results.size} animés",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.testTag("browse_results_count"),
-                )
+                AnimatedContent(
+                    targetState = results.size,
+                    transitionSpec = { motion.stateCrossfade() },
+                    label = "results_count_anim",
+                ) { count ->
+                    Text(
+                        text = if (count == 1) "1 animé" else "$count animés",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag("browse_results_count"),
+                    )
+                }
                 if (sortOption != CatalogSortOption.DEFAULT) {
                     Text(
                         text = sortOption.label,
@@ -838,6 +1237,7 @@ internal fun SpotlightHeroCard(
     parallaxOffsetProvider: () -> Float,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    testTagName: String? = "browse_spotlight_hero",
 ) {
     val shape = MaterialTheme.shapes.large
     val overlays = NovayTheme.overlays
@@ -849,7 +1249,16 @@ internal fun SpotlightHeroCard(
         animationSpec = motion.effectFloatSpec(),
         label = "spotlight_hero_scale",
     )
-    val supportsBlur = Build.VERSION.SDK_INT >= 31
+    val palette = rememberPosterPalette(
+        posterUrl = anime.posterUrl,
+        syncGlobalDynamicTheme = NovayThemeState.preset == NovayThemePreset.POSTER_ADAPTIVE,
+    )
+    val ambientAccent by animateColorAsState(
+        targetValue = palette?.accent ?: MaterialTheme.colorScheme.primary,
+        animationSpec = motion.colorSpec(240),
+        label = "spotlight_ambient_accent",
+    )
+    val supportsBlur = dot.jcversa.novay.performance.LocalPerformanceProfile.current.allowAtmosphericBackdropBlur
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -859,20 +1268,22 @@ internal fun SpotlightHeroCard(
             }
             .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .border(0.5.dp, overlays.glassBorder, shape)
+            .border(0.5.dp, ambientAccent.copy(alpha = 0.28f), shape)
             .semantics(mergeDescendants = true) {}
             .clickable(
                 interactionSource = interactionSource,
                 indication = ripple(),
                 onClick = onClick,
             )
-            .testTag("browse_spotlight_hero"),
+            .let { if (testTagName != null) it.testTag(testTagName) else it },
     ) {
         PosterImage(
             url = anime.posterUrl,
             contentDescription = null,
             animeUrl = anime.url,
             animeTitle = anime.title,
+            decodeWidthDp = 96.dp,
+            decodeHeightDp = 144.dp,
             modifier = Modifier
                 .matchParentSize()
                 .graphicsLayer {
@@ -881,7 +1292,7 @@ internal fun SpotlightHeroCard(
                     translationY = parallaxOffsetProvider()
                 }
                 .then(if (supportsBlur) Modifier.blur(18.dp) else Modifier)
-                .alpha(if (supportsBlur) 0.32f else 0.16f),
+                .alpha(if (supportsBlur) 0.34f else 0.16f),
         )
         Box(
             modifier = Modifier
@@ -890,7 +1301,7 @@ internal fun SpotlightHeroCard(
                     Brush.horizontalGradient(
                         0f to MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = if (supportsBlur) 0.94f else 0.97f),
                         0.6f to MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = if (supportsBlur) 0.78f else 0.88f),
-                        1f to MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                        1f to ambientAccent.copy(alpha = 0.20f),
                     ),
                 ),
         )
@@ -905,6 +1316,8 @@ internal fun SpotlightHeroCard(
                 contentDescription = anime.title,
                 animeUrl = anime.url,
                 animeTitle = anime.title,
+                decodeWidthDp = 104.dp,
+                decodeHeightDp = 156.dp,
                 modifier = Modifier
                     .size(width = 104.dp, height = 156.dp)
                     .novaySharedPoster(anime.url)

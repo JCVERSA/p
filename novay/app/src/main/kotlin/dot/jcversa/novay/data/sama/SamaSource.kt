@@ -339,7 +339,8 @@ class SamaSource(
 
     /** /s2/scans/get_nb_chap_et_img.php?oeuvre=… : {id: nbPages}. */
     private fun fetchScanImageCounts(base: String, oeuvre: String): Map<String, Int> = try {
-        val url = "$base/s2/scans/get_nb_chap_et_img.php?oeuvre=${urlEncode(oeuvre)}"
+        val encoded = urlEncode(oeuvre).replace("+", "%20")
+        val url = "$base/s2/scans/get_nb_chap_et_img.php?oeuvre=$encoded"
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", SamaParsers.UA)

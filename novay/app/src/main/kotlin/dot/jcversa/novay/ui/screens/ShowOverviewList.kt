@@ -4,6 +4,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import dot.jcversa.novay.data.AnimeDetails
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
@@ -29,6 +30,7 @@ internal fun LazyListScope.showOverviewAndSeasons(
     activeSeasonUrl: String?,
     parallaxOffsetProvider: () -> Float,
     animateItems: Boolean,
+    posterAccent: Color? = null,
     onResume: (WatchHistoryEntry) -> Unit,
     onToggleFavorite: () -> Unit,
     onOpenDetails: () -> Unit,
@@ -47,6 +49,7 @@ internal fun LazyListScope.showOverviewAndSeasons(
             languages = grouped.map { it.first },
             parallaxOffsetProvider = parallaxOffsetProvider,
             onPosterResolved = onPosterResolved,
+            posterAccent = posterAccent,
         )
     }
 

@@ -18,15 +18,19 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,7 +40,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -92,13 +96,18 @@ import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.EpisodesListSkeleton
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LangPill
+import dot.jcversa.novay.ui.components.LocalNovayToast
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayIcons
+import dot.jcversa.novay.ui.components.NovayToastTone
+import dot.jcversa.novay.ui.components.OfflineStateView
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.SlateMotion
 import dot.jcversa.novay.ui.components.SwiftSlateSpinner
 import dot.jcversa.novay.ui.components.bounceClick
+import dot.jcversa.novay.ui.components.isDeviceOnline
+import dot.jcversa.novay.ui.components.novayCinemaGlass
 import dot.jcversa.novay.ui.theme.NovayTheme
 import dot.jcversa.novay.ui.theme.header
 import kotlinx.coroutines.Dispatchers
@@ -253,6 +262,7 @@ fun EpisodesPane(
 
     val motion = LocalSlateMotion.current
     val overlays = NovayTheme.overlays
+    val toastController = LocalNovayToast.current
 
     BackHandler(enabled = selectionMode) {
         selectionMode = false
@@ -357,6 +367,14 @@ fun EpisodesPane(
                 }
             }
             enqueueLabel = null
+            if (state.episodes.isNotEmpty()) {
+                val msg = if (state.episodes.size == 1) {
+                    "Téléchargement ajouté à la file"
+                } else {
+                    "${state.episodes.size} épisodes ajoutés à la file"
+                }
+                toastController.show(msg, NovayToastTone.SUCCESS)
+            }
         }
     }
 
@@ -475,13 +493,20 @@ fun EpisodesPane(
             label = "episodes_body_state",
         ) { stateKey ->
             when (stateKey) {
-                "error" -> ErrorView(
-                    message = error ?: "Erreur inconnue",
-                    onRetry = { retryKey++ },
-                    title = stringResource(R.string.error_episodes_title),
-                    icon = NovayIcons.ErrorSeal,
-                    modifier = Modifier.padding(bottom = bottomChrome),
-                )
+                "error" -> if (!isDeviceOnline(context)) {
+                    OfflineStateView(
+                        onRetry = { retryKey++ },
+                        modifier = Modifier.padding(bottom = bottomChrome),
+                    )
+                } else {
+                    ErrorView(
+                        message = error ?: "Erreur inconnue",
+                        onRetry = { retryKey++ },
+                        title = stringResource(R.string.error_episodes_title),
+                        icon = NovayIcons.ErrorSeal,
+                        modifier = Modifier.padding(bottom = bottomChrome),
+                    )
+                }
                 "loading" -> Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.TopCenter,
@@ -495,66 +520,88 @@ fun EpisodesPane(
                     subtitleText = "Aucun épisode n'est encore disponible pour cette saison.",
                     modifier = Modifier.padding(bottom = bottomChrome),
                 )
-                else -> Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.TopCenter,
-                ) {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .widthIn(max = 840.dp),
-                        contentPadding = PaddingValues(
-                            top = 8.dp,
-                            bottom = 28.dp + bottomChrome,
-                        ),
+                else -> {
+                    val loadedEpisodes = episodes.orEmpty()
+                    val watchedCount = remember(loadedEpisodes, positions, durations) {
+                        loadedEpisodes.count { ep ->
+                            val r = positions[ep.number] ?: 0L
+                            val d = durations[ep.number] ?: 0L
+                            d > 0L && r.toFloat() / d.toFloat() >= 0.85f
+                        }
+                    }
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.TopCenter,
                     ) {
-                        items(
-                            episodes.orEmpty(),
-                            key = { it.number },
-                            contentType = { "episode_row" },
-                        ) { episode ->
-                            val info = infoFor(episode)
-                            val state = when {
-                                resolving == episode.number -> EpDl.RESOLVING
-                                info == null -> EpDl.NONE
-                                info.isCompleted -> EpDl.DONE
-                                info.isFailed -> EpDl.FAILED
-                                info.isActive -> EpDl.DOWNLOADING
-                                else -> EpDl.QUEUED
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .widthIn(max = 840.dp),
+                            contentPadding = PaddingValues(
+                                top = 8.dp,
+                                bottom = 28.dp + bottomChrome,
+                            ),
+                        ) {
+                            if (loadedEpisodes.isNotEmpty()) {
+                                item(key = "timeline_summary", contentType = "timeline_summary") {
+                                    EpisodeTimelineSummary(
+                                        totalCount = loadedEpisodes.size,
+                                        watchedCount = watchedCount,
+                                        downloadedCount = done,
+                                        activeEpisodeNumber = activeResumeEpisode,
+                                    )
+                                }
                             }
-                            EpisodeRow(
-                                modifier = if (motion.reduceMotion) Modifier else Modifier.animateItem(),
-                                episode = episode,
-                                dlState = state,
-                                dlPercent = info?.percent ?: 0f,
-                                resumeMs = positions[episode.number] ?: 0L,
-                                durationMs = durations[episode.number] ?: 0L,
-                                isActiveResume = activeResumeEpisode == episode.number,
-                                selectionMode = selectionMode,
-                                isSelected = selected.contains(episode.number),
-                                onDownload = { download(episode) },
-                                onClick = {
-                                    if (selectionMode) {
-                                        if (selected.contains(episode.number)) {
-                                            selected.remove(episode.number)
+                            itemsIndexed(
+                                items = loadedEpisodes,
+                                key = { _, ep -> ep.number },
+                                contentType = { _, _ -> "episode_row" },
+                            ) { index, episode ->
+                                val info = infoFor(episode)
+                                val state = when {
+                                    resolving == episode.number -> EpDl.RESOLVING
+                                    info == null -> EpDl.NONE
+                                    info.isCompleted -> EpDl.DONE
+                                    info.isFailed -> EpDl.FAILED
+                                    info.isActive -> EpDl.DOWNLOADING
+                                    else -> EpDl.QUEUED
+                                }
+                                EpisodeRow(
+                                    modifier = if (motion.reduceMotion) Modifier else Modifier.animateItem(),
+                                    episode = episode,
+                                    dlState = state,
+                                    dlPercent = info?.percent ?: 0f,
+                                    resumeMs = positions[episode.number] ?: 0L,
+                                    durationMs = durations[episode.number] ?: 0L,
+                                    isActiveResume = activeResumeEpisode == episode.number,
+                                    isFirstInTimeline = index == 0,
+                                    isLastInTimeline = index == loadedEpisodes.lastIndex,
+                                    selectionMode = selectionMode,
+                                    isSelected = selected.contains(episode.number),
+                                    onDownload = { download(episode) },
+                                    onClick = {
+                                        if (selectionMode) {
+                                            if (selected.contains(episode.number)) {
+                                                selected.remove(episode.number)
+                                            } else {
+                                                selected.add(episode.number)
+                                            }
                                         } else {
+                                            val offline = info?.takeIf { it.isCompleted }?.meta?.toStream()
+                                            onOpenPlayer(episode, offline)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (!selectionMode) {
+                                            selectionMode = true
+                                            selected.clear()
+                                        }
+                                        if (!selected.contains(episode.number)) {
                                             selected.add(episode.number)
                                         }
-                                    } else {
-                                        val offline = info?.takeIf { it.isCompleted }?.meta?.toStream()
-                                        onOpenPlayer(episode, offline)
                                     }
-                                },
-                                onLongClick = {
-                                    if (!selectionMode) {
-                                        selectionMode = true
-                                        selected.clear()
-                                    }
-                                    if (!selected.contains(episode.number)) {
-                                        selected.add(episode.number)
-                                    }
-                                }
-                            )
+                                )
+                            }
                         }
                     }
                 }
@@ -684,6 +731,67 @@ fun EpisodesPane(
     }
 }
 
+@Composable
+private fun EpisodeTimelineSummary(
+    totalCount: Int,
+    watchedCount: Int,
+    downloadedCount: Int,
+    activeEpisodeNumber: Int?,
+) {
+    val overlays = NovayTheme.overlays
+    val progress = if (totalCount > 0) (watchedCount.toFloat() / totalCount.toFloat()).coerceIn(0f, 1f) else 0f
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .novayCinemaGlass(
+                shape = MaterialTheme.shapes.medium,
+                tint = MaterialTheme.colorScheme.surfaceContainerLow,
+                borderColor = overlays.glassBorder,
+                showBorder = true,
+            )
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .testTag("episodes_timeline_summary"),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "$watchedCount / $totalCount épisode${if (totalCount > 1) "s" else ""} vus",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            if (activeEpisodeNumber != null) {
+                Pill(
+                    text = "Ep. $activeEpisodeNumber",
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = overlays.crimsonOnContainer,
+                )
+            }
+            if (downloadedCount > 0) {
+                Pill(
+                    text = "$downloadedCount DL",
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+            }
+        }
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .clip(CircleShape),
+            color = MaterialTheme.colorScheme.primary,
+            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        )
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun EpisodeRow(
@@ -693,6 +801,8 @@ private fun EpisodeRow(
     resumeMs: Long,
     durationMs: Long,
     isActiveResume: Boolean,
+    isFirstInTimeline: Boolean,
+    isLastInTimeline: Boolean,
     selectionMode: Boolean,
     isSelected: Boolean,
     onDownload: () -> Unit,
@@ -725,131 +835,214 @@ private fun EpisodeRow(
     } else {
         null
     }
+    val isWatched = resumeProgress != null && resumeProgress >= 0.85f
+    val lineColor = when {
+        isActiveResume -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+        isWatched -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.50f)
+        else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+    }
+    val nodeColor = when {
+        isActiveResume -> MaterialTheme.colorScheme.primary
+        isWatched -> MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.outlineVariant
+    }
 
-    Surface(
-        shape = shape,
-        color = containerColor,
-        border = rowBorder,
+    Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
-            .clip(shape)
-            .combinedClickable(
-                interactionSource = interactionSource,
-                indication = ripple(),
-                onClickLabel = if (selectionMode) "Sélectionner l'épisode ${episode.number}" else "Lire ${episode.label}",
-                onClick = onClick,
-                onLongClick = onLongClick,
-            )
-            .minimumInteractiveComponentSize(),
+            .height(IntrinsicSize.Min)
+            .padding(start = 12.dp, end = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column {
-            Row(
-                modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 6.dp, bottom = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
+        // Rail chronologique discret (Vu / En cours / À voir)
+        Column(
+            modifier = Modifier
+                .width(18.dp)
+                .fillMaxHeight(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(2.dp)
+                    .weight(1f)
+                    .background(if (isFirstInTimeline) androidx.compose.ui.graphics.Color.Transparent else lineColor),
+            )
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(if (isActiveResume) 14.dp else 10.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (isActiveResume) {
+                            nodeColor.copy(alpha = 0.24f)
+                        } else if (isWatched) {
+                            nodeColor
+                        } else {
+                            MaterialTheme.colorScheme.background
+                        },
+                    )
+                    .then(
+                        if (!isWatched) {
+                            Modifier.border(
+                                width = if (isActiveResume) 2.dp else 1.5.dp,
+                                color = nodeColor,
+                                shape = CircleShape,
+                            )
+                        } else {
+                            Modifier
+                        },
+                    ),
             ) {
-                if (selectionMode) {
-                    NovayLottieIcon(
-                        res = R.raw.lottie_checkbox,
-                        contentDescription = if (isSelected) "Sélectionné" else "Non sélectionné",
-                        tint = if (isSelected) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        size = 22.dp,
-                        restartKey = isSelected,
-                        modifier = Modifier.padding(end = 10.dp),
+                if (isActiveResume) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(nodeColor),
                     )
                 }
-                Surface(
-                    shape = MaterialTheme.shapes.extraSmall,
-                    color = if (isActiveResume) {
-                        MaterialTheme.colorScheme.secondaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerHigh
-                    },
+            }
+            Box(
+                modifier = Modifier
+                    .width(2.dp)
+                    .weight(1f)
+                    .background(if (isLastInTimeline) androidx.compose.ui.graphics.Color.Transparent else lineColor),
+            )
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        Surface(
+            shape = shape,
+            color = containerColor,
+            border = rowBorder,
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = 4.dp)
+                .clip(shape)
+                .combinedClickable(
+                    interactionSource = interactionSource,
+                    indication = ripple(),
+                    onClickLabel = if (selectionMode) "Sélectionner l'épisode ${episode.number}" else "Lire ${episode.label}",
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                )
+                .minimumInteractiveComponentSize(),
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 6.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = "EP ${episode.number.toString().padStart(2, '0')}",
-                        style = MaterialTheme.typography.labelSmall,
+                    if (selectionMode) {
+                        NovayLottieIcon(
+                            res = R.raw.lottie_checkbox,
+                            contentDescription = if (isSelected) "Sélectionné" else "Non sélectionné",
+                            tint = if (isSelected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            size = 22.dp,
+                            restartKey = isSelected,
+                            modifier = Modifier.padding(end = 10.dp),
+                        )
+                    }
+                    Surface(
+                        shape = MaterialTheme.shapes.extraSmall,
                         color = if (isActiveResume) {
-                            overlays.crimsonOnContainer
+                            MaterialTheme.colorScheme.secondaryContainer
                         } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
+                            MaterialTheme.colorScheme.surfaceContainerHigh
                         },
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
-                            text = episode.label,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
+                            text = "EP ${episode.number.toString().padStart(2, '0')}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isActiveResume) {
+                                overlays.crimsonOnContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         )
-                        if (isActiveResume) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-                                modifier = Modifier.testTag("episode_active_resume_badge"),
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = episode.label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            if (isActiveResume) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                                    modifier = Modifier.testTag("episode_active_resume_badge"),
                                 ) {
-                                    Icon(
-                                        imageVector = NovayIcons.Play,
-                                        contentDescription = null,
-                                        tint = overlays.crimsonOnContainer,
-                                        modifier = Modifier.size(10.dp),
-                                    )
-                                    Text(
-                                        text = stringResource(R.string.episode_active_badge),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = overlays.crimsonOnContainer,
-                                        maxLines = 1,
-                                    )
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = NovayIcons.Play,
+                                            contentDescription = null,
+                                            tint = overlays.crimsonOnContainer,
+                                            modifier = Modifier.size(10.dp),
+                                        )
+                                        Text(
+                                            text = stringResource(R.string.episode_active_badge),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = overlays.crimsonOnContainer,
+                                            maxLines = 1,
+                                        )
+                                    }
                                 }
+                            } else if (isWatched) {
+                                Pill(
+                                    text = stringResource(R.string.episode_watched_badge),
+                                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                                )
                             }
                         }
+                        if (resumeMs > 0L) {
+                            Text(
+                                text = "Reprise à ${formatPosition(resumeMs)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = overlays.crimsonOnContainer,
+                                maxLines = 1,
+                            )
+                        }
                     }
-                    if (resumeMs > 0L) {
-                        Text(
-                            text = "Reprise à ${formatPosition(resumeMs)}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = overlays.crimsonOnContainer,
-                            maxLines = 1,
-                        )
-                    }
+                    EpisodeDownloadIndicator(
+                        state = dlState,
+                        percent = dlPercent,
+                        onDownload = onDownload,
+                    )
                 }
-                EpisodeDownloadIndicator(
-                    state = dlState,
-                    percent = dlPercent,
-                    onDownload = onDownload,
-                )
-            }
-            if (resumeProgress != null) {
-                LinearProgressIndicator(
-                    progress = { resumeProgress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(2.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                )
+                if (resumeProgress != null) {
+                    LinearProgressIndicator(
+                        progress = { resumeProgress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp),
+                        color = if (isWatched) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                    )
+                }
             }
         }
     }

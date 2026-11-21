@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -19,11 +20,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -50,6 +54,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -63,22 +69,23 @@ import dot.jcversa.novay.downloads.formatEta
 import dot.jcversa.novay.downloads.formatSpeed
 import dot.jcversa.novay.ui.LocalBottomChromePadding
 import dot.jcversa.novay.ui.components.AppBarTitle
-import dot.jcversa.novay.ui.components.NovayLottieIcon
-import dot.jcversa.novay.ui.components.NovayPlayPauseMorphIcon
 import dot.jcversa.novay.ui.components.EmptyScreen
+import dot.jcversa.novay.ui.components.LocalNovayToast
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayIcons
+import dot.jcversa.novay.ui.components.NovayLottieIcon
+import dot.jcversa.novay.ui.components.NovayPlayPauseMorphIcon
 import dot.jcversa.novay.ui.components.NovaySectionHeader
+import dot.jcversa.novay.ui.components.NovayToastTone
 import dot.jcversa.novay.ui.components.Pill
 import dot.jcversa.novay.ui.components.SlateMotion
+import dot.jcversa.novay.ui.components.novayCinemaGlass
 import dot.jcversa.novay.ui.state.DownloadSection
-import androidx.compose.foundation.selection.toggleable
-import androidx.compose.ui.semantics.Role
 import dot.jcversa.novay.ui.theme.NovayTheme
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Écran File de téléchargements — Cinema Glassmorphism & Editorial Noir :
@@ -93,6 +100,7 @@ fun DownloadsScreen(
     onPlay: (season: AnimeSeason, episode: AnimeEpisode, stream: ResolvedStream) -> Unit
 ) {
     val context = LocalContext.current
+    val toast = LocalNovayToast.current
     val bottomChrome = LocalBottomChromePadding.current
     var infos by remember { mutableStateOf<List<Downloads.DownloadInfo>>(emptyList()) }
     var speeds by remember { mutableStateOf<Map<String, SpeedMeter.Reading>>(emptyMap()) }
@@ -186,6 +194,18 @@ fun DownloadsScreen(
                                 .widthIn(max = 840.dp),
                             contentPadding = PaddingValues(bottom = 104.dp + bottomChrome),
                         ) {
+                            item(
+                                key = "downloads_dashboard",
+                                contentType = "downloads_dashboard",
+                            ) {
+                                DownloadsDashboardCard(
+                                    infos = infos,
+                                    speeds = speeds,
+                                    paused = paused,
+                                    wifiOnly = wifiOnly,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                )
+                            }
                             sections.forEach { section ->
                                 item(
                                     key = "header_${section.animeTitle}",
@@ -231,7 +251,10 @@ fun DownloadsScreen(
                                             )
                                             onPlay(season, episode, meta.toStream())
                                         },
-                                        onRemove = { Downloads.remove(context, info.id) },
+                                        onRemove = {
+                                            Downloads.remove(context, info.id)
+                                            toast.show("Téléchargement supprimé", NovayToastTone.INFO)
+                                        },
                                     )
                                 }
                             }
@@ -264,8 +287,10 @@ fun DownloadsScreen(
                 onClick = {
                     if (paused) {
                         Downloads.resumeAll(context)
+                        toast.show("Téléchargements repris", NovayToastTone.SUCCESS)
                     } else {
                         Downloads.pauseAll(context)
+                        toast.show("Téléchargements mis en pause", NovayToastTone.INFO)
                     }
                 },
                 shape = CircleShape,
@@ -390,8 +415,14 @@ private fun DownloadRow(
             }
             if (!info.isCompleted) {
                 Spacer(Modifier.height(8.dp))
+                val motion = LocalSlateMotion.current
+                val animatedProgress by animateFloatAsState(
+                    targetValue = (info.percent / 100f).coerceIn(0f, 1f),
+                    animationSpec = motion.enterSpec(220),
+                    label = "download_row_progress",
+                )
                 LinearProgressIndicator(
-                    progress = { (info.percent / 100f).coerceIn(0f, 1f) },
+                    progress = { animatedProgress },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(end = 8.dp)
@@ -406,6 +437,157 @@ private fun DownloadRow(
                 )
             }
         }
+    }
+}
+
+@Composable
+internal fun DownloadsDashboardCard(
+    infos: List<Downloads.DownloadInfo>,
+    speeds: Map<String, SpeedMeter.Reading>,
+    paused: Boolean,
+    wifiOnly: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val overlays = NovayTheme.overlays
+    val motion = LocalSlateMotion.current
+    val completedCount = remember(infos) { infos.count { it.isCompleted } }
+    val activeCount = remember(infos) { infos.count { it.isActive } }
+    val failedCount = remember(infos) { infos.count { it.isFailed } }
+    val totalSpeed = remember(speeds) { speeds.values.sumOf { it.bytesPerSecond } }
+    val totalStoredBytes = remember(infos) {
+        infos.sumOf { info ->
+            if (info.isCompleted) info.totalBytes.coerceAtLeast(info.bytesDownloaded)
+            else info.bytesDownloaded.coerceAtLeast(0L)
+        }
+    }
+    val averagePercent = remember(infos) {
+        if (infos.isEmpty()) 0f
+        else (infos.sumOf { if (it.isCompleted) 100.0 else it.percent.toDouble() } / infos.size / 100.0)
+            .toFloat()
+            .coerceIn(0f, 1f)
+    }
+    val animatedAverage by animateFloatAsState(
+        targetValue = averagePercent,
+        animationSpec = motion.enterSpec(240),
+        label = "downloads_dashboard_progress",
+    )
+    val statusLabel = when {
+        activeCount > 0 && totalSpeed > 0 -> formatSpeed(totalSpeed)
+        activeCount > 0 -> "$activeCount actif${if (activeCount > 1) "s" else ""}"
+        paused -> "En pause"
+        failedCount > 0 -> "$failedCount en échec"
+        wifiOnly && completedCount < infos.size -> "Attente Wi-Fi"
+        else -> "Tout est prêt"
+    }
+    val statusTint = when {
+        activeCount > 0 -> MaterialTheme.colorScheme.primary
+        failedCount > 0 -> MaterialTheme.colorScheme.error
+        completedCount == infos.size && infos.isNotEmpty() -> MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .novayCinemaGlass(
+                shape = RoundedCornerShape(18.dp),
+                tint = overlays.glassSurface,
+                borderColor = overlays.glassBorder,
+                showBorder = true,
+            )
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+            .testTag("downloads_dashboard_card"),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.downloads_dashboard_title),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            Pill(
+                text = statusLabel,
+                color = statusTint.copy(alpha = 0.16f),
+                contentColor = statusTint,
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DashboardMetric(
+                label = "Hors-ligne",
+                value = "$completedCount / ${infos.size}",
+                modifier = Modifier.weight(1f),
+            )
+            DashboardMetric(
+                label = "En file",
+                value = "$activeCount",
+                modifier = Modifier.weight(1f),
+            )
+            DashboardMetric(
+                label = "Volume",
+                value = formatStorageSize(totalStoredBytes),
+                modifier = Modifier.weight(1f),
+            )
+        }
+
+        LinearProgressIndicator(
+            progress = { animatedAverage },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(5.dp)
+                .clip(RoundedCornerShape(999.dp)),
+            color = if (completedCount == infos.size && infos.isNotEmpty()) {
+                MaterialTheme.colorScheme.tertiary
+            } else {
+                MaterialTheme.colorScheme.primary
+            },
+            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        )
+    }
+}
+
+@Composable
+private fun DashboardMetric(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun formatStorageSize(bytes: Long): String {
+    if (bytes <= 0L) return "0 Mo"
+    val mb = bytes / (1024.0 * 1024.0)
+    return if (mb >= 1024.0) {
+        String.format(Locale.FRENCH, "%.1f Go", mb / 1024.0)
+    } else {
+        String.format(Locale.FRENCH, "%.0f Mo", mb.coerceAtLeast(1.0))
     }
 }
 

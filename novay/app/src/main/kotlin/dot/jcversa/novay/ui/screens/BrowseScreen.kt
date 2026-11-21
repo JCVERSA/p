@@ -2,6 +2,9 @@ package dot.jcversa.novay.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -55,16 +59,20 @@ import dot.jcversa.novay.data.GenreCatalog
 import dot.jcversa.novay.data.Library
 import dot.jcversa.novay.data.SearchHistory
 import dot.jcversa.novay.data.WatchHistory
+import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.ui.LocalBottomChromePadding
 import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.GenreFilterChipBar
 import dot.jcversa.novay.ui.components.LocalSlateMotion
+import dot.jcversa.novay.ui.components.NoResultsStateView
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayBrandSeal
 import dot.jcversa.novay.ui.components.NovayIcons
+import dot.jcversa.novay.ui.components.OfflineStateView
 import dot.jcversa.novay.ui.components.PosterGridSkeleton
+import dot.jcversa.novay.ui.components.isDeviceOnline
 import dot.jcversa.novay.ui.state.BrowseFeaturedState
 import dot.jcversa.novay.ui.state.BrowseSearchController
 import dot.jcversa.novay.ui.state.BrowseSearchDisplay
@@ -90,6 +98,8 @@ fun BrowseScreen(
     source: AnimeSource,
     onOpenShow: (AnimeSearchResult) -> Unit,
     onOpenEpisodes: (animeTitle: String, posterUrl: String?, season: AnimeSeason) -> Unit = { _, _, _ -> },
+    onResume: (WatchHistoryEntry) -> Unit = {},
+    onOpenDownloads: (() -> Unit)? = null,
     showBrandSeal: Boolean = false,
 ) {
     val motion = LocalSlateMotion.current
@@ -345,10 +355,31 @@ fun BrowseScreen(
             scrollBehavior = scrollBehavior,
         )
 
+        val isSearchFocused = controller.isFocused
+        val searchHorizontalPad by animateDpAsState(
+            targetValue = if (isSearchFocused) 12.dp else 16.dp,
+            animationSpec = motion.dockDpSpec(),
+            label = "browse_search_pad",
+        )
+        val searchIconScale by animateFloatAsState(
+            targetValue = if (isSearchFocused) 1.1f else 1f,
+            animationSpec = motion.spatialFloatSpec(),
+            label = "browse_search_icon_scale",
+        )
+        val searchBorderColor by animateColorAsState(
+            targetValue = if (isSearchFocused) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.outlineVariant
+            },
+            animationSpec = motion.colorSpec(180),
+            label = "browse_search_border",
+        )
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = searchHorizontalPad, vertical = 8.dp),
             contentAlignment = Alignment.Center,
         ) {
             Row(
@@ -393,6 +424,10 @@ fun BrowseScreen(
                                 imageVector = NovayIcons.Search,
                                 contentDescription = "Lancer la recherche",
                                 tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.graphicsLayer {
+                                    scaleX = searchIconScale
+                                    scaleY = searchIconScale
+                                },
                             )
                         }
                     },
@@ -431,9 +466,9 @@ fun BrowseScreen(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                        focusedBorderColor = searchBorderColor,
+                        unfocusedBorderColor = searchBorderColor,
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
                         unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                         cursorColor = MaterialTheme.colorScheme.primary,
                         focusedTextColor = MaterialTheme.colorScheme.onSurface,
@@ -486,6 +521,7 @@ fun BrowseScreen(
                     featured = controller.featuredState,
                     home = home,
                     catalogPage = controller.catalogPageState,
+                    watchHistory = controller.watchHistory,
                     libraryUrls = libraryUrls,
                     randomSeed = randomSeed,
                     bottomChrome = bottomChrome,
@@ -495,6 +531,7 @@ fun BrowseScreen(
                     onLoadMoreCatalog = ::loadMoreCatalogPage,
                     onOpenShow = onOpenShow,
                     onOpenEpisodes = onOpenEpisodes,
+                    onResumeHistory = onResume,
                 )
 
                 BrowseSearchDisplay.FilteredCatalog -> {
@@ -592,32 +629,65 @@ fun BrowseScreen(
                 BrowseSearchDisplay.Error -> {
                     val errMessage = (controller.submittedState as? BrowseSearchState.Error)
                         ?.message ?: "Erreur inconnue"
-                    ErrorView(
-                        message = errMessage,
-                        onRetry = { submitSearch() },
-                        title = stringResource(R.string.error_catalog_title),
-                        icon = NovayIcons.ErrorSeal,
-                        modifier = Modifier.padding(bottom = bottomChrome),
-                    )
+                    if (!isDeviceOnline(context)) {
+                        OfflineStateView(
+                            onRetry = { submitSearch() },
+                            onOpenDownloads = onOpenDownloads,
+                            modifier = Modifier.padding(bottom = bottomChrome),
+                        )
+                    } else {
+                        ErrorView(
+                            message = errMessage,
+                            onRetry = { submitSearch() },
+                            title = stringResource(R.string.error_catalog_title),
+                            icon = NovayIcons.ErrorSeal,
+                            modifier = Modifier.padding(bottom = bottomChrome),
+                        )
+                    }
                 }
 
                 BrowseSearchDisplay.GenreError -> {
                     val errMessage = (controller.genreState as? BrowseSearchState.Error)
                         ?.message ?: "Erreur inconnue"
-                    ErrorView(
-                        message = errMessage,
-                        onRetry = { controller.retryGenre() },
-                        title = stringResource(R.string.error_catalog_title),
-                        icon = NovayIcons.ErrorSeal,
-                        modifier = Modifier.padding(bottom = bottomChrome),
-                    )
+                    if (!isDeviceOnline(context)) {
+                        OfflineStateView(
+                            onRetry = { controller.retryGenre() },
+                            onOpenDownloads = onOpenDownloads,
+                            modifier = Modifier.padding(bottom = bottomChrome),
+                        )
+                    } else {
+                        ErrorView(
+                            message = errMessage,
+                            onRetry = { controller.retryGenre() },
+                            title = stringResource(R.string.error_catalog_title),
+                            icon = NovayIcons.ErrorSeal,
+                            modifier = Modifier.padding(bottom = bottomChrome),
+                        )
+                    }
                 }
 
-                BrowseSearchDisplay.EmptyResults -> EmptyScreen(
-                    icon = NovayIcons.Search,
-                    lottieRes = R.raw.lottie_explore,
-                    headingText = "Aucun résultat",
-                    subtitleText = "Rien trouvé pour « ${controller.trimmedQuery} » — vérifie l'orthographe ou essaie un mot-clé plus court.",
+                BrowseSearchDisplay.EmptyResults -> NoResultsStateView(
+                    title = stringResource(R.string.state_no_results_title),
+                    subtitle = stringResource(R.string.state_no_results_subtitle, controller.trimmedQuery),
+                    suggestions = listOf("Frieren", "Solo Leveling", "One Piece", "Jujutsu Kaisen"),
+                    onSelectSuggestion = { suggestion ->
+                        savedQuery = suggestion
+                        controller.fillQuery(suggestion)
+                        submitSearch(suggestion)
+                    },
+                    resetLabel = if (controller.filterState.hasAnyActiveFilter) {
+                        stringResource(R.string.action_reset_filters)
+                    } else {
+                        "Effacer la recherche"
+                    },
+                    onReset = {
+                        if (controller.filterState.hasAnyActiveFilter) {
+                            controller.resetAllFilters()
+                        } else {
+                            savedQuery = ""
+                            controller.clearQueryOnly()
+                        }
+                    },
                     modifier = Modifier.padding(bottom = bottomChrome),
                 )
 

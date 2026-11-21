@@ -93,10 +93,20 @@ internal fun CinemaShowHeader(
     languages: List<String>,
     parallaxOffsetProvider: () -> Float,
     onPosterResolved: (String) -> Unit,
+    posterAccent: Color? = null,
 ) {
     val posterShape = MaterialTheme.shapes.medium
     val overlays = NovayTheme.overlays
-    val supportsBlur = Build.VERSION.SDK_INT >= 31
+    val motion = LocalSlateMotion.current
+    val perf = dot.jcversa.novay.performance.LocalPerformanceProfile.current
+    val supportsBlur = perf.allowAtmosphericBackdropBlur
+    val adaptiveWash by animateColorAsState(
+        targetValue = (posterAccent ?: MaterialTheme.colorScheme.primary).copy(
+            alpha = if (posterAccent != null) 0.20f else 0.08f,
+        ),
+        animationSpec = motion.colorSpec(320),
+        label = "show_header_adaptive_wash",
+    )
 
     val metadataParts = remember(details, anime.subtitle, seasonCount) {
         buildList {
@@ -118,6 +128,8 @@ internal fun CinemaShowHeader(
             contentDescription = null,
             animeUrl = anime.url,
             animeTitle = anime.title,
+            decodeWidthDp = 96.dp,
+            decodeHeightDp = 144.dp,
             onPosterResolved = onPosterResolved,
             modifier = Modifier
                 .matchParentSize()
@@ -134,8 +146,8 @@ internal fun CinemaShowHeader(
                 .matchParentSize()
                 .background(
                     Brush.verticalGradient(
-                        0f to MaterialTheme.colorScheme.background.copy(alpha = if (supportsBlur) 0.20f else 0.44f),
-                        0.45f to MaterialTheme.colorScheme.background.copy(alpha = if (supportsBlur) 0.68f else 0.80f),
+                        0f to adaptiveWash,
+                        0.45f to MaterialTheme.colorScheme.background.copy(alpha = if (supportsBlur) 0.64f else 0.78f),
                         0.82f to MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
                         1f to MaterialTheme.colorScheme.background,
                     ),
@@ -152,6 +164,8 @@ internal fun CinemaShowHeader(
                 contentDescription = anime.title,
                 animeUrl = anime.url,
                 animeTitle = anime.title,
+                decodeWidthDp = 116.dp,
+                decodeHeightDp = 174.dp,
                 onPosterResolved = onPosterResolved,
                 modifier = Modifier
                     .width(116.dp)
@@ -168,7 +182,11 @@ internal fun CinemaShowHeader(
                 Text(
                     text = anime.title,
                     style = MaterialTheme.typography.displayMedium.copy(
-                        shadow = Shadow(color = Color.Black.copy(alpha = 0.55f), blurRadius = 8f),
+                        shadow = if (perf.allowCardTextShadowBlur) {
+                            Shadow(color = Color.Black.copy(alpha = 0.55f), blurRadius = 8f)
+                        } else {
+                            null
+                        },
                     ),
                     color = MaterialTheme.colorScheme.onBackground,
                     maxLines = 3,
@@ -256,27 +274,44 @@ internal fun ShowActionBar(
             )
         }
 
+        val motion = LocalSlateMotion.current
+        val favContainer by animateColorAsState(
+            targetValue = if (inLibrary) {
+                MaterialTheme.colorScheme.secondaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerLow
+            },
+            animationSpec = motion.colorSpec(200),
+            label = "show_fav_bg",
+        )
+        val favBorder by animateColorAsState(
+            targetValue = if (inLibrary) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.outlineVariant
+            },
+            animationSpec = motion.colorSpec(200),
+            label = "show_fav_border",
+        )
+        val favContent by animateColorAsState(
+            targetValue = if (inLibrary) {
+                overlays.crimsonOnContainer
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            animationSpec = motion.colorSpec(200),
+            label = "show_fav_fg",
+        )
+
         OutlinedButton(
             onClick = onToggleFavorite,
             border = BorderStroke(
                 width = 1.dp,
-                color = if (inLibrary) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.outlineVariant
-                },
+                color = favBorder,
             ),
             colors = ButtonDefaults.outlinedButtonColors(
-                containerColor = if (inLibrary) {
-                    MaterialTheme.colorScheme.secondaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerLow
-                },
-                contentColor = if (inLibrary) {
-                    overlays.crimsonOnContainer
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
+                containerColor = favContainer,
+                contentColor = favContent,
             ),
             modifier = Modifier
                 .minimumInteractiveComponentSize()
@@ -284,11 +319,7 @@ internal fun ShowActionBar(
         ) {
             NovayFavoriteMorphIcon(
                 inLibrary = inLibrary,
-                tint = if (inLibrary) {
-                    overlays.crimsonOnContainer
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
+                tint = favContent,
                 size = 18.dp,
             )
             Spacer(Modifier.width(6.dp))

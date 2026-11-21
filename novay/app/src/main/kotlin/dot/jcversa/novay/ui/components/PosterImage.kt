@@ -17,21 +17,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import coil.size.Precision
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.ImageUrlSanitizer
+import dot.jcversa.novay.performance.LocalPerformanceProfile
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 /**
  * Affiche d'un anime : utilise [AsyncImage] (sans sous-composition coûteuse
  * en LazyGrid/LazyColumn) avec normalisation d'URL, clés de cache Coil
- * explicites, réessai automatique sur échec transitoire et repli vers la
- * fiche anime si [animeUrl] + [LocalPosterResolver] sont disponibles.
+ * explicites, bornage mémoire RGB_565 / redimensionnement au décodage,
+ * réessai automatique sur échec transitoire et repli vers la fiche anime
+ * si [animeUrl] + [LocalPosterResolver] sont disponibles.
  */
 @Composable
 fun PosterImage(
@@ -41,6 +46,8 @@ fun PosterImage(
     spinnerSize: Dp = 14.dp,
     animeUrl: String? = null,
     animeTitle: String? = null,
+    decodeWidthDp: Dp = Dp.Unspecified,
+    decodeHeightDp: Dp = Dp.Unspecified,
     onPosterResolved: ((String) -> Unit)? = null,
 ) {
     val sanitizedInput = remember(url) { ImageUrlSanitizer.sanitizePosterUrl(url) }
@@ -87,14 +94,42 @@ fun PosterImage(
     }
 
     val context = LocalContext.current
+    val density = LocalDensity.current
     val reduceMotion = LocalSlateMotion.current.reduceMotion
-    val request = remember(context, activeUrl, reduceMotion, retryAttempt) {
+    val perfProfile = LocalPerformanceProfile.current
+    val decodeWidthPx = if (decodeWidthDp != Dp.Unspecified) {
+        with(density) { decodeWidthDp.toPx().roundToInt().coerceAtLeast(24) }
+    } else {
+        0
+    }
+    val decodeHeightPx = if (decodeHeightDp != Dp.Unspecified) {
+        with(density) { decodeHeightDp.toPx().roundToInt().coerceAtLeast(24) }
+    } else {
+        0
+    }
+    val crossfadeDuration = if (reduceMotion) 0 else perfProfile.coilCrossfadeMs
+    val preferRgb565 = perfProfile.preferRgb565Posters
+
+    val request = remember(
+        context,
+        activeUrl,
+        crossfadeDuration,
+        preferRgb565,
+        decodeWidthPx,
+        decodeHeightPx,
+        retryAttempt,
+    ) {
         ImageRequest.Builder(context)
             .data(activeUrl)
             .memoryCacheKey(activeUrl)
             .diskCacheKey(activeUrl)
-            .crossfade(if (reduceMotion) 0 else 160)
+            .allowRgb565(preferRgb565)
+            .precision(Precision.INEXACT)
+            .crossfade(crossfadeDuration)
             .apply {
+                if (decodeWidthPx > 0 && decodeHeightPx > 0) {
+                    size(decodeWidthPx, decodeHeightPx)
+                }
                 if (retryAttempt > 0) {
                     memoryCachePolicy(CachePolicy.WRITE_ONLY)
                 }

@@ -75,10 +75,12 @@ import dot.jcversa.novay.ui.components.AnimeComfortableGridItem
 import dot.jcversa.novay.ui.components.EpisodesListSkeleton
 import dot.jcversa.novay.ui.components.ErrorView
 import dot.jcversa.novay.ui.components.LangPill
+import dot.jcversa.novay.ui.components.LocalNovayToast
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayBadge
 import dot.jcversa.novay.ui.components.NovayFavoriteMorphIcon
 import dot.jcversa.novay.ui.components.NovayIcons
+import dot.jcversa.novay.ui.components.NovayToastTone
 import dot.jcversa.novay.ui.components.PosterImage
 import dot.jcversa.novay.ui.components.novaySharedPoster
 import dot.jcversa.novay.ui.player.EmbeddedVideoPlayer
@@ -116,6 +118,7 @@ fun PlayerScreen(
     val context = LocalContext.current
     val motion = LocalSlateMotion.current
     val overlays = NovayTheme.overlays
+    val toastController = LocalNovayToast.current
     val listState = rememberLazyListState()
 
     LaunchedEffect(season.url, episode.number, initialStream) {
@@ -221,6 +224,10 @@ fun PlayerScreen(
             addedAt = System.currentTimeMillis(),
         )
         inLibrary = Library.toggle(context, entry)
+        toastController.show(
+            message = if (inLibrary) "Ajouté à ta bibliothèque" else "Retiré de ta bibliothèque",
+            tone = if (inLibrary) NovayToastTone.SUCCESS else NovayToastTone.INFO,
+        )
     }
 
     Column(

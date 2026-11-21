@@ -25,3 +25,5 @@ dependencyResolutionManagement {
 rootProject.name = "NoVaY"
 
 include(":app")
+// V3.2 (niht) : generation des profils de reference (macrobenchmarks).
+include(":baselineprofile")

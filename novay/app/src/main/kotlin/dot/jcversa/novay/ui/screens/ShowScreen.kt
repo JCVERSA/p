@@ -71,12 +71,19 @@ import dot.jcversa.novay.ui.components.AppBarAction
 import dot.jcversa.novay.ui.components.AppBarTitle
 import dot.jcversa.novay.ui.components.EmptyScreen
 import dot.jcversa.novay.ui.components.ErrorView
+import dot.jcversa.novay.ui.components.LocalNovayToast
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayAppBar
 import dot.jcversa.novay.ui.components.NovayIcons
+import dot.jcversa.novay.ui.components.NovayToastTone
+import dot.jcversa.novay.ui.components.OfflineStateView
 import dot.jcversa.novay.ui.components.ShowScreenSkeleton
 import dot.jcversa.novay.ui.components.SlateMotion
+import dot.jcversa.novay.ui.components.isDeviceOnline
 import dot.jcversa.novay.ui.theme.NovayTheme
+import dot.jcversa.novay.ui.theme.NovayThemePreset
+import dot.jcversa.novay.ui.theme.NovayThemeState
+import dot.jcversa.novay.ui.theme.rememberPosterPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -111,6 +118,7 @@ fun ShowScreen(
     val context = LocalContext.current
     val motion = LocalSlateMotion.current
     val bottomChrome = LocalBottomChromePadding.current
+    val toastController = LocalNovayToast.current
     var seasons by remember(anime.url) { mutableStateOf<List<AnimeSeason>?>(null) }
     var scanPanels by remember(anime.url) { mutableStateOf<List<ScanPanel>?>(null) }
     var details by remember(anime.url) {
@@ -145,6 +153,10 @@ fun ShowScreen(
             synopsis = details.synopsis ?: anime.synopsis,
         )
     }
+    val posterPalette = rememberPosterPalette(
+        posterUrl = effectiveAnime.posterUrl,
+        syncGlobalDynamicTheme = NovayThemeState.preset == NovayThemePreset.POSTER_ADAPTIVE,
+    )
     var showActionsSheet by remember { mutableStateOf(false) }
     var showDetailsSheet by remember { mutableStateOf(false) }
 
@@ -283,6 +295,10 @@ fun ShowScreen(
             genres = showGenres,
         )
         inLibrary = Library.toggle(context, entry)
+        toastController.show(
+            message = if (inLibrary) "Ajouté à ta bibliothèque" else "Retiré de ta bibliothèque",
+            tone = if (inLibrary) NovayToastTone.SUCCESS else NovayToastTone.INFO,
+        )
     }
 
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
@@ -371,13 +387,20 @@ fun ShowScreen(
                 label = "show_body_state",
             ) { stateKey ->
                 when (stateKey) {
-                    "error" -> ErrorView(
-                        message = error ?: "Erreur inconnue",
-                        onRetry = { retryKey++ },
-                        title = stringResource(R.string.error_catalog_title),
-                        icon = NovayIcons.ErrorSeal,
-                        modifier = Modifier.padding(bottom = bottomChrome),
-                    )
+                    "error" -> if (!isDeviceOnline(context)) {
+                        OfflineStateView(
+                            onRetry = { retryKey++ },
+                            modifier = Modifier.padding(bottom = bottomChrome),
+                        )
+                    } else {
+                        ErrorView(
+                            message = error ?: "Erreur inconnue",
+                            onRetry = { retryKey++ },
+                            title = stringResource(R.string.error_catalog_title),
+                            icon = NovayIcons.ErrorSeal,
+                            modifier = Modifier.padding(bottom = bottomChrome),
+                        )
+                    }
                     "loading" -> Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.TopCenter,
@@ -421,6 +444,7 @@ fun ShowScreen(
                                         activeSeasonUrl = selectedSeason?.url,
                                         parallaxOffsetProvider = headerParallaxProvider,
                                         animateItems = !motion.reduceMotion,
+                                        posterAccent = posterPalette?.accent,
                                         onResume = onResume,
                                         onToggleFavorite = ::toggleFavorite,
                                         onOpenDetails = { showDetailsSheet = true },
@@ -514,6 +538,7 @@ fun ShowScreen(
                                         activeSeasonUrl = null,
                                         parallaxOffsetProvider = headerParallaxProvider,
                                         animateItems = !motion.reduceMotion,
+                                        posterAccent = posterPalette?.accent,
                                         onResume = onResume,
                                         onToggleFavorite = ::toggleFavorite,
                                         onOpenDetails = { showDetailsSheet = true },
@@ -609,6 +634,7 @@ fun ShowScreen(
             onMarkAllSeen = {
                 showActionsSheet = false
                 seasons.orEmpty().forEach(markSeasonSeen)
+                toastController.show("Saisons marquées comme vues")
             },
             onOpenDetails = {
                 showActionsSheet = false

@@ -3,6 +3,7 @@ package dot.jcversa.novay.ui.state
 import androidx.compose.runtime.Immutable
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
+import dot.jcversa.novay.data.LibraryCollection
 import dot.jcversa.novay.data.LibraryEntry
 import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.downloads.Downloads
@@ -79,6 +80,7 @@ data class LibraryUiState(
     val hasVf: Boolean = false,
     val hasVostfr: Boolean = false,
     val availableGenres: List<String> = emptyList(),
+    val collections: List<LibraryCollection> = emptyList(),
 )
 
 @Immutable
@@ -176,13 +178,20 @@ fun computeLibraryItems(
     filter: LibraryFilter,
     sort: LibrarySort,
     selectedGenre: String? = null,
+    selectedCollection: LibraryCollection? = null,
 ): List<LibraryItemUi> {
+    val collectionFiltered = if (selectedCollection == null) {
+        allItems
+    } else {
+        val urls = selectedCollection.animeUrls.map { it.trimEnd('/') }.toSet()
+        allItems.filter { it.entry.url.trimEnd('/') in urls }
+    }
     val langFiltered = when (filter) {
-        LibraryFilter.ALL -> allItems
-        LibraryFilter.VF -> allItems.filter { h ->
+        LibraryFilter.ALL -> collectionFiltered
+        LibraryFilter.VF -> collectionFiltered.filter { h ->
             h.entry.languages.any { it.equals("VF", ignoreCase = true) }
         }
-        LibraryFilter.VOSTFR -> allItems.filter { h ->
+        LibraryFilter.VOSTFR -> collectionFiltered.filter { h ->
             h.entry.languages.any { it.equals("VOSTFR", ignoreCase = true) }
         }
     }
@@ -202,3 +211,55 @@ fun computeLibraryItems(
         )
     }
 }
+
+enum class BrowseMood(
+    val id: String,
+    val label: String,
+    val matchingGenres: Set<String>,
+) {
+    ALL(
+        id = "all",
+        label = "Tout",
+        matchingGenres = emptySet(),
+    ),
+    ACTION(
+        id = "action",
+        label = "Action intense",
+        matchingGenres = setOf("Action", "Combat", "Arts Martiaux", "Shonen", "Sport"),
+    ),
+    MYSTERY(
+        id = "mystery",
+        label = "Frissons & Mystère",
+        matchingGenres = setOf("Mystère", "Horreur", "Psychologique", "Thriller", "Seinen", "Surnaturel"),
+    ),
+    ROMANCE(
+        id = "romance",
+        label = "Romance & Émotion",
+        matchingGenres = setOf("Romance", "Drame", "Tranche de vie", "Shojo", "Musique"),
+    ),
+    ISEKAI(
+        id = "isekai",
+        label = "Isekai & Évasion",
+        matchingGenres = setOf("Isekai", "Fantastique", "Fantasy", "Aventure", "Magie"),
+    ),
+    SCIFI(
+        id = "scifi",
+        label = "Sci-Fi & Futur",
+        matchingGenres = setOf("Sci-Fi", "Science-Fiction", "Mecha", "Cyberpunk", "Espace"),
+    ),
+}
+
+fun filterItemsByMood(
+    items: List<AnimeSearchResult>,
+    mood: BrowseMood,
+): List<AnimeSearchResult> {
+    if (mood == BrowseMood.ALL || items.isEmpty()) return items
+    return items.filter { anime ->
+        anime.genres.any { genre ->
+            mood.matchingGenres.any { target ->
+                dot.jcversa.novay.data.GenreCatalog.matches(listOf(genre), target)
+            }
+        }
+    }
+}
+

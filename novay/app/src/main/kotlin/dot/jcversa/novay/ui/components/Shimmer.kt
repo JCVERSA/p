@@ -26,7 +26,9 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,20 +43,51 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dot.jcversa.novay.performance.LocalPerformanceProfile
 import dot.jcversa.novay.ui.theme.NovayTheme
+
+val LocalSharedShimmerProgress = staticCompositionLocalOf<(() -> Float)?> { null }
+
+@Composable
+fun SharedShimmerScope(content: @Composable () -> Unit) {
+    val motion = LocalSlateMotion.current
+    val perf = LocalPerformanceProfile.current
+    val sharedProvider: (() -> Float)? = if (motion.reduceMotion || !perf.allowAnimatedShimmer) {
+        remember { { -1f } }
+    } else {
+        val transition = rememberInfiniteTransition(label = "novay_shared_shimmer")
+        val progressState = transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1250, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "novay_shared_shimmer_progress",
+        )
+        remember(progressState) { { progressState.value } }
+    }
+    CompositionLocalProvider(
+        LocalSharedShimmerProgress provides sharedProvider,
+        content = content,
+    )
+}
 
 /**
  * Squelettes de chargement animés (Shimmer) — zéro recomposition et zéro
  * allocation par image : la progression (0f..1f) est lue exclusivement en
  * phase Draw (`drawWithCache` + `translate`) et partagée au sein d'un même
- * squelette. Respectent intégralement `reduceMotion`.
+ * squelette ou de [SharedShimmerScope]. Bascule en teinte statique sur
+ * appareils modestes ou lorsque `reduceMotion` est actif.
  */
 @Composable
 fun rememberShimmerProgress(): () -> Float {
     val motion = LocalSlateMotion.current
-    if (motion.reduceMotion) {
+    val perf = LocalPerformanceProfile.current
+    if (motion.reduceMotion || !perf.allowAnimatedShimmer) {
         return remember { { -1f } }
     }
+    LocalSharedShimmerProgress.current?.let { return it }
     val transition = rememberInfiniteTransition(label = "novay_shimmer")
     val progressState = transition.animateFloat(
         initialValue = 0f,
@@ -358,3 +391,100 @@ fun EpisodesListSkeleton(
         }
     }
 }
+
+@Composable
+fun BrowseDiscoverySkeleton(
+    modifier: Modifier = Modifier,
+) {
+    val shimmerProgress = rememberShimmerProgress()
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .semantics { contentDescription = "Chargement de la découverte" },
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        ShimmerBox(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(210.dp),
+            shape = MaterialTheme.shapes.large,
+            progressProvider = shimmerProgress,
+        )
+        ShimmerBox(
+            modifier = Modifier
+                .width(170.dp)
+                .height(16.dp),
+            shape = MaterialTheme.shapes.extraSmall,
+            progressProvider = shimmerProgress,
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            repeat(3) {
+                ShimmerBox(
+                    modifier = Modifier
+                        .weight(1f)
+                        .aspectRatio(2f / 3f),
+                    shape = MaterialTheme.shapes.small,
+                    progressProvider = shimmerProgress,
+                )
+            }
+        }
+        ShimmerBox(
+            modifier = Modifier
+                .width(140.dp)
+                .height(16.dp),
+            shape = MaterialTheme.shapes.extraSmall,
+            progressProvider = shimmerProgress,
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            repeat(3) {
+                ShimmerBox(
+                    modifier = Modifier
+                        .weight(1f)
+                        .aspectRatio(2f / 3f),
+                    shape = MaterialTheme.shapes.small,
+                    progressProvider = shimmerProgress,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun DownloadsDashboardSkeleton(
+    modifier: Modifier = Modifier,
+) {
+    val shimmerProgress = rememberShimmerProgress()
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .widthIn(max = 840.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .semantics { contentDescription = "Chargement des téléchargements" },
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        ShimmerBox(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(104.dp),
+            shape = MaterialTheme.shapes.large,
+            progressProvider = shimmerProgress,
+        )
+        repeat(4) {
+            ShimmerBox(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(78.dp),
+                shape = MaterialTheme.shapes.medium,
+                progressProvider = shimmerProgress,
+            )
+        }
+    }
+}
+

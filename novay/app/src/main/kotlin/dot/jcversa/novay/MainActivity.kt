@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.lifecycleScope
 import dot.jcversa.novay.downloads.Downloads
+import dot.jcversa.novay.performance.NovayPerformanceState
 import dot.jcversa.novay.ui.NoVaYApp
 import dot.jcversa.novay.ui.theme.NoVaYTheme
 import dot.jcversa.novay.ui.theme.NovayThemeState
@@ -21,8 +22,10 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
-        // Thème (AMOLED ?) : lu avant le premier rendu, bascule instantanée.
+        // Thème, mouvement & performances : lus avant le premier rendu, sans blocage I/O.
+        NovayPerformanceState.init(this)
         NovayThemeState.init(this)
+        dot.jcversa.novay.ui.components.NovayMotionState.init(this)
         lifecycleScope.launch(Dispatchers.IO) { Downloads.init(this@MainActivity) }
         setContent {
             NoVaYTheme {

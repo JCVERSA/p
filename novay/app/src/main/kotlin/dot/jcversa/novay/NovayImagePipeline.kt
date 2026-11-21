@@ -1,10 +1,15 @@
 package dot.jcversa.novay
 
+import android.content.ComponentCallbacks2
 import android.content.Context
+import coil.Coil
 import coil.ImageLoader
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
+import coil.request.CachePolicy
 import dot.jcversa.novay.data.sama.SamaParsers
+import dot.jcversa.novay.performance.NovayPerformanceState
+import dot.jcversa.novay.performance.PerformanceProfile
 import okhttp3.ConnectionPool
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -36,7 +41,7 @@ enum class RefererStrategy {
  *  - négociation adaptative du `Referer` en cas de HTTP 401/403 (mémorisée par hôte) ;
  *  - réessais exponentiels bornés sur 429 / 5xx / erreurs I/O transitoires (jamais sur 404/410) ;
  *  - rejet des réponses HTML déguisées en HTTP 200 (soft-404 / anti-bot) sans mise en cache ;
- *  - décodage ARGB_8888 fiable (`allowRgb565(false)`) pour préserver transparence et profils WebP/PNG.
+ *  - cache mémoire et décodage RGB_565 / ARGB_8888 calibrés selon [PerformanceProfile].
  */
 object NovayImagePipeline {
 
@@ -85,23 +90,40 @@ object NovayImagePipeline {
     fun buildImageLoader(
         context: Context,
         httpClient: OkHttpClient = createHttpClient(),
-    ): ImageLoader = ImageLoader.Builder(context.applicationContext)
-        .okHttpClient(httpClient)
-        .memoryCache {
-            MemoryCache.Builder(context.applicationContext)
-                .maxSizePercent(0.22)
-                .build()
+        profile: PerformanceProfile = NovayPerformanceState.currentProfile,
+    ): ImageLoader {
+        val appCtx = context.applicationContext
+        return ImageLoader.Builder(appCtx)
+            .okHttpClient(httpClient)
+            .memoryCache {
+                MemoryCache.Builder(appCtx)
+                    .maxSizePercent(profile.imageMemoryCachePercent)
+                    .build()
+            }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(appCtx.cacheDir.resolve("image_cache"))
+                    .maxSizeBytes(64L * 1024 * 1024)
+                    .build()
+            }
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .allowRgb565(profile.preferRgb565Posters)
+            .respectCacheHeaders(false)
+            .crossfade(profile.coilCrossfadeMs)
+            .build()
+    }
+
+    fun trimMemoryCache(context: Context, level: Int) {
+        val memCache = runCatching { Coil.imageLoader(context.applicationContext).memoryCache }.getOrNull()
+            ?: return
+        when {
+            level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE ||
+                level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> memCache.clear()
+            level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN ||
+                level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> memCache.trimMemory(level)
         }
-        .diskCache {
-            DiskCache.Builder()
-                .directory(context.applicationContext.cacheDir.resolve("image_cache"))
-                .maxSizeBytes(64L * 1024 * 1024)
-                .build()
-        }
-        .allowRgb565(false)
-        .respectCacheHeaders(false)
-        .crossfade(160)
-        .build()
+    }
 
     internal class ImageResilienceInterceptor(
         private val siteOriginProvider: () -> String,

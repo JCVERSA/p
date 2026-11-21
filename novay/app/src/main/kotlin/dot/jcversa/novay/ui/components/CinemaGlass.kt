@@ -16,6 +16,7 @@ import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
+import dot.jcversa.novay.performance.LocalPerformanceProfile
 import dot.jcversa.novay.ui.theme.NovayTheme
 
 /**
@@ -24,13 +25,25 @@ import dot.jcversa.novay.ui.theme.NovayTheme
  */
 val LocalNovayHazeState = staticCompositionLocalOf<HazeState?> { null }
 
+/**
+ * Calcule le voile translucide de repli lorsque le flou temps réel est
+ * désactivé sur appareils modestes ou anciens Android (< Android 12).
+ */
+internal fun fallbackScrimColor(tint: Color): Color {
+    val boostedAlpha = (tint.alpha + 0.14f).coerceIn(0.84f, 0.96f)
+    return tint.copy(alpha = boostedAlpha)
+}
+
 @Composable
 fun Modifier.novayHazeSource(
     hazeState: HazeState? = LocalNovayHazeState.current,
-): Modifier = if (hazeState != null) {
-    this.hazeSource(state = hazeState)
-} else {
-    this
+): Modifier {
+    val allowBlur = LocalPerformanceProfile.current.allowLiveHazeBlur
+    return if (hazeState != null && allowBlur) {
+        this.hazeSource(state = hazeState)
+    } else {
+        this
+    }
 }
 
 @Composable
@@ -42,8 +55,9 @@ fun Modifier.novayCinemaGlass(
     showBorder: Boolean = false,
     blurRadius: Dp = 18.dp,
 ): Modifier {
+    val allowBlur = LocalPerformanceProfile.current.allowLiveHazeBlur
     val clipped = this.clip(shape)
-    val base = if (hazeState != null) {
+    val base = if (hazeState != null && allowBlur) {
         clipped.hazeEffect(
             state = hazeState,
             style = HazeStyle(
@@ -54,7 +68,7 @@ fun Modifier.novayCinemaGlass(
             ),
         )
     } else {
-        clipped.background(tint)
+        clipped.background(fallbackScrimColor(tint))
     }
     return if (showBorder) {
         base.border(width = 0.5.dp, color = borderColor, shape = shape)

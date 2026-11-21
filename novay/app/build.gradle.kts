@@ -1,6 +1,9 @@
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
+  // V3.2 (niht) : profils de reference - la generation tourne a la demande
+  // (tache generateBaselineProfile, appareil requis), jamais en CI.
+  alias(libs.plugins.androidx.baselineprofile)
 }
 
 android {
@@ -14,9 +17,9 @@ android {
     minSdk = 24
     targetSdk = 36
     // Audit C-01 : versionning reel. Compteur simple, +1 a chaque
-    // livraison installee par l owner (V3.1.0 = 35e livraison).
-    versionCode = 35
-    versionName = "3.1.0"
+    // livraison installee par l owner (V3.2.0 = 36e livraison).
+    versionCode = 36
+    versionName = "3.2.0"
 
     // V2.9.6 : libVLC retire — l APK n embarque plus de natives lourdes ;
     // la propriete -PnovayAbi (arm32 / arm64 / les deux) reste disponible
@@ -98,6 +101,8 @@ dependencies {
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
+  // V3.2 (niht) : installation des profils de reference sur l'appareil.
+  implementation(libs.androidx.profileinstaller)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
@@ -114,6 +119,9 @@ dependencies {
   // seeking). Gain : ~93 Mo d APK. Retour arriere possible en un commit
   // (revert) si le seek approximatif ne convient pas au owner.
   testImplementation(libs.junit)
+  // V3.2 (niht) : tests performance (runBlocking test, ApplicationProvider ext).
+  testImplementation(libs.androidx.junit)
+  testImplementation(libs.kotlinx.coroutines.test)
   // V2.6 (owner) : test UI Robolectric du cadrage video plein ecran.
   testImplementation(libs.robolectric)
   testImplementation(libs.androidx.test.core)

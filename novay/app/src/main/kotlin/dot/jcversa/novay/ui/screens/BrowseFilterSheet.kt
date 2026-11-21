@@ -227,10 +227,11 @@ private fun ActiveFilterChipsContent(
             key = { it.key },
             contentType = { "active_filter_chip" },
         ) { chip ->
+            val chipMod = if (LocalSlateMotion.current.reduceMotion) Modifier else Modifier.animateItem()
             InputChip(
                 selected = true,
                 onClick = { onRemoveChip(chip) },
-                modifier = Modifier
+                modifier = chipMod
                     .minimumInteractiveComponentSize()
                     .testTag("browse_active_chip_${chip.key}"),
                 label = {
@@ -289,6 +290,7 @@ internal fun CatalogFilterBottomSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val overlays = NovayTheme.overlays
+    val motion = LocalSlateMotion.current
     var draft by remember(initialFilter) { mutableStateOf(initialFilter) }
 
     val matchingPreviewCount = remember(draft, previewItems, recentOrderUrls) {
@@ -325,21 +327,27 @@ internal fun CatalogFilterBottomSheet(
                         style = MaterialTheme.typography.titleLarge,
                         color = MaterialTheme.colorScheme.onBackground,
                     )
-                    val countText = if (matchingPreviewCount == 1) {
-                        "1 animé correspondant"
-                    } else {
-                        "$matchingPreviewCount animés correspondants"
-                    }
-                    Text(
-                        text = countText,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (draft.hasAnyActiveFilter) {
-                            overlays.crimsonOnContainer
+                    androidx.compose.animation.AnimatedContent(
+                        targetState = matchingPreviewCount,
+                        transitionSpec = { motion.stateCrossfade() },
+                        label = "filter_preview_count_anim",
+                    ) { count ->
+                        val countText = if (count == 1) {
+                            "1 animé correspondant"
                         } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        modifier = Modifier.testTag("filter_sheet_preview_count"),
-                    )
+                            "$count animés correspondants"
+                        }
+                        Text(
+                            text = countText,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (draft.hasAnyActiveFilter) {
+                                overlays.crimsonOnContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.testTag("filter_sheet_preview_count"),
+                        )
+                    }
                 }
                 if (draft.activeCount > 0) {
                     Surface(

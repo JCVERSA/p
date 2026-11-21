@@ -28,13 +28,17 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.mediacodec.MediaCodecRenderer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import dot.jcversa.novay.performance.ExoPlayerBufferProfile
+import dot.jcversa.novay.performance.NovayPerformanceState
 import dot.jcversa.novay.R
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSearchResult
@@ -264,9 +268,12 @@ class PlayerStateManager(
 
     fun getOrCreatePlayer(): ExoPlayer {
         exoPlayerInstance?.let { return it }
+        NovayPerformanceState.ensureInitialized(appContext)
+        val bufferProfile = NovayPerformanceState.currentProfile.exoBufferProfile
         val renderersFactory = DefaultRenderersFactory(appContext)
             .setEnableDecoderFallback(true)
         return ExoPlayer.Builder(appContext, renderersFactory)
+            .setLoadControl(buildLoadControl(bufferProfile))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -860,7 +867,7 @@ class PlayerStateManager(
                         }
                     }
                 }
-                delay(500L)
+                delay(if (playingNow) 500L else 1000L)
             }
         }
     }
@@ -887,6 +894,18 @@ class PlayerStateManager(
     companion object {
         private const val MAX_CODEC_RECOVERY_ATTEMPTS = 2
         private const val CODEC_RECOVERY_DELAY_MS = 180L
+
+        internal fun buildLoadControl(profile: ExoPlayerBufferProfile): DefaultLoadControl =
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    profile.minBufferMs,
+                    profile.maxBufferMs,
+                    profile.bufferForPlaybackMs,
+                    profile.bufferForPlaybackAfterRebufferMs,
+                )
+                .setBackBuffer(profile.backBufferDurationMs, /* retainBackBufferFromKeyframe = */ false)
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build()
 
         internal fun isCodecReclaimOrDecoderError(error: PlaybackException): Boolean =
             isCodecReclaimOrDecoderError(error.errorCode, error.cause)

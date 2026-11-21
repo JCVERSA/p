@@ -156,12 +156,8 @@ class SamaScansTest {
                         .body(panelPage.toResponseBody("text/html".toMediaType()))
                         .build()
                     url.startsWith("$origin/s2/scans/get_nb_chap_et_img.php") -> {
-                        // Le titre doit être transmis encodé en paramètre oeuvre
-                        // (URLEncoder produit « + », HttpUrl « %20 » — les deux
-                        // sont des encodages valides d'un espace en query).
-                        assertTrue(
-                            url.endsWith("oeuvre=Solo%20Leveling") || url.endsWith("oeuvre=Solo+Leveling"),
-                        )
+                        // Le titre doit être transmis encodé en paramètre oeuvre.
+                        assertTrue(url.endsWith("oeuvre=Solo%20Leveling"))
                         Response.Builder()
                             .request(req).protocol(Protocol.HTTP_1_1).code(200).message("OK")
                             .body("""{"1":18,"2":20}""".toResponseBody("application/json".toMediaType()))

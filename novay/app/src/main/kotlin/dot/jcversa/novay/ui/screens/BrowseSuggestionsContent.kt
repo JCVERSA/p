@@ -611,6 +611,81 @@ private fun TagFlowWrap(
     }
 }
 
+@Composable
+private fun SmartSearchPreviewCard(
+    item: AnimeSuggestionUi,
+    onClick: () -> Unit,
+) {
+    val overlays = NovayTheme.overlays
+    val shape = MaterialTheme.shapes.large
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(
+                androidx.compose.ui.graphics.Brush.horizontalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                        MaterialTheme.colorScheme.surfaceContainerLow,
+                    ),
+                ),
+            )
+            .border(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f), shape)
+            .clickable(onClick = onClick)
+            .minimumInteractiveComponentSize()
+            .padding(12.dp)
+            .testTag("browse_smart_preview_card"),
+    ) {
+        PosterImage(
+            url = item.anime.posterUrl,
+            contentDescription = item.anime.title,
+            animeUrl = item.anime.url,
+            animeTitle = item.anime.title,
+            modifier = Modifier
+                .size(width = 56.dp, height = 82.dp)
+                .novaySharedPoster(item.anime.url)
+                .clip(MaterialTheme.shapes.small),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            NovayBadge(
+                text = "Aperçu rapide · ${item.origin.label}",
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                textColor = overlays.crimsonOnContainer,
+                shape = RoundedCornerShape(6.dp),
+            )
+            Text(
+                text = item.anime.title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val meta = item.anime.subtitle ?: item.anime.genres.take(2).joinToString(" · ")
+            if (meta.isNotBlank()) {
+                Text(
+                    text = meta,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            imageVector = NovayIcons.Play,
+            contentDescription = "Ouvrir la fiche",
+            tint = overlays.crimsonOnContainer,
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
+
 internal fun buildHighlightedText(
     text: String,
     spans: List<HighlightSpan>,
