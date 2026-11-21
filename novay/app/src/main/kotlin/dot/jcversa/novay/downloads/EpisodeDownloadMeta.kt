@@ -36,11 +36,6 @@ data class EpisodeDownloadMeta(
     val pageUrls: List<String> = emptyList(),
 ) {
     val isScan: Boolean get() = kind == KIND_SCAN
-
-    companion object {
-        const val KIND_VIDEO = "video"
-        const val KIND_SCAN = "scan"
-    }
     fun toJson(): String = JSONObject().apply {
         put("animeTitle", animeTitle)
         put("seasonName", seasonName)
@@ -85,6 +80,9 @@ data class EpisodeDownloadMeta(
     }
 
     companion object {
+        const val KIND_VIDEO = "video"
+        const val KIND_SCAN = "scan"
+
         fun fromJson(raw: ByteArray?): EpisodeDownloadMeta? {
             if (raw == null) return null
             return try {
