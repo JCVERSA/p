@@ -54,6 +54,7 @@ import dot.jcversa.novay.data.AnimeSource
 import dot.jcversa.novay.data.ScanChapter
 import dot.jcversa.novay.data.ScanPanel
 import dot.jcversa.novay.data.WatchHistory
+import dot.jcversa.novay.downloads.Downloads
 import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.ui.components.LocalSlateMotion
 import dot.jcversa.novay.ui.components.NovayIcons
@@ -129,6 +130,18 @@ fun ScanReaderScreen(
         }
     }
 
+    // Pages hors-ligne du chapitre téléchargé (CBZ extrait dans le cache) ;
+    // si absent, la lecture se fait en ligne comme avant.
+    var localPages by remember { mutableStateOf<List<java.io.File>?>(null) }
+    LaunchedEffect(chapter?.id) {
+        val target = chapter ?: return@LaunchedEffect
+        localPages = withContext(Dispatchers.IO) {
+            runCatching {
+                Downloads.extractedScanPages(context, panel.url, target.id)
+            }.getOrNull()
+        }
+    }
+
     val listState = rememberLazyListState()
     // Page courante approximée par la première page visible.
     val currentPage by remember(chapter?.id) {
@@ -174,7 +187,9 @@ fun ScanReaderScreen(
                 SwiftSlateSpinner(size = 34.dp)
             }
             else -> {
-                val pageCount = chapter.pageCount.coerceAtLeast(1)
+                val pages: List<Any> = localPages ?: (1..chapter.pageCount.coerceAtLeast(1))
+                    .map { page -> chapter.imageUrlPrefix + page + ".jpg" }
+                val pageCount = pages.size
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -185,10 +200,12 @@ fun ScanReaderScreen(
                         ) { chromeVisible = !chromeVisible },
                     contentPadding = PaddingValues(bottom = 24.dp),
                 ) {
-                    items(pageCount, key = { it }) { page ->
+                    items(pageCount, key = { it }) { index ->
+                        val model: Any = localPages?.getOrNull(index)
+                            ?: chapter.imageUrlPrefix + (index + 1) + ".jpg"
                         AsyncImage(
-                            model = chapter.imageUrlPrefix + page + ".jpg",
-                            contentDescription = "${chapter.label} — page $page",
+                            model = model,
+                            contentDescription = "${chapter.label} — page ${index + 1}",
                             contentScale = ContentScale.FillWidth,
                             modifier = Modifier
                                 .fillMaxWidth()

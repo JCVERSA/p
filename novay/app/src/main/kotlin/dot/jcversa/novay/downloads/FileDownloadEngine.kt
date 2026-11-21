@@ -272,6 +272,10 @@ object FileDownloadEngine {
     /** Étape 1-2 : playlist + segments (reprise via segmentsDone). */
     private fun downloadSegments(context: Context, task: Task) {
         val meta = task.meta
+        if (meta.isScan) {
+            downloadScanPages(context, task)
+            return
+        }
         var playlistUrl = meta.streamUrl
         var body = fetchText(playlistUrl, meta.headers)
         // Master reçu ? On choisit la variante de la résolution demandée.
@@ -318,6 +322,32 @@ object FileDownloadEngine {
         persist()
     }
 
+    /**
+     * V3.0 scans : pages d'un chapitre vers page_NNNNN.jpg (reprise via
+     * segmentsDone = pages déjà récupérées — mêmes mécaniques que les
+     * segments vidéo : pause, persistance, estimation du total).
+     */
+    private fun downloadScanPages(context: Context, task: Task) {
+        val meta = task.meta
+        val dir = tempDir(context, task.id)
+        if (!dir.exists()) dir.mkdirs()
+        val pages = meta.pageUrls
+        task.segmentCount = pages.size
+        for (i in task.segmentsDone until pages.size) {
+            if (paused) throw InterruptedException()
+            val pageFile = File(dir, "page_%05d.jpg".format(i))
+            downloadTo(pages[i], meta.headers, pageFile)
+            task.segmentsDone = i + 1
+            task.bytesDone += pageFile.length()
+            val expectedTotal = estimateTotal(task, pages.size)
+            if (expectedTotal > 0) task.bytesTotal = expectedTotal
+            if (i % 5 == 0) persist()
+            notifyUpdate()
+        }
+        task.bytesTotal = task.bytesDone
+        persist()
+    }
+
     /** Total estimé : moyenne des segments reçus × nombre total. */
     private fun estimateTotal(task: Task, totalSegments: Int): Long {
         val done = task.segmentsDone
@@ -331,6 +361,10 @@ object FileDownloadEngine {
     private suspend fun publish(context: Context, task: Task) {
         val meta = task.meta
         val dir = tempDir(context, task.id)
+        if (meta.isScan) {
+            publishScanChapter(context, task)
+            return
+        }
         val language = dot.jcversa.novay.data.sama.SamaParsers
             .samaSubPathLanguage(meta.seasonUrl)
 
@@ -373,6 +407,35 @@ object FileDownloadEngine {
             localUri = uri.toString(),
             fileName = displayNameOf(context, uri, baseName),
             videoCodec = codecLabel
+        )
+    }
+
+    /**
+     * V3.0 scans : publication d'un chapitre en un fichier CBZ (archive
+     * ZIP standard des lecteurs manga — Mihon, Chunky…), pages dans
+     * l'ordre, enracinées (pas de dossier imbriqué).
+     */
+    private fun publishScanChapter(context: Context, task: Task) {
+        val meta = task.meta
+        val dir = tempDir(context, task.id)
+        val cbz = File(dir, "chapter.cbz")
+        java.util.zip.ZipOutputStream(FileOutputStream(cbz)).use { zip ->
+            for (i in 0 until task.segmentsDone) {
+                val page = File(dir, "page_%05d.jpg".format(i))
+                if (!page.exists()) continue
+                zip.putNextEntry(java.util.zip.ZipEntry("%05d.jpg".format(i)))
+                FileInputStream(page).use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
+        }
+        val baseName = Downloads.buildScanChapterFileName(
+            animeTitle = meta.animeTitle,
+            chapterLabel = meta.episodeLabel,
+        )
+        val uri = writePublishedFile(context, cbz, baseName)
+        task.meta = meta.copy(
+            localUri = uri.toString(),
+            fileName = displayNameOf(context, uri, baseName),
         )
     }
 

@@ -41,6 +41,10 @@ import androidx.compose.ui.unit.dp
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
 import dot.jcversa.novay.data.AnimeSource
+import dot.jcversa.novay.downloads.Downloads
+import androidx.compose.runtime.collectAsState
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.shape.CircleShape
 import dot.jcversa.novay.data.ScanChapter
 import dot.jcversa.novay.data.ScanPanel
 import dot.jcversa.novay.ui.components.AppBarTitle
@@ -108,6 +112,11 @@ fun ScanChaptersPane(
     var chapters by remember(panel.url) { mutableStateOf<List<ScanChapter>?>(null) }
     var error by remember(panel.url) { mutableStateOf<String?>(null) }
     var retryKey by remember(panel.url) { mutableIntStateOf(0) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var downloadInfos by remember { mutableStateOf<List<Downloads.DownloadInfo>>(emptyList()) }
+    androidx.compose.runtime.LaunchedEffect(context) {
+        Downloads.observeSnapshots(context).collect { downloadInfos = it }
+    }
 
     LaunchedEffect(panel.url, retryKey) {
         error = null
@@ -174,8 +183,32 @@ fun ScanChaptersPane(
                         }
                     }
                     itemsIndexed(list, key = { _, item -> "${item.id}_${item.number}" }) { index, chapter ->
+                        val info = downloadInfos.firstOrNull { it.id == Downloads.scanDownloadId(panel.url, chapter.id) }
                         ScanChapterRow(
                             chapter = chapter,
+                            downloadState = when {
+                                info == null -> ScanDlState.NONE
+                                info.isCompleted -> ScanDlState.DONE
+                                info.isFailed -> ScanDlState.FAILED
+                                info.isActive -> ScanDlState.DOWNLOADING
+                                else -> ScanDlState.QUEUED
+                            },
+                            downloadPercent = info?.percent ?: 0f,
+                            onDownload = {
+                                Downloads.startScanChapterDownload(
+                                    context = context,
+                                    animeTitle = anime.title,
+                                    panelName = panel.name,
+                                    panelUrl = panel.url,
+                                    chapterId = chapter.id,
+                                    chapterLabel = chapter.label,
+                                    pageUrls = (1..chapter.pageCount.coerceAtLeast(1))
+                                        .map { page -> chapter.imageUrlPrefix + page + ".jpg" },
+                                    onError = { message ->
+                                        error = message
+                                    },
+                                )
+                            },
                             onClick = { onOpenChapter(list, index) },
                             modifier = Modifier.testTag("scan_chapter_row_$index"),
                         )
@@ -186,13 +219,19 @@ fun ScanChaptersPane(
     }
 }
 
+/** État de téléchargement d'un chapitre (miroir d'EpDl des épisodes). */
+private enum class ScanDlState { NONE, QUEUED, DOWNLOADING, DONE, FAILED }
+
 /**
  * Ligne d'un chapitre — même graphie qu'EpisodeRow : carte surface, badge
- * numéroté, libellé, compte de pages, chevron.
+ * numéroté, libellé, compte de pages, bouton téléchargement, chevron.
  */
 @Composable
 private fun ScanChapterRow(
     chapter: ScanChapter,
+    downloadState: ScanDlState,
+    downloadPercent: Float,
+    onDownload: () -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -262,6 +301,45 @@ private fun ScanChapterRow(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
+                    )
+                }
+            }
+            when (downloadState) {
+                ScanDlState.NONE, ScanDlState.FAILED -> Icon(
+                    imageVector = NovayIcons.Download,
+                    contentDescription = if (downloadState == ScanDlState.FAILED) {
+                        "Échec du téléchargement — réessayer"
+                    } else {
+                        "Télécharger le ${chapter.label}"
+                    },
+                    tint = if (downloadState == ScanDlState.FAILED) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(onClickLabel = "Télécharger", onClick = onDownload)
+                        .padding(8.dp)
+                        .size(20.dp)
+                        .testTag("scan_chapter_download"),
+                )
+                ScanDlState.DONE -> Icon(
+                    imageVector = NovayIcons.DownloadDone,
+                    contentDescription = "Chapitre téléchargé",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .padding(horizontal = 4.dp)
+                        .size(22.dp),
+                )
+                else -> Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                ) {
+                    CircularProgressIndicator(
+                        progress = { downloadPercent.coerceIn(0.01f, 1f) },
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp,
                     )
                 }
             }

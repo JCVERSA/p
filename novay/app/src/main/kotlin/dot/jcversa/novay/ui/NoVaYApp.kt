@@ -562,6 +562,26 @@ fun NoVaYApp() {
                                                                 canBack = canBack,
                                                                 onBack = appState::back,
                                                                 onPlay = { season, episode, stream ->
+                                                                    // V3.0 : un chapitre de scans téléchargé ouvre le
+                                                                    // lecteur manga, pas le lecteur vidéo.
+                                                                    if (isScanSeason(season)) {
+                                                                        val scanAnimeUrl = ImageUrlSanitizer.extractAnimeUrlFromSeasonUrl(season.url)
+                                                                        val scanAnime = AnimeSearchResult(
+                                                                            title = episode.label,
+                                                                            url = scanAnimeUrl ?: season.url,
+                                                                            slug = (scanAnimeUrl ?: season.url).trimEnd('/').substringAfterLast('/', ""),
+                                                                            posterUrl = null,
+                                                                        )
+                                                                        appState.open(
+                                                                            Destination.ScanReader(
+                                                                                anime = scanAnime,
+                                                                                panel = season,
+                                                                                chapters = emptyList(),
+                                                                                initialChapterId = episode.number,
+                                                                            )
+                                                                        )
+                                                                        return@DownloadsScreen
+                                                                    }
                                                                     val derivedAnimeUrl = ImageUrlSanitizer.extractAnimeUrlFromSeasonUrl(season.url)
                                                                     val normalizedAnime = derivedAnimeUrl?.trimEnd('/')
                                                                     val knownPoster = normalizedAnime?.let { target ->

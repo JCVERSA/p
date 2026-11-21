@@ -29,7 +29,18 @@ data class EpisodeDownloadMeta(
     /** V2.9 : codec vidéo sondé à la publication (« H.264 », « HEVC ») —
      *  badge diagnostic : HEVC sur un appareil ancien = décodage logiciel. */
     val videoCodec: String? = null,
+    /** V3.0 : type de contenu — « video » (HLS/MP4) ou « scan » (pages
+     *  d'un chapitre manga, publiées en un fichier .cbz). */
+    val kind: String = KIND_VIDEO,
+    /** V3.0 scans : URLs des pages du chapitre, dans l'ordre. */
+    val pageUrls: List<String> = emptyList(),
 ) {
+    val isScan: Boolean get() = kind == KIND_SCAN
+
+    companion object {
+        const val KIND_VIDEO = "video"
+        const val KIND_SCAN = "scan"
+    }
     fun toJson(): String = JSONObject().apply {
         put("animeTitle", animeTitle)
         put("seasonName", seasonName)
@@ -45,6 +56,8 @@ data class EpisodeDownloadMeta(
         put("fileName", fileName ?: "")
         put("qualityLabel", qualityLabel)
         put("videoCodec", videoCodec ?: "")
+        put("kind", kind)
+        put("pageUrls", org.json.JSONArray(pageUrls))
     }.toString()
 
     fun toStream(): ResolvedStream {
@@ -93,7 +106,12 @@ data class EpisodeDownloadMeta(
                     localUri = o.optString("localUri").ifEmpty { null },
                     fileName = o.optString("fileName").ifEmpty { null },
                     qualityLabel = o.optString("qualityLabel"),
-                    videoCodec = o.optString("videoCodec").ifEmpty { null }
+                    videoCodec = o.optString("videoCodec").ifEmpty { null },
+                    kind = o.optString("kind").ifEmpty { KIND_VIDEO },
+                    pageUrls = run {
+                        val arr = o.optJSONArray("pageUrls") ?: org.json.JSONArray()
+                        (0 until arr.length()).mapNotNull { i -> arr.optString(i).ifEmpty { null } }
+                    }
                 )
             } catch (_: Exception) {
                 null

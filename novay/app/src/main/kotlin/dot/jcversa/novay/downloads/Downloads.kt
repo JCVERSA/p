@@ -131,6 +131,131 @@ object Downloads {
     fun downloadId(seasonUrl: String, episodeNumber: Int): String =
         "${seasonUrl.trimEnd('/')}#ep$episodeNumber"
 
+    /** V3.0 scans : identifiant d'un chapitre téléchargé. */
+    fun scanDownloadId(panelUrl: String, chapterId: Int): String =
+        "${panelUrl.trimEnd('/')}#chap$chapterId"
+
+    /**
+     * Nom de fichier lisible d'un chapitre publié (PUR, testé) :
+     * « Solo Leveling - Chapitre 12.cbz » — mêmes règles de nettoyage
+     * que les épisodes (aucun caractère interdit par les FAT/NTFS).
+     */
+    fun buildScanChapterFileName(animeTitle: String, chapterLabel: String): String {
+        val anime = animeTitle.replace(Regex("[\\/:*?\"<>|]"), "-").trim().ifEmpty { "Anime" }
+        val chapter = chapterLabel.replace(Regex("[\\/:*?\"<>|]"), "-").trim().ifEmpty { "Chapitre" }
+        return "$anime - $chapter.cbz"
+    }
+
+    /** V3.0 scans : le chapitre de ce panneau est-il téléchargé ? */
+    fun isScanDownloaded(context: Context, panelUrl: String, chapterId: Int): Boolean {
+        FileDownloadEngine.init(context)
+        return FileDownloadEngine.find(scanDownloadId(panelUrl, chapterId))?.isCompleted == true
+    }
+
+    /**
+     * V3.0 scans : met un chapitre en file — les pages sont téléchargées
+     * en série puis publiées en UN fichier .cbz dans Download/NoVaY/.
+     */
+    fun startScanChapterDownload(
+        context: Context,
+        animeTitle: String,
+        panelName: String,
+        panelUrl: String,
+        chapterId: Int,
+        chapterLabel: String,
+        pageUrls: List<String>,
+        onStart: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        if (pageUrls.isEmpty()) {
+            onError("Chapitre sans pages")
+            return
+        }
+        val meta = EpisodeDownloadMeta(
+            animeTitle = animeTitle,
+            seasonName = panelName,
+            seasonUrl = panelUrl,
+            episodeNumber = chapterId,
+            episodeLabel = chapterLabel,
+            streamUrl = pageUrls.first(),
+            isHls = false,
+            headers = mapOf("User-Agent" to dot.jcversa.novay.data.sama.SamaParsers.UA),
+            kind = EpisodeDownloadMeta.KIND_SCAN,
+            pageUrls = pageUrls,
+        )
+        FileDownloadEngine.enqueue(
+            context,
+            FileDownloadEngine.Task(
+                id = scanDownloadId(panelUrl, chapterId),
+                meta = meta
+            )
+        )
+        onStart()
+    }
+
+    /**
+     * V3.0 scans : pages d'un chapitre téléchargé, extraites du .cbz vers
+     * le cache privé (une fois) — liste triée prête pour le lecteur
+     * hors-ligne. Null si le chapitre n'est pas (encore) téléchargé.
+     */
+    fun extractedScanPages(context: Context, panelUrl: String, chapterId: Int): List<java.io.File>? {
+        FileDownloadEngine.init(context)
+        val localUri = FileDownloadEngine.find(scanDownloadId(panelUrl, chapterId))
+            ?.takeIf { it.isCompleted }
+            ?.meta?.localUri?.takeIf { it.isNotBlank() }
+            ?: return null
+        val cbz = when (android.net.Uri.parse(localUri).scheme) {
+            "file" -> java.io.File(android.net.Uri.parse(localUri).path ?: return null)
+            "content" -> {
+                // Copie du content:// vers le cache avant extraction.
+                val cached = java.io.File(context.cacheDir, "scan_cbz/${scanDownloadId(panelUrl, chapterId).hashCode()}.cbz")
+                if (!cached.exists() || cached.length() == 0L) {
+                    cached.parentFile?.mkdirs()
+                    runCatching {
+                        context.contentResolver.openInputStream(android.net.Uri.parse(localUri))?.use { input ->
+                            java.io.FileOutputStream(cached).use { output -> input.copyTo(output) }
+                        } ?: return null
+                    }.getOrNull() ?: return null
+                }
+                cached
+            }
+            else -> return null
+        }
+        if (!cbz.exists() || cbz.length() == 0L) return null
+        val outDir = java.io.File(context.cacheDir, "scan_pages/${scanDownloadId(panelUrl, chapterId).hashCode()}")
+        return unzipScanPages(cbz, outDir)
+    }
+
+    /**
+     * Extraction d'un CBZ vers un dossier (PUR, testé JVM) : entrées
+     * triées par nom, une page par fichier, réutilisation du cache si
+     * l'extraction précédente est complète.
+     */
+    fun unzipScanPages(cbz: java.io.File, outDir: java.io.File): List<java.io.File> {
+        if (!cbz.exists() || cbz.length() == 0L) return emptyList()
+        val names = java.util.zip.ZipFile(cbz).use { zip ->
+            zip.entries().asSequence()
+                .filter { !it.isDirectory && it.name.lowercase().endsWith(".jpg") }
+                .map { it.name }
+                .sorted()
+                .toList()
+        }
+        if (names.isEmpty()) return emptyList()
+        val complete = outDir.exists() && names.indices.all { i -> java.io.File(outDir, "p%05d.jpg".format(i)).length() > 0L }
+        if (complete) return names.indices.map { i -> java.io.File(outDir, "p%05d.jpg".format(i)) }
+        outDir.mkdirs()
+        java.util.zip.ZipFile(cbz).use { zip ->
+            names.forEachIndexed { index, name ->
+                val entry = zip.getEntry(name) ?: return@forEachIndexed
+                val target = java.io.File(outDir, "p%05d.jpg".format(index))
+                zip.getInputStream(entry).use { input ->
+                    java.io.FileOutputStream(target).use { output -> input.copyTo(output) }
+                }
+            }
+        }
+        return names.indices.map { i -> java.io.File(outDir, "p%05d.jpg".format(i)) }
+    }
+
     /** L'épisode de cette saison est-il téléchargé (fichier publié) ? */
     fun isDownloaded(context: Context, seasonUrl: String, episodeNumber: Int): Boolean =
         FileDownloadEngine.find(downloadId(seasonUrl, episodeNumber))?.isCompleted == true

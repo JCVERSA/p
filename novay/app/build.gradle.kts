@@ -14,9 +14,9 @@ android {
     minSdk = 24
     targetSdk = 36
     // Audit C-01 : versionning reel. Compteur simple, +1 a chaque
-    // livraison installee par l owner (V3.0.0 = 34e livraison).
-    versionCode = 34
-    versionName = "3.0.0"
+    // livraison installee par l owner (V3.1.0 = 35e livraison).
+    versionCode = 35
+    versionName = "3.1.0"
 
     // V2.9.6 : libVLC retire — l APK n embarque plus de natives lourdes ;
     // la propriete -PnovayAbi (arm32 / arm64 / les deux) reste disponible
