@@ -1,5 +1,8 @@
 plugins {
-  alias(libs.plugins.android.test)
+  // com.android.test est deja sur le classpath (embarque dans AGP du
+  // module :app) : le demander AVEC une version echoue (plugin already
+  // on the classpath with an unknown version) - application sans version.
+  id("com.android.test")
   alias(libs.plugins.androidx.baselineprofile)
 }
 
