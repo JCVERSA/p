@@ -691,7 +691,13 @@ object SamaParsers {
             // Dernier segment « va » = lien version animée, pas un scan.
             if (subPath.trim('/').substringAfterLast('/').equals("va", ignoreCase = true)) continue
             if (!seen.add(subPath)) continue
-            val scanlator = name.replace(Regex("(Scans|\\(|\\))"), "").trim()
+            // Groupe scantrad : contenu de la dernière parenthèse du
+            // libellé (« Scans VF (Japscan) » → « Japscan »), sinon le
+            // libellé nettoyé des mots Scans/VF/VOSTFR.
+            val scanlator = Regex("\\(([^)]*)\\)").findAll(name)
+                .lastOrNull()?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: name.replace(Regex("(Scans|VF|VOSTFR|VA|\\(|\\))"), "").trim()
+                    .takeIf { it.isNotEmpty() }
             out.add(
                 ScanPanel(
                     name = name,
