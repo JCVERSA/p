@@ -158,27 +158,28 @@ jobs:
 
       # Garde-fou + tailles visibles : l'APK d'une ABI ne doit contenir
       # AUCUNE native d'une autre ABI (sinon le filtre a echoue).
+      # V2.9.6 : libVLC retire — l APK n embarque plus de natives lourdes.
+      # Si des natives reapparaissent (future dependance), elles doivent
+      # rester dans les ABI cibles ; sinon, information seule.
       - name: Verification ABI et tailles livrees
         run: |
           set -e
           cd dist
           apk=novay-universal-release.apk
-          fuite=$(unzip -l "$apk" | grep "lib/" | grep -cvE "lib/(armeabi-v7a|arm64-v8a)/" || true)
-          if [ "${fuite:-0}" -ne 0 ]; then
-            echo "::error::$apk embarque $fuite natives hors arm32/arm64 - filtre ABI en echec"
-            exit 1
-          fi
-          for abi in armeabi-v7a arm64-v8a; do
-            n=$(unzip -l "$apk" | grep -c "lib/$abi/" || true)
-            if [ "${n:-0}" -eq 0 ]; then
-              echo "::error::$apk ne contient aucune native $abi - libvlc absent du packaging"
+          natives=$(unzip -l "$apk" | grep -c "lib/" || true)
+          if [ "${natives:-0}" -eq 0 ]; then
+            echo "::notice::$apk : aucune lib native (moteur VLC retire en V2.9.6) - APK identique pour toutes les architectures"
+          else
+            fuite=$(unzip -l "$apk" | grep "lib/" | grep -cvE "lib/(armeabi-v7a|arm64-v8a)/" || true)
+            if [ "${fuite:-0}" -ne 0 ]; then
+              echo "::error::$apk embarque $fuite natives hors arm32/arm64 - filtre ABI en echec"
               exit 1
             fi
-          done
+          fi
           mo() { awk -v b="$(stat -c%s "$1")" 'BEGIN {printf "%.2f", b/1048576}'; }
           pct() { awk -v a="$1" -v b="$2" 'BEGIN {printf "%.0f", (a-b)*100/a}'; }
           au=$(mo novay-universal-release.apk); zu=$(mo novay-universal-release.7z)
-          echo "::notice::universel (arm32+arm64, tous telephones Android 7+) : APK ${au} Mo | 7z ${zu} Mo (-$(pct "$au" "$zu") %)"
+          echo "::notice::universel (tous telephones Android 7+) : APK ${au} Mo | 7z ${zu} Mo (-$(pct "$au" "$zu") %)"
 
       - name: Upload APK universel
         if: success()

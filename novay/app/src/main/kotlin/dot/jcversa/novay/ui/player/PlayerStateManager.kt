@@ -2,7 +2,6 @@ package dot.jcversa.novay.ui.player
 
 import android.content.Context
 import android.media.MediaCodec
-import android.net.Uri
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -169,45 +168,12 @@ class PlayerStateManager(
 
     private var exoPlayerInstance: ExoPlayer? = null
 
-    // V2.8 : moteur libVLC pour les FICHIERS téléchargés (streaming en
-    // ligne = ExoPlayer, inchangé). Un seul moteur actif à la fois.
-    private var vlcEngine: NovayVlcEngine? = null
+    // V2.9.6 (essai owner) : UN SEUL moteur — ExoPlayer pour le streaming
+    // ET pour les fichiers téléchargés (libVLC retiré : ~-93 Mo d'APK).
+    // Seek TS approximatif via constant-bitrate seeking (cf.
+    // Downloads.offlineMediaSource). Retour arrière possible en un commit.
     private var engineHost: FrameLayout? = null
     private var exoPlayerViewHost: PlayerView? = null
-    private val vlcActive: Boolean get() = vlcEngine?.active == true
-
-    private val vlcCallbacks = object : NovayVlcEngine.Callbacks {
-        override fun onVlcPlaying(playing: Boolean) {
-            isPlaying = playing
-            // Lecture figée (pause/fin) : plus rien ne charge.
-            isBuffering = false
-        }
-
-        override fun onVlcBuffering(buffering: Boolean) {
-            isBuffering = buffering
-        }
-
-        override fun onVlcTime(timeMs: Long) {
-            if (!userSeeking) positionMs = timeMs.coerceAtLeast(0L)
-        }
-
-        override fun onVlcLength(lengthMs: Long) {
-            durationMs = lengthMs.coerceAtLeast(0L)
-        }
-
-        override fun onVlcEnded() {
-            // Parité ExoPlayer : fin = lecture stoppée, l'UI garde la main.
-        }
-
-        override fun onVlcError(message: String) {
-            isBuffering = false
-            streamError = message
-        }
-
-        override fun onVlcVideoSize(rawRatio: Float) {
-            videoAspectRatio = MiniPlayerGeometry.normalizeVideoAspectRatio(rawRatio)
-        }
-    }
 
     private var lastLoadedSignature: String? = null
     private var loadJob: Job? = null
@@ -323,8 +289,8 @@ class PlayerStateManager(
 
     /**
      * Vue vidéo du lecteur : un conteneur neutre qui héberge le PlayerView
-     * ExoPlayer (streaming) ou le VLCVideoLayout libVLC (fichiers locaux) —
-     * les composables appelants n'ont aucune idée du moteur actif.
+     * ExoPlayer — streaming comme fichiers téléchargés (moteur unique
+     * depuis V2.9.6).
      */
     fun createSinglePlayerView(context: Context): View {
         val container = FrameLayout(context)
@@ -343,14 +309,9 @@ class PlayerStateManager(
         exoPlayerViewHost?.player = null
         container.removeAllViews()
         exoPlayerViewHost = null
-        if (vlcActive) {
-            val engine = vlcEngine ?: return
-            container.addView(engine.ensureVideoLayout(container.context))
-        } else {
-            val playerView = createExoPlayerView(container.context)
-            exoPlayerViewHost = playerView
-            container.addView(playerView)
-        }
+        val playerView = createExoPlayerView(container.context)
+        exoPlayerViewHost = playerView
+        container.addView(playerView)
     }
 
     /**
@@ -360,11 +321,6 @@ class PlayerStateManager(
     fun onSingleViewHostReleased() {
         engineHost = null
         exoPlayerViewHost = null
-    }
-
-    /** Bascule la vue hébergée quand le moteur change (local <-> en ligne). */
-    private fun refreshEngineView() {
-        engineHost?.let { refreshEngineViewChild(it) }
     }
 
     private fun createExoPlayerView(context: Context): PlayerView {
@@ -573,30 +529,10 @@ class PlayerStateManager(
         autoPlay: Boolean = true,
     ) {
         val effectiveUrl = qualityUrl ?: resolvedStream.url
-        // V2.8 : fichier téléchargé -> moteur libVLC (bulletproof) ; le
-        // streaming en ligne reste ExoPlayer (en-têtes + qualités HLS).
-        // Même définition « local » que Downloads.offlineMediaSource — on
-        // juge sur l'URL DU FLUX (ce qui est réellement joué hors ligne),
-        // pas sur une éventuelle qualité résiduelle d'une session en ligne.
-        val streamUrl = resolvedStream.url
-        val isLocalFile = streamUrl.startsWith("content://") ||
-            streamUrl.startsWith("file://") ||
-            streamUrl.startsWith("/")
-        if (offline && isLocalFile) {
-            val signature = "vlc|${session?.key}|$streamUrl"
-            if (signature == lastLoadedSignature) return
-            switchToVlc(streamUrl, initialSeekMs, autoPlay)
-            // APRES switchToVlc : releasePlayerOnly() efface la signature,
-            // il faut la reposer une fois le basculement fait.
-            lastLoadedSignature = signature
-            return
-        }
-        stopVlcPlayback()
-        // Retour d'un fichier local vers le streaming : la vue hébergée est
-        // encore le VLCVideoLayout détaché — sans ce rafraîchissement,
-        // ExoPlayer jouerait sans surface (écran noir, audio seul).
-        if (exoPlayerViewHost == null) refreshEngineView()
-
+        // V2.9.6 (essai owner) : UN SEUL moteur — les fichiers téléchargés
+        // passent AUSSI par ExoPlayer (libVLC retiré : ~-93 Mo d'APK). Le
+        // .ts local bénéficie du constant-bitrate seeking : seek approximatif
+        // mais rapide (même comportement que le streaming HLS).
         val player = getOrCreatePlayer()
         val signature = "${session?.key}|$offline|$effectiveUrl"
         if (signature == lastLoadedSignature) return
@@ -626,37 +562,6 @@ class PlayerStateManager(
         }
         player.prepare()
         player.playWhenReady = autoPlay
-    }
-
-    /**
-     * Ouvre un fichier local avec libVLC : ExoPlayer est libéré (plus
-     * aucun MediaCodec retenu), les sélecteurs de pistes/qualités ne
-     * concernent plus un fichier unique.
-     */
-    private fun switchToVlc(url: String, initialSeekMs: Long, autoPlay: Boolean) {
-        releasePlayerOnly()
-        audioTracks = emptyList()
-        subtitleTracks = emptyList()
-        isBuffering = true
-        durationMs = 0L
-        streamError = null
-        val engine = vlcEngine ?: NovayVlcEngine(appContext, vlcCallbacks).also { vlcEngine = it }
-        engine.open(
-            uri = Uri.parse(url),
-            initialSeekMs = initialSeekMs,
-            autoPlay = autoPlay,
-            rate = if (isFastForwardHold) 2f else playbackSpeed,
-        )
-        // Audit S-02 (versant decouvert pendant le correctif) : une session
-        // VLC pure ne cree JAMAIS d'ExoPlayer, donc la boucle de progression
-        // (sauvegarde d'historique toutes les 5 s) ne demarrait pas - la
-        // position n'etait sauvegardee qu'a la fermeture (perdue si kill).
-        ensureProgressLoopStarted()
-        refreshEngineView()
-    }
-
-    private fun stopVlcPlayback() {
-        vlcEngine?.stopAndDetach()
     }
 
     private fun attemptCodecRecovery(
@@ -695,10 +600,6 @@ class PlayerStateManager(
     }
 
     fun togglePlayPause() {
-        vlcEngine?.takeIf { it.active }?.let {
-            it.togglePlayPause()
-            return
-        }
         val player = exoPlayerInstance ?: return
         if (player.isPlaying) {
             player.pause()
@@ -708,37 +609,20 @@ class PlayerStateManager(
     }
 
     fun play() {
-        vlcEngine?.takeIf { it.active }?.let {
-            it.play()
-            return
-        }
         exoPlayerInstance?.play()
     }
 
     fun pause() {
-        vlcEngine?.takeIf { it.active }?.let {
-            it.pause()
-            return
-        }
         exoPlayerInstance?.pause()
     }
 
     fun currentPositionMs(): Long = currentPlaybackPositionMs()
 
-    /** Position de lecture, quel que soit le moteur actif. */
+    /** Position de lecture (moteur unique : ExoPlayer). */
     private fun currentPlaybackPositionMs(): Long =
-        vlcEngine?.takeIf { it.active }?.currentPositionMs
-            ?: exoPlayerInstance?.currentPosition?.coerceAtLeast(0L)
-            ?: positionMs
+        exoPlayerInstance?.currentPosition?.coerceAtLeast(0L) ?: positionMs
 
     fun seekTo(targetMs: Long) {
-        vlcEngine?.takeIf { it.active }?.let { engine ->
-            val maxDur = engine.durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE
-            val clamped = targetMs.coerceIn(0L, maxDur)
-            engine.seekTo(clamped)
-            positionMs = clamped
-            return
-        }
         val player = exoPlayerInstance ?: return
         val maxDur = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
         val clamped = targetMs.coerceIn(0L, maxDur)
@@ -764,7 +648,6 @@ class PlayerStateManager(
     fun selectPlaybackSpeed(speed: Float) {
         playbackSpeed = speed
         if (!isFastForwardHold) {
-            vlcEngine?.takeIf { it.active }?.setRate(speed)
             exoPlayerInstance?.setPlaybackSpeed(speed)
         }
     }
@@ -773,12 +656,10 @@ class PlayerStateManager(
         if (isFastForwardHold == enabled) return
         isFastForwardHold = enabled
         val rate = if (enabled) 2f else playbackSpeed
-        vlcEngine?.takeIf { it.active }?.setRate(rate)
         exoPlayerInstance?.setPlaybackSpeed(rate)
     }
 
     fun selectAudioTrack(option: PlayerTrackOption) {
-        if (vlcActive) return // fichier local : piste unique
         val player = exoPlayerInstance ?: return
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setOverrideForType(TrackSelectionOverride(option.trackGroup, option.trackIndex))
@@ -786,7 +667,6 @@ class PlayerStateManager(
     }
 
     fun selectSubtitleTrack(option: PlayerTrackOption?) {
-        if (vlcActive) return // fichier local : piste unique
         val player = exoPlayerInstance ?: return
         val builder = player.trackSelectionParameters.buildUpon()
         if (option == null) {
@@ -878,14 +758,7 @@ class PlayerStateManager(
         flushProgressNow()
         val activeSession = session
         val activeStream = stream
-        val engine = vlcEngine?.takeIf { it.active }
-        if (engine != null) {
-            // libVLC : pause douce, la position survit à la mise en arrière-
-            // plan (aucun MediaCodec à rendre au ResourceManagerService).
-            backgroundResumePositionMs = engine.currentPositionMs.coerceAtLeast(0L)
-            suspendedInBackground = true
-            engine.pause()
-        } else if (activeSession != null && activeStream != null && exoPlayerInstance != null) {
+        if (activeSession != null && activeStream != null && exoPlayerInstance != null) {
             backgroundResumePositionMs = currentPlaybackPositionMs()
             suspendedInBackground = true
         }
@@ -916,8 +789,7 @@ class PlayerStateManager(
         loadJob?.cancel()
         recoveryJob?.cancel()
         // Audit S-02 : la boucle de progression doit mourir avec le lecteur
-        // (elle redemarre a la prochaine lecture - creation ExoPlayer ou
-        // switchToVlc ; l'UI VLC est, elle, pilotee par evenements).
+        // (elle redemarre a la prochaine lecture, a la creation ExoPlayer).
         progressJob?.cancel()
         suspendedInBackground = false
         codecRecoveryAttempts = 0
@@ -929,7 +801,6 @@ class PlayerStateManager(
         stream = null
         session = null
         presentationMode = PlayerPresentationMode.HIDDEN
-        stopVlcPlayback()
         engineHost = null
         releasePlayerOnly()
         isPlaying = false
@@ -943,7 +814,6 @@ class PlayerStateManager(
         loadJob?.cancel()
         recoveryJob?.cancel()
         progressJob?.cancel()
-        stopVlcPlayback()
         engineHost = null
         releasePlayerOnly()
         session = null
@@ -955,27 +825,19 @@ class PlayerStateManager(
         if (progressJob?.isActive == true) return
         progressJob = scope.launch {
             while (isActive) {
-                // Source de vérité : le moteur ACTIF (libVLC pour les
-                // fichiers, ExoPlayer pour le streaming). Mêmes règles de
-                // sauvegarde d'historique des deux côtés.
-                val engine = vlcEngine?.takeIf { it.active }
+                // Source de vérité : ExoPlayer (moteur unique depuis
+                // V2.9.6).
+                val player = exoPlayerInstance
                 val playingNow: Boolean
                 val dur: Long
                 val pos: Long
-                if (engine != null) {
-                    playingNow = engine.isPlayingNow
-                    dur = engine.durationMs.coerceAtLeast(0L)
-                    pos = engine.currentPositionMs.coerceAtLeast(0L)
+                if (player != null) {
+                    playingNow = player.isPlaying
+                    dur = player.duration.coerceAtLeast(0L)
+                    pos = player.currentPosition.coerceAtLeast(0L)
                 } else {
-                    val player = exoPlayerInstance
-                    if (player != null) {
-                        playingNow = player.isPlaying
-                        dur = player.duration.coerceAtLeast(0L)
-                        pos = player.currentPosition.coerceAtLeast(0L)
-                    } else {
-                        delay(500L)
-                        continue
-                    }
+                    delay(500L)
+                    continue
                 }
                 isPlaying = playingNow
                 durationMs = dur
@@ -1005,17 +867,9 @@ class PlayerStateManager(
 
     private fun flushProgressNow() {
         val activeSession = session ?: return
-        val engine = vlcEngine?.takeIf { it.active }
-        val pos: Long
-        val dur: Long
-        if (engine != null) {
-            pos = engine.currentPositionMs
-            dur = engine.durationMs
-        } else {
-            val player = exoPlayerInstance ?: return
-            pos = player.currentPosition
-            dur = player.duration
-        }
+        val player = exoPlayerInstance ?: return
+        val pos = player.currentPosition
+        val dur = player.duration
         if (dur > 0L && pos > 3000L) {
             val effective = if (pos > dur * 95L / 100L) 0L else pos
             scope.launch(Dispatchers.IO) {

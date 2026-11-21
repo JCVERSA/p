@@ -97,10 +97,10 @@ private data class VerticalFeedback(
 /**
  * Hôte UNIQUE de la vue vidéo, déplacé entre le mode portrait intégré, le
  * mini-lecteur flottant et le plein écran via `movableContentOf` afin de
- * ne jamais détruire ni recréer le décodeur vidéo. Depuis la V2.8, la
+ * ne jamais détruire ni recréer le décodeur vidéo. Depuis la V2.9.6, la
  * vue est un conteneur neutre : il héberge le `PlayerView` ExoPlayer
- * (streaming) ou le `VLCVideoLayout` libVLC (fichiers téléchargés) — le
- * `PlayerStateManager` gère l'enfant actif et son cadrage.
+ * (moteur unique — streaming comme fichiers téléchargés) ; le
+ * `PlayerStateManager` gère son cadrage.
  */
 @OptIn(UnstableApi::class)
 @Composable

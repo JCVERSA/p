@@ -14,17 +14,14 @@ android {
     minSdk = 24
     targetSdk = 36
     // Audit C-01 : versionning reel. Compteur simple, +1 a chaque
-    // livraison installee par l owner (V2.9.5 = 30e livraison).
-    versionCode = 30
-    versionName = "2.9.5"
+    // livraison installee par l owner (V2.9.6 = 31e livraison).
+    versionCode = 31
+    versionName = "2.9.6"
 
-    // V2.8 : libvlc-all embarque les 4 ABI natives (~40 Mo chacune).
-    // La CI construit un APK par architecture :
-    //   ./gradlew :app:assembleRelease -PnovayAbi=armeabi-v7a
-    //   ./gradlew :app:assembleRelease -PnovayAbi=arm64-v8a
-    // Le filtre au niveau du MODULE app evince aussi les natives des
-    // dependances transitives. Sans la propriete (tests, debug local) :
-    // toutes les ABI.
+    // V2.9.6 : libVLC retire — l APK n embarque plus de natives lourdes ;
+    // la propriete -PnovayAbi (arm32 / arm64 / les deux) reste disponible
+    // pour d eventuelles futures dependances natives. Sans elle : toutes
+    // les ABI (par defait, sans effet aujourd hui).
     val novayAbi = (findProperty("novayAbi") as? String)?.trim()
     if (!novayAbi.isNullOrEmpty()) {
       ndk {
@@ -112,13 +109,10 @@ dependencies {
   implementation(libs.media3.exoplayer)
   implementation(libs.media3.exoplayer.hls)
   implementation(libs.media3.ui)
-  // V2.8 : moitie "fichiers telecharges" du lecteur hybride. Le streaming
-  // en ligne reste ExoPlayer (libVLC 3 n'envoie pas d'en-tetes HTTP
-  // arbitraires -> pas de Referer possible).
-  implementation(libs.libvlc.all)
-  // V2.9.3 : ffmpeg RETIRE — le binaire arm32 du rescue ne chargeait pas
-  // sur l appareil du owner (+26 Mo d APK pour rien), et les episodes
-  // sortent desormais en .ts brut (publication directe, sans remux).
+  // V2.9.6 (essai owner) : libVLC RETIRE — ExoPlayer devient le moteur
+  // unique (streaming + fichiers telecharges .ts via constant-bitrate
+  // seeking). Gain : ~93 Mo d APK. Retour arriere possible en un commit
+  // (revert) si le seek approximatif ne convient pas au owner.
   testImplementation(libs.junit)
   // V2.6 (owner) : test UI Robolectric du cadrage video plein ecran.
   testImplementation(libs.robolectric)

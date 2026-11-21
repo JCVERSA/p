@@ -22,6 +22,8 @@ import dot.jcversa.novay.data.sama.SamaParsers
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 
@@ -272,7 +274,17 @@ object Downloads {
                 url.endsWith(".ts", true) -> setMimeType(MimeTypes.VIDEO_MP2T)
             }
         }.build()
-        return ProgressiveMediaSource.Factory(factory)
+        // V2.9.6 : le TS n'a pas d'index — sans ces options, un .ts local
+        // serait ILLISIBLE en navigation (seek désactivé). Constant-bitrate
+        // seeking = position estimée par le débit (approximative de quelques
+        // secondes sur un saut lointain, identique au streaming HLS) ;
+        // FLAG_ALLOW_NON_IDR_KEYFRAMES = les keyframes des flux HLS
+        // (parfois non-IDR) comptent comme points de reprise.
+        val extractors = DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+            .setConstantBitrateSeekingAlwaysEnabled(true)
+            .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES)
+        return ProgressiveMediaSource.Factory(factory, extractors)
             .createMediaSource(item)
     }
 
