@@ -1,6 +1,7 @@
 package dot.jcversa.novay.downloads
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -76,5 +77,33 @@ class BatchDownloadsTest {
         val restored = EpisodeDownloadMeta.fromJson(meta.toJson().toByteArray(Charsets.UTF_8))
         assertEquals(meta, restored)
         assertEquals("Overgeared — Saison 1 VF", restored!!.batchLabel)
+    }
+
+    private fun info(
+        id: String,
+        state: Int,
+        done: Long,
+        total: Long,
+    ): Downloads.DownloadInfo {
+        val meta = EpisodeDownloadMeta(
+            animeTitle = "Anime",
+            seasonName = "Saison 1",
+            seasonUrl = "https://anime-sama.example/catalogue/anime/saison-1",
+            episodeNumber = 1,
+            episodeLabel = "Épisode 1",
+            streamUrl = "https://cdn.example/master.m3u8",
+            isHls = true,
+            headers = emptyMap(),
+            batchId = "season:https://anime-sama.example/catalogue/anime/saison-1",
+            batchLabel = "Anime — Saison 1",
+        )
+        return Downloads.DownloadInfo(
+            id = id,
+            percent = 0f,
+            meta = meta,
+            state = state,
+            bytesDownloaded = done,
+            totalBytes = total,
+        )
     }
 }

@@ -165,6 +165,8 @@ data class DownloadSection(
     val animeTitle: String,
     val items: List<Downloads.DownloadInfo>,
     val completedCount: Int,
+    /** V3.3 : cle de groupe (batchId) — distincte du libellé affiché. */
+    val groupKey: String = animeTitle,
 )
 
 @Immutable

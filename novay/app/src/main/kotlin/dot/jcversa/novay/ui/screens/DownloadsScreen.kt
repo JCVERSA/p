@@ -38,6 +38,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.AlertDialog
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.animation.animateFloatAsState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -126,15 +128,24 @@ fun DownloadsScreen(
 
     val motion = LocalSlateMotion.current
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
+    // V3.3 : regroupement par LOT (saison/panneau) — chaque carte de lot
+    // resume son etat et pilote pause/reprise de tout le lot.
     val sections = remember(infos) {
-        infos.groupBy { it.meta?.animeTitle?.takeIf { t -> t.isNotEmpty() } ?: "Épisodes" }
-            .map { (title, list) ->
-                DownloadSection(
-                    animeTitle = title,
-                    items = list,
-                    completedCount = list.count { it.isCompleted },
-                )
-            }
+        infos.groupBy { info ->
+            info.meta?.batchId?.takeIf { it.isNotEmpty() }
+                ?: info.meta?.animeTitle?.takeIf { t -> t.isNotEmpty() }
+                ?: "Épisodes"
+        }.map { (groupKey, list) ->
+            DownloadSection(
+                animeTitle = list.firstOrNull()?.meta?.batchLabel
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: list.firstOrNull()?.meta?.animeTitle?.takeIf { it.isNotEmpty() }
+                    ?: "Épisodes",
+                items = list,
+                completedCount = list.count { it.isCompleted },
+                groupKey = groupKey,
+            )
+        }
     }
     val pending = remember(infos) { infos.count { !it.isCompleted } }
 
@@ -212,23 +223,29 @@ fun DownloadsScreen(
                             }
                             sections.forEach { section ->
                                 item(
-                                    key = "header_${section.animeTitle}",
+                                    key = "header_${section.groupKey}",
                                     contentType = "download_section_header",
                                 ) {
-                                    NovaySectionHeader(
+                                    BatchHeaderCard(
                                         title = section.animeTitle,
-                                        textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        summary = Downloads.summarizeBatch(section.items),
+                                        onToggleBatch = { pause ->
+                                            val batchId = section.items.firstOrNull()
+                                                ?.meta?.batchId?.takeIf { it.isNotEmpty() }
+                                            if (batchId != null) {
+                                                if (pause) {
+                                                    Downloads.pauseBatch(batchId)
+                                                    toast.show("Lot suspendu", NovayToastTone.INFO)
+                                                } else {
+                                                    Downloads.resumeBatch(batchId)
+                                                    toast.show("Lot repris", NovayToastTone.SUCCESS)
+                                                }
+                                            }
+                                        },
                                         modifier = Modifier
                                             .animateItem()
                                             .fillMaxWidth()
-                                            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp),
-                                        trailing = {
-                                            Pill(
-                                                text = "${section.completedCount}/${section.items.size}",
-                                                color = MaterialTheme.colorScheme.tertiaryContainer,
-                                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                                            )
-                                        },
+                                            .padding(horizontal = 16.dp, vertical = 6.dp),
                                     )
                                 }
                                 items(
@@ -258,6 +275,10 @@ fun DownloadsScreen(
                                         onRetry = {
                                             Downloads.retry(info.id)
                                             toast.show("Réessai lancé", NovayToastTone.INFO)
+                                        },
+                                        onPrioritize = {
+                                            Downloads.prioritize(info.id)
+                                            toast.show("Passé en tête de file", NovayToastTone.INFO)
                                         },
                                         onRemove = {
                                             if (info.isCompleted) {
@@ -371,6 +392,7 @@ private fun DownloadRow(
     onRemove: () -> Unit,
     modifier: Modifier = Modifier,
     onRetry: () -> Unit = {},
+    onPrioritize: () -> Unit = {},
 ) {
     val meta = info.meta
     val title = meta?.episodeLabel?.takeIf { it.isNotEmpty() } ?: "Épisode"
@@ -449,6 +471,21 @@ private fun DownloadRow(
                             contentDescription = "Lire hors-ligne",
                             tint = MaterialTheme.colorScheme.tertiary,
                             size = 24.dp,
+                        )
+                    }
+                }
+                if (info.state == Downloads.STATE_QUEUED_INT) {
+                    IconButton(
+                        onClick = onPrioritize,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("download_prioritize_button"),
+                    ) {
+                        Icon(
+                            imageVector = NovayIcons.Play,
+                            contentDescription = "Passer en premier",
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(18.dp),
                         )
                     }
                 }
@@ -713,3 +750,120 @@ internal fun DownloadsWifiOnlyCard(
     }
 }
 
+
+/**
+ * V3.3 — carte de lot : titre (saison ou panneau), comptes par état,
+ * progression agrégée honnête (indéterminée si une taille est inconnue)
+ * et pause/reprise de tout le lot. Même graphie que les cartes existantes.
+ */
+@Composable
+private fun BatchHeaderCard(
+    title: String,
+    summary: Downloads.BatchSummary,
+    onToggleBatch: (pause: Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = MaterialTheme.shapes.medium
+    val batchPaused = summary.paused > 0 && summary.active == 0 && summary.queued == 0
+    Surface(
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (summary.failed > 0) {
+                    Pill(
+                        text = "${summary.failed} échec${if (summary.failed > 1) "s" else ""}",
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+                Pill(
+                    text = "${summary.completed}/${summary.total}",
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                if (summary.completed < summary.total) {
+                    IconButton(
+                        onClick = { onToggleBatch(!batchPaused) },
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("download_batch_toggle"),
+                    ) {
+                        Icon(
+                            imageVector = if (batchPaused) NovayIcons.Play else NovayIcons.Pause,
+                            contentDescription = if (batchPaused) "Reprendre le lot" else "Suspendre le lot",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            }
+            if (summary.completed < summary.total) {
+                Spacer(Modifier.height(8.dp))
+                val motion = LocalSlateMotion.current
+                val fraction = summary.fraction
+                if (fraction != null) {
+                    val animated by animateFloatAsState(
+                        targetValue = fraction.coerceIn(0f, 1f),
+                        animationSpec = motion.enterSpec(220),
+                        label = "batch_progress",
+                    )
+                    LinearProgressIndicator(
+                        progress = { animated },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(MaterialTheme.shapes.extraSmall),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(MaterialTheme.shapes.extraSmall),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = buildString {
+                        append(
+                            when {
+                                summary.active > 0 -> "${summary.active} en cours"
+                                summary.queued > 0 -> "${summary.queued} en file"
+                                summary.paused > 0 -> "suspendu"
+                                else -> "en attente"
+                            }
+                        )
+                        if (summary.bytesTotal != null && summary.bytesTotal > 0) {
+                            append(" · ${Downloads.formatBytes(summary.bytesDone)} / ${Downloads.formatBytes(summary.bytesTotal)}")
+                        } else if (summary.bytesDone > 0) {
+                            append(" · ${Downloads.formatBytes(summary.bytesDone)} reçus · taille totale inconnue")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}

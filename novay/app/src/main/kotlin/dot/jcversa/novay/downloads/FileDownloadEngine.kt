@@ -192,6 +192,56 @@ object FileDownloadEngine {
         pump()
     }
 
+    /** V3.3 : suspend toutes les tâches d'un lot (l'item en cours s'arrête au segment près). */
+    fun pauseBatch(batchId: String) {
+        var changed = false
+        tasksInternal.forEach {
+            if (it.meta.batchId == batchId &&
+                it.state in setOf(State.QUEUED, State.WAITING_WIFI, State.RUNNING)
+            ) {
+                it.state = State.PAUSED
+                changed = true
+            }
+        }
+        if (changed) {
+            persist()
+            notifyUpdate()
+        }
+    }
+
+    /** V3.3 : reprend toutes les tâches suspendues d'un lot. */
+    fun resumeBatch(batchId: String) {
+        var changed = false
+        tasksInternal.forEach {
+            if (it.meta.batchId == batchId && it.state == State.PAUSED) {
+                it.state = State.QUEUED
+                changed = true
+            }
+        }
+        if (changed) {
+            persist()
+            pump()
+        }
+    }
+
+    /**
+     * V3.3 : fait passer une tâche en tête de file (priorisation) —
+     * insérée juste avant la première tâche en attente.
+     */
+    fun prioritize(id: String) {
+        val task = find(id) ?: return
+        if (task.isCompleted || task.state == State.RUNNING) return
+        val targetIndex = tasksInternal.indexOfFirst {
+            it.state == State.QUEUED || it.state == State.WAITING_WIFI
+        }.let { if (it < 0) 0 else it }
+        val current = tasksInternal.indexOf(task)
+        if (current < 0 || current <= targetIndex) return
+        tasksInternal.remove(task)
+        tasksInternal.add(targetIndex, task)
+        persist()
+        pump()
+    }
+
     /**
      * V3.3 : retire une tâche de la file SANS toucher au fichier publié —
      * « retirer de la liste » ≠ « supprimer le téléchargement ».
@@ -331,7 +381,7 @@ object FileDownloadEngine {
 
         val total = playlist.segmentUrls.size
         for (i in task.segmentsDone until total) {
-            if (paused) throw InterruptedException()
+            if (paused || task.state == State.PAUSED) throw InterruptedException()
             val segFile = File(dir, "seg_%05d.bin".format(i))
             downloadTo(playlist.segmentUrls[i], meta.headers, segFile)
             task.segmentsDone = i + 1
@@ -358,7 +408,7 @@ object FileDownloadEngine {
         val pages = meta.pageUrls
         task.segmentCount = pages.size
         for (i in task.segmentsDone until pages.size) {
-            if (paused) throw InterruptedException()
+            if (paused || task.state == State.PAUSED) throw InterruptedException()
             val pageFile = File(dir, "page_%05d.jpg".format(i))
             downloadTo(pages[i], meta.headers, pageFile)
             task.segmentsDone = i + 1

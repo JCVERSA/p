@@ -370,6 +370,22 @@ fun EpisodesPane(
         selectionMode = false
         selected.clear()
         scope.launch {
+            // V3.3 : garde-fou stockage - on bloque un lot dont l'estimation
+            // (moyenne reelle des episodes termines) depasse l'espace libre.
+            val estimatePerEpisode = state.sizeByHeight[option.height]
+            if (state.episodes.size > 1 && estimatePerEpisode != null) {
+                val free = Downloads.availableBytes(context)
+                if (free != null && estimatePerEpisode * state.episodes.size > free) {
+                    enqueueLabel = null
+                    toastController.show(
+                        "Espace insuffisant : le lot exigerait environ " +
+                            "${Downloads.formatBytes(estimatePerEpisode * state.episodes.size)} " +
+                            "et il reste ${Downloads.formatBytes(free)} libres.",
+                        NovayToastTone.ERROR,
+                    )
+                    return@launch
+                }
+            }
             state.episodes.forEachIndexed { index, episode ->
                 enqueueLabel = "${index + 1}/${state.episodes.size}"
                 val streams = state.streamsByEpisode[episode.number]

@@ -42,11 +42,16 @@ object Downloads {
 
     // ── États exposés (moteur fichier, plus de media3) ────────────────────
 
-    private const val STATE_QUEUED = 1
-    private const val STATE_RUNNING = 2
-    private const val STATE_PAUSED = 3
-    private const val STATE_COMPLETED = 4
-    private const val STATE_FAILED = 5
+    const val STATE_QUEUED_INT = 1
+    const val STATE_RUNNING_INT = 2
+    const val STATE_PAUSED_INT = 3
+    const val STATE_COMPLETED_INT = 4
+    const val STATE_FAILED_INT = 5
+    private const val STATE_QUEUED = STATE_QUEUED_INT
+    private const val STATE_RUNNING = STATE_RUNNING_INT
+    private const val STATE_PAUSED = STATE_PAUSED_INT
+    private const val STATE_COMPLETED = STATE_COMPLETED_INT
+    private const val STATE_FAILED = STATE_FAILED_INT
 
     /** État d'un téléchargement, exposé à l'UI. */
     data class DownloadInfo(
@@ -139,6 +144,65 @@ object Downloads {
     /** Réessaye une tâche échouée (reprise aux segments déjà reçus). */
     fun retry(id: String) {
         FileDownloadEngine.retry(id)
+    }
+
+    /** V3.3 : suspend tout un lot. */
+    fun pauseBatch(batchId: String) {
+        FileDownloadEngine.pauseBatch(batchId)
+    }
+
+    /** V3.3 : reprend tout un lot suspendu. */
+    fun resumeBatch(batchId: String) {
+        FileDownloadEngine.resumeBatch(batchId)
+    }
+
+    /** V3.3 : fait passer une tâche en tête de la file. */
+    fun prioritize(id: String) {
+        FileDownloadEngine.prioritize(id)
+    }
+
+    /**
+     * V3.3 : résumé agrégé d'un lot (PUR, testé) — comptes par état, octets
+     * reçus et total AGGREGÉ honnête : null si une seule taille est
+     * inconnue (on ne présente jamais une somme partielle comme un total).
+     */
+    data class BatchSummary(
+        val total: Int,
+        val completed: Int,
+        val active: Int,
+        val queued: Int,
+        val paused: Int,
+        val failed: Int,
+        val bytesDone: Long,
+        val bytesTotal: Long?,
+    ) {
+        val allSizesKnown: Boolean get() = bytesTotal != null
+        val fraction: Float?
+            get() = bytesTotal?.takeIf { it > 0 }?.let { bytesDone.toFloat() / it }
+    }
+
+    fun summarizeBatch(infos: List<DownloadInfo>): BatchSummary {
+        var bytesDone = 0L
+        var bytesTotal: Long? = 0L
+        for (info in infos) {
+            bytesDone += info.bytesDownloaded
+            val total = info.totalBytes
+            if (total <= 0L) {
+                bytesTotal = null
+            } else if (bytesTotal != null) {
+                bytesTotal += total
+            }
+        }
+        return BatchSummary(
+            total = infos.size,
+            completed = infos.count { it.isCompleted },
+            active = infos.count { it.state == STATE_RUNNING },
+            queued = infos.count { it.state == STATE_QUEUED },
+            paused = infos.count { it.state == STATE_PAUSED },
+            failed = infos.count { it.isFailed },
+            bytesDone = bytesDone,
+            bytesTotal = bytesTotal,
+        )
     }
 
     /**
