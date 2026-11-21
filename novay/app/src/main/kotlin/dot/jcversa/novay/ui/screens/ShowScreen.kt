@@ -86,7 +86,6 @@ import kotlinx.coroutines.withContext
  * sélecteur segmenté VF / VOSTFR, sections repliables, Split-Pane tablette
  * et préservation intégrale des transitions et animations NoVaY.
  */
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 /**
  * Libellé du groupe des panneaux de scans dans la liste des saisons
  * (V3.0 : les œuvres mangas listent leurs chapitres comme des saisons).
@@ -97,6 +96,7 @@ internal const val SCANS_GROUP_LABEL = "Scans"
 internal fun isScanSeason(season: AnimeSeason): Boolean =
     season.url.contains("/scan/", ignoreCase = true)
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ShowScreen(
     source: AnimeSource,

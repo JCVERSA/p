@@ -265,7 +265,7 @@ fun ScanReaderScreen(
                             modifier = Modifier
                                 .navigationBarsPadding()
                                 .padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             Button(
