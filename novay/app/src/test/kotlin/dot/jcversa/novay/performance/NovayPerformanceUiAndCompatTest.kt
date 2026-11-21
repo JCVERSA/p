@@ -45,7 +45,7 @@ import org.robolectric.annotation.Config
 import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36], qualifiers = "w412dp-h915dp")
+@Config(sdk = [35], qualifiers = "w412dp-h915dp")
 class NovayPerformanceUiAndCompatTest {
 
     @get:Rule
@@ -274,7 +274,7 @@ class NovayPerformanceUiAndCompatTest {
     }
 
     @Test
-    @Config(sdk = [36])
+    @Config(sdk = [35])
     fun `scenario 10b - Android 16 API 36 flagship toggles performance selector cleanly`() {
         NovayPerformanceState.resetForTest(
             DeviceCapabilities(totalRamMb = 12288, isLowRamDevice = false, cpuCores = 8, sdkInt = 36),
