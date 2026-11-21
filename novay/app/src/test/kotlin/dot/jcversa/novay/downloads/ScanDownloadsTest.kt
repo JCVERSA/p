@@ -108,9 +108,9 @@ class ScanDownloadsTest {
 
         assertEquals(3, pages.size)
         // Ordre trié par nom d'entrée, indépendant de l'ordre d'écriture.
-        assertEquals(1, pages[0].readBytes()[0])
-        assertEquals(2, pages[1].readBytes()[0])
-        assertEquals(3, pages[2].readBytes()[0])
+        assertEquals(1, pages[0].readBytes()[0].toInt())
+        assertEquals(2, pages[1].readBytes()[0].toInt())
+        assertEquals(3, pages[2].readBytes()[0].toInt())
 
         // Cache : la seconde extraction réutilise les fichiers existants.
         val again = Downloads.unzipScanPages(cbz, outDir)

@@ -141,9 +141,13 @@ object Downloads {
      * que les épisodes (aucun caractère interdit par les FAT/NTFS).
      */
     fun buildScanChapterFileName(animeTitle: String, chapterLabel: String): String {
-        val anime = animeTitle.replace(Regex("[\\/:*?\"<>|]"), "-").trim().ifEmpty { "Anime" }
-        val chapter = chapterLabel.replace(Regex("[\\/:*?\"<>|]"), "-").trim().ifEmpty { "Chapitre" }
-        return "$anime - $chapter.cbz"
+        fun clean(raw: String, fallback: String): String = raw
+            .replace(Regex("\\s*[\\/:*?\"<>|]\\s*"), " ")
+            .replace(Regex("[\\/:*?\"<>|]"), "-")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .ifEmpty { fallback }
+        return clean(animeTitle, "Anime") + " - " + clean(chapterLabel, "Chapitre") + ".cbz"
     }
 
     /** V3.0 scans : le chapitre de ce panneau est-il téléchargé ? */
