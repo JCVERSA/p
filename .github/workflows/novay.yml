@@ -114,6 +114,18 @@ jobs:
           grep "STARTED" test.log | tail -n 4 | while IFS= read -r ligne; do
             echo "::error::DERNIER TEST : ${ligne:0:220}"
           done
+          # Messages d echec des rapports XML (tests termines avant un eventuel blocage)
+          grep -lE '<failure|<error' app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | while read -r xf; do
+            awk '{
+              if (match($0, /<testcase name="[^"]*"/)) { tc = substr($0, RSTART + 16, RLENGTH - 17) }
+              if ($0 ~ /<failure|<error/) { print tc }
+            }' "$xf" | head -n 2 | while IFS= read -r nom; do
+              echo "::error::TEST EN ECHEC : ${nom:0:160}"
+            done
+            grep -oE '<failure message="[^"]{0,170}|<error message="[^"]{0,170}' "$xf" | head -n 2 | while IFS= read -r ligne; do
+              echo "::error::MESSAGE : ${ligne:0:220}"
+            done
+          done
           grep -E "^e: |error: |Execution failed" test.log | head -n 3 | while IFS= read -r ligne; do
             echo "::error::${ligne:0:240}"
           done

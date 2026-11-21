@@ -1,8 +1,10 @@
 package dot.jcversa.novay
 
 import android.content.Context
+import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import coil.request.ImageRequest
+import coil.request.ImageResult
 import coil.request.SuccessResult
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.Library
@@ -12,6 +14,7 @@ import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.data.sama.SamaParsers
 import dot.jcversa.novay.data.sama.SamaSource
 import dot.jcversa.novay.ui.components.PosterRecoveryCoordinator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
@@ -30,6 +33,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -67,6 +71,27 @@ class NovayImagePipelineTest {
     fun tearDown() {
         NovayImagePipeline.clearHostStrategies()
         PosterRecoveryCoordinator.clearForTest()
+    }
+
+    /**
+     * Coil 2.7 demarre toute requete sur Dispatchers.Main.immediate (source
+     * RealImageLoader : "Start executing the request on the main thread").
+     * Sous Robolectric le thread de test EST le thread principal et son
+     * looper est en pause : un runBlocking { execute(...) } direct se
+     * deadlock - le job Coil attend un thread que runBlocking garde bloque.
+     * On lance donc execute depuis IO et on pompe le looper principal
+     * (shadowOf(...).idle()) en attendant le resultat.
+     */
+    private fun ImageLoader.executePumpingMain(request: ImageRequest): ImageResult = runBlocking {
+        val main = shadowOf(Looper.getMainLooper())
+        val deferred = async(Dispatchers.IO) { execute(request) }
+        var tours = 0
+        while (!deferred.isCompleted) {
+            main.idle()
+            if (!deferred.isCompleted) Thread.sleep(5L)
+            check(++tours < 4000) { "Coil execute n a pas rendu la main (looper pompe $tours fois)" }
+        }
+        deferred.await()
     }
 
     private fun imageResponse(request: Request, code: Int, body: ByteArray, contentType: String = "image/png"): Response =
@@ -205,7 +230,7 @@ class NovayImagePipelineTest {
         loader.memoryCache?.clear()
         loader.diskCache?.clear()
 
-        val firstOk = loader.execute(
+        val firstOk = loader.executePumpingMain(
             ImageRequest.Builder(context)
                 .data(okUrl)
                 .memoryCacheKey(okUrl)
@@ -216,7 +241,7 @@ class NovayImagePipelineTest {
         assertEquals(1, networkHits.get())
 
         // Second request must be served from Coil memory/disk cache with 0 extra network hits.
-        val cachedOk = loader.execute(
+        val cachedOk = loader.executePumpingMain(
             ImageRequest.Builder(context)
                 .data(okUrl)
                 .memoryCacheKey(okUrl)
@@ -227,11 +252,11 @@ class NovayImagePipelineTest {
         assertEquals(1, networkHits.get())
 
         // Error responses must NOT be cached: hitting errUrl twice hits network twice.
-        val firstErr = loader.execute(
+        val firstErr = loader.executePumpingMain(
             ImageRequest.Builder(context).data(errUrl).memoryCacheKey(errUrl).diskCacheKey(errUrl).build(),
         )
         assertTrue(firstErr !is SuccessResult)
-        val secondErr = loader.execute(
+        val secondErr = loader.executePumpingMain(
             ImageRequest.Builder(context).data(errUrl).memoryCacheKey(errUrl).diskCacheKey(errUrl).build(),
         )
         assertTrue(secondErr !is SuccessResult)
