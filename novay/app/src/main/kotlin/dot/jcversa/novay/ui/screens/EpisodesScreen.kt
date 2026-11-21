@@ -299,6 +299,12 @@ fun EpisodesPane(
         }
     }
 
+    /** V3.3 : estimation honnête par hauteur — moyenne des épisodes terminés. */
+    fun sizeHints(options: List<QualityOption>): Map<Int, Long?> =
+        options.associate { opt ->
+            opt.height to Downloads.estimateEpisodeSize(context, season.url, opt.height)
+        }
+
     fun download(episode: AnimeEpisode) {
         if (resolving != null || resolvingBatch) return
         ensurePermission()
@@ -343,12 +349,6 @@ fun EpisodesPane(
             }
         }
     }
-
-    /** Estimation honnête par hauteur : moyenne des épisodes terminés. */
-    fun sizeHints(options: List<QualityOption>): Map<Int, Long?> =
-        options.associate { opt ->
-            opt.height to Downloads.estimateEpisodeSize(context, season.url, opt.height)
-        }
 
     /** V3.3 : télécharge toute la saison d'un coup (épisodes ni finis ni en cours). */
     fun downloadWholeSeason() {
