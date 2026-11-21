@@ -55,6 +55,12 @@ jobs:
       # Tests unitaires des parseurs (fixtures portees du bot) AVANT le
       # build : un parseur casse ne doit jamais produire d'APK.
       - name: Tests unitaires
+        id: tests
+        # V2.9.7 : garde-fou anti-test-bloque. Reference : 122 s sur le run
+        # vert 44893714621. Le run 44899458840 a du etre annule par le owner
+        # apres 13 min (etape bloquee a 784 s) : un test se pend. Au lieu de
+        # tourner indefiniment, l'etape echoue au bout de 12 min.
+        timeout-minutes: 12
         run: |
           set +e
           gradle :app:testDebugUnitTest --no-daemon 2>&1 | tee test.log
@@ -84,6 +90,33 @@ jobs:
           # Compte de tests visible en annotation a chaque run (preuve API).
           tests=$(grep -ho 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | awk '{s+=$1} END {print s}')
           echo "::notice::${tests} tests unitaires passes"
+
+      # V2.9.7 : diagnostic post-tests, execute MEME sur timeout/echec.
+      # Chaque test est logge STARTED/PASSED/FAILED (config Gradle). Si un
+      # test se pend, le dernier STARTED sans verdict designe le coupable ;
+      # on le publie en ANNOTATION (canal lisible sans telecharger les
+      # artefacts).
+      - name: Diagnostic des tests (toujours)
+        if: always()
+        run: |
+          if [ ! -s test.log ]; then
+            echo "::notice::test.log vide ou absent - rien a diagnostiquer"
+            exit 0
+          fi
+          started=$(grep -c "STARTED" test.log || true)
+          passed=$(grep -c "PASSED" test.log || true)
+          failed=$(grep -c "FAILED" test.log || true)
+          echo "::notice::Tests demarres=$started passes=$passed echoues=$failed"
+          if [ "${{ steps.tests.outcome }}" = "success" ]; then
+            exit 0
+          fi
+          echo "::error::Etape Tests unitaires : ${{ steps.tests.outcome }} - derniers tests demarres ci-dessous (un STARTED sans PASSED/FAILED = test bloque)"
+          grep "STARTED" test.log | tail -n 4 | while IFS= read -r ligne; do
+            echo "::error::DERNIER TEST : ${ligne:0:220}"
+          done
+          grep -E "^e: |error: |Execution failed" test.log | head -n 3 | while IFS= read -r ligne; do
+            echo "::error::${ligne:0:240}"
+          done
 
       # Audit Q-02 : lint statique Android - NON BLOQUANT dans un premier
       # temps : le rapport part en artefact pour analyse, on ne casse pas

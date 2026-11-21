@@ -123,3 +123,13 @@ dependencies {
   testImplementation(libs.org.json)
   debugImplementation(libs.androidx.compose.ui.tooling)
 }
+
+// V2.9.7 - diagnostic CI : chaque test est logge au demarrage et au verdict
+// (STARTED/PASSED/FAILED) dans la console Gradle. En cas de test bloque, le
+// dernier STARTED sans verdict dans le log designe le coupable (remonte en
+// annotation par l'etape Diagnostic du workflow).
+tasks.withType<Test>().configureEach {
+  testLogging {
+    events("started", "passed", "failed", "skipped")
+  }
+}
