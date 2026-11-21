@@ -4,10 +4,11 @@ name: NoVaY Release
 # par le push d un tag v*. Les assets d une Release publique sont
 # telechargeables SANS compte GitHub, contrairement aux artifacts de
 # build - c est le canal de partage de l app.
-# Le CI quotidien reste dans novay.yml (arm32 seul, rapide) ; ce workflow
-# reconstruit tout depuis le tag : tests, APK arm32, APK universel
+# Le CI quotidien (novay.yml) construit le meme APK universel ; ce
+# workflow reconstruit tout depuis le tag : tests, APK universel
 # (arm32+arm64), 7z, verification ABI, puis publie la Release avec les
-# empreintes sha256 et les notes en francais.
+# empreintes sha256 et les notes en francais. Owner (15/11) : livraison
+# UNIQUE = universel, plus de build 32 bits separe.
 
 on:
   push:
@@ -90,27 +91,10 @@ jobs:
           tests=$(grep -ho 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | awk '{s+=$1} END {print s}')
           echo "::notice::${tests} tests unitaires passes"
 
-      # ── APK 1 : arm32 (telephones anciens 32 bits, la livraison legere)
-      - name: Build APK arm32 (release)
-        run: |
-          set +e
-          gradle :app:assembleRelease -PnovayAbi=armeabi-v7a --no-daemon 2>&1 | tee build-arm32.log
-          status=${PIPESTATUS[0]}
-          set -e
-          if [ "$status" -ne 0 ]; then
-            grep -E "^e: |error: |FAILURE|What went wrong|Caused by|OutOfMemory|FAILED" build-arm32.log | head -n 6 | while IFS= read -r line; do
-              echo "::error::${line:0:240}"
-            done
-            tail -n 40 build-arm32.log | grep -v "^> Task" | tail -n 4 | while IFS= read -r line; do
-              echo "::error::${line:0:240}"
-            done
-            exit "$status"
-          fi
-          mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk dist/novay-arm32-release.apk
-
-      # ── APK 2 : universel (arm32 + arm64 dans le meme APK, ~90 Mo) :
-      # le fichier a partager - s installe sur tous les telephones 7+.
+      # ── APK universel (arm32 + arm64 dans le meme APK, ~103 Mo avant
+      # compression) : LA livraison unique - s installe sur tous les
+      # telephones Android 7+, y compris les 32 bits. Le 7z maitrise le
+      # poids (~39 Mo). Un seul build : plus rapide qu avant.
       - name: Build APK universel (arm32+arm64, release)
         run: |
           set +e
@@ -139,7 +123,7 @@ jobs:
             exit 1
           fi
           cd dist
-          for abi in arm32 universal; do
+          for abi in universal; do
             "$SEVENZ" a -t7z -m0=lzma2 -mx=9 -md=128m -ms=on \
               "novay-${abi}-release.7z" "novay-${abi}-release.apk" > /dev/null
           done
@@ -150,11 +134,6 @@ jobs:
         run: |
           set -e
           cd dist
-          fuite32=$(unzip -l novay-arm32-release.apk | grep "lib/" | grep -cv "lib/armeabi-v7a/" || true)
-          if [ "${fuite32:-0}" -ne 0 ]; then
-            echo "::error::novay-arm32-release.apk embarque $fuite32 natives hors armeabi-v7a - filtre ABI en echec"
-            exit 1
-          fi
           fuiteU=$(unzip -l novay-universal-release.apk | grep "lib/" | grep -cvE "lib/(armeabi-v7a|arm64-v8a)/" || true)
           if [ "${fuiteU:-0}" -ne 0 ]; then
             echo "::error::novay-universal-release.apk embarque $fuiteU natives hors arm32/arm64 - filtre ABI en echec"
@@ -169,9 +148,7 @@ jobs:
           done
           mo() { awk -v b="$(stat -c%s "$1")" 'BEGIN {printf "%.2f", b/1048576}'; }
           pct() { awk -v a="$1" -v b="$2" 'BEGIN {printf "%.0f", (a-b)*100/a}'; }
-          a32=$(mo novay-arm32-release.apk); z32=$(mo novay-arm32-release.7z)
           au=$(mo novay-universal-release.apk); zu=$(mo novay-universal-release.7z)
-          echo "::notice::arm32 (armeabi-v7a, Android 7+ 32 bits) : APK ${a32} Mo | 7z ${z32} Mo (-$(pct "$a32" "$z32") %)"
           echo "::notice::universel (arm32+arm64, tous telephones Android 7+) : APK ${au} Mo | 7z ${zu} Mo (-$(pct "$au" "$zu") %)"
 
       - name: Empreintes sha256
@@ -202,9 +179,8 @@ jobs:
             echo
             echo "| Fichier | Pour qui |"
             echo "|---|---|"
-            echo "| \`novay-universal-release.apk\` | **Recommande : tous les telephones** Android 7.0+ (32 et 64 bits) |"
-            echo "| \`novay-arm32-release.apk\` | Telephones anciens 32 bits uniquement (plus leger) |"
-            echo "| \`*.7z\` | Version compressee du meme fichier (connexion lente) - a decompresser avec 7-Zip ou ZArchiver |"
+            echo "| \`novay-universal-release.apk\` | **Tous les telephones** Android 7.0+ (32 et 64 bits) |"
+            echo "| \`novay-universal-release.7z\` | Le meme fichier compresse (connexion lente) - a decompresser avec 7-Zip ou ZArchiver |"
             echo
             echo "## Installation"
             echo
@@ -241,10 +217,8 @@ jobs:
             --title "$titre" \
             --notes-file dist/notes.md \
             dist/novay-universal-release.apk \
-            dist/novay-universal-release.7z \
-            dist/novay-arm32-release.apk \
-            dist/novay-arm32-release.7z; then
+            dist/novay-universal-release.7z; then
             echo "::error::gh release create a echoue pour $tag (deja existante ? permissions ?)"
             exit 1
           fi
-          echo "::notice::Release $tag publiee avec 4 fichiers"
+          echo "::notice::Release $tag publiee avec 2 fichiers (APK universel + 7z)"
