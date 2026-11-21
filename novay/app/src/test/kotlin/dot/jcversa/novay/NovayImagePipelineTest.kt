@@ -3,6 +3,7 @@ package dot.jcversa.novay
 import android.content.Context
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
+import coil.ImageLoader
 import coil.request.ImageRequest
 import coil.request.ImageResult
 import coil.request.SuccessResult

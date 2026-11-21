@@ -103,15 +103,15 @@ jobs:
             echo "::notice::test.log vide ou absent - rien a diagnostiquer"
             exit 0
           fi
-          started=$(grep -c "STARTED" test.log || true)
-          passed=$(grep -c "PASSED" test.log || true)
-          failed=$(grep -c "FAILED" test.log || true)
+          started=$(grep -cE "> .*STARTED" test.log || true)
+          passed=$(grep -cE "> .*PASSED" test.log || true)
+          failed=$(grep -cE "> .*FAILED" test.log || true)
           echo "::notice::Tests demarres=$started passes=$passed echoues=$failed"
           if [ "${{ steps.tests.outcome }}" = "success" ]; then
             exit 0
           fi
           echo "::error::Etape Tests unitaires : ${{ steps.tests.outcome }} - derniers tests demarres ci-dessous (un STARTED sans PASSED/FAILED = test bloque)"
-          grep "STARTED" test.log | tail -n 4 | while IFS= read -r ligne; do
+          grep -E "> .*STARTED" test.log | tail -n 4 | while IFS= read -r ligne; do
             echo "::error::DERNIER TEST : ${ligne:0:220}"
           done
           # Messages d echec des rapports XML (tests termines avant un eventuel blocage)
