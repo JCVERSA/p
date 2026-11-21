@@ -1,0 +1,53 @@
+name: NoVaY Pages
+
+# Page publique de telechargement (demande owner 21/11) : servie par
+# GitHub Pages, deployee par Actions a chaque modification de docs/.
+# Le bouton de telechargement pointe sur l URL PERMANENTE
+# releases/latest/download/novay-universal-release.apk : la page suit
+# donc toujours la derniere release publiee, meme sans redeploiement.
+# Methode "GitHub Actions" (pas branch/*) : le site est publie par ce
+# workflow, configure-pages l active au premier run.
+
+on:
+  push:
+    branches: [main, arena/01a05555-p]
+    paths: ["docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Publication de la page
+    runs-on: ubuntu-24.04  # epingle : ubuntu-24.04, pas ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Active Pages au premier run (source : GitHub Actions).
+      - name: Configuration Pages
+        id: pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload de la page
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploiement
+        id: deployment
+        uses: actions/deploy-pages@v4
