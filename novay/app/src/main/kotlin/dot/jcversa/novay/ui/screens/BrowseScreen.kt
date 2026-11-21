@@ -785,6 +785,8 @@ private fun SpotlightHeroCard(
         PosterImage(
             url = anime.posterUrl,
             contentDescription = null,
+            animeUrl = anime.url,
+            animeTitle = anime.title,
             modifier = Modifier
                 .matchParentSize()
                 .graphicsLayer {
@@ -815,6 +817,8 @@ private fun SpotlightHeroCard(
             PosterImage(
                 url = anime.posterUrl,
                 contentDescription = anime.title,
+                animeUrl = anime.url,
+                animeTitle = anime.title,
                 modifier = Modifier
                     .size(width = 104.dp, height = 156.dp)
                     .novaySharedPoster(anime.url)

@@ -270,6 +270,8 @@ private fun UpdateRow(
             PosterImage(
                 url = entry.posterUrl,
                 contentDescription = entry.title,
+                animeUrl = entry.url,
+                animeTitle = entry.title,
                 modifier = Modifier
                     .size(width = 58.dp, height = 84.dp)
                     .novaySharedPoster(entry.url)

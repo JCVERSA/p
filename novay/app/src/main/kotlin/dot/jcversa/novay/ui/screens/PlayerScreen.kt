@@ -485,10 +485,14 @@ private fun AnimeInfoHeaderContent(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (!activePosterUrl.isNullOrBlank()) {
+            val headerAnimeUrl = activeAnime?.url
+                ?: dot.jcversa.novay.data.ImageUrlSanitizer.extractAnimeUrlFromSeasonUrl(activePlayingSeason.url)
+            if (!activePosterUrl.isNullOrBlank() || !headerAnimeUrl.isNullOrBlank()) {
                 PosterImage(
                     url = activePosterUrl,
                     contentDescription = activeAnimeTitle,
+                    animeUrl = headerAnimeUrl,
+                    animeTitle = activeAnimeTitle,
                     modifier = Modifier
                         .size(width = 52.dp, height = 74.dp)
                         .then(

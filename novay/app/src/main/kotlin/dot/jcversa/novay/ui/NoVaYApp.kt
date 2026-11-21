@@ -94,10 +94,15 @@ import dev.chrisbanes.haze.rememberHazeState
 import dot.jcversa.novay.data.AnimeEpisode
 import dot.jcversa.novay.data.AnimeSearchResult
 import dot.jcversa.novay.data.AnimeSeason
+import dot.jcversa.novay.data.ImageUrlSanitizer
 import dot.jcversa.novay.data.Library
 import dot.jcversa.novay.data.ResolvedStream
+import dot.jcversa.novay.data.WatchHistory
 import dot.jcversa.novay.data.WatchHistoryEntry
 import dot.jcversa.novay.data.sama.SamaSource
+import dot.jcversa.novay.ui.components.LocalPosterResolver
+import dot.jcversa.novay.ui.components.PosterRecoveryCoordinator
+import dot.jcversa.novay.ui.components.PosterResolver
 import dot.jcversa.novay.ui.components.LocalAnimatedVisibilityScope
 import dot.jcversa.novay.ui.components.LocalNovayHazeState
 import dot.jcversa.novay.ui.components.LocalSharedTransitionScope
@@ -366,9 +371,16 @@ fun NoVaYApp() {
                     0.dp
                 }
 
+                val posterResolver = remember(context, source) {
+                    PosterResolver { target ->
+                        PosterRecoveryCoordinator.resolveAndPersist(context, source, target)
+                    }
+                }
+
                 CompositionLocalProvider(
                     LocalNovayHazeState provides shellHazeState,
                     LocalBottomChromePadding provides bottomChromePadding,
+                    LocalPosterResolver provides posterResolver,
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Row(modifier = Modifier.fillMaxSize()) {
@@ -520,13 +532,32 @@ fun NoVaYApp() {
                                                                 canBack = canBack,
                                                                 onBack = appState::back,
                                                                 onPlay = { season, episode, stream ->
+                                                                    val derivedAnimeUrl = ImageUrlSanitizer.extractAnimeUrlFromSeasonUrl(season.url)
+                                                                    val normalizedAnime = derivedAnimeUrl?.trimEnd('/')
+                                                                    val knownPoster = normalizedAnime?.let { target ->
+                                                                        Library.all(context)
+                                                                            .firstOrNull { it.url.trimEnd('/') == target }
+                                                                            ?.posterUrl
+                                                                            ?: WatchHistory.recent(context)
+                                                                                .firstOrNull { it.animeUrl.trimEnd('/') == target }
+                                                                                ?.posterUrl
+                                                                    }
+                                                                    val derivedAnime = derivedAnimeUrl?.let { url ->
+                                                                        AnimeSearchResult(
+                                                                            title = episode.label,
+                                                                            url = url,
+                                                                            slug = url.trimEnd('/').substringAfterLast('/', ""),
+                                                                            posterUrl = knownPoster,
+                                                                        )
+                                                                    }
                                                                     appState.open(
                                                                         Destination.Player(
                                                                             season = season,
                                                                             episode = episode,
                                                                             animeTitle = episode.label,
-                                                                            posterUrl = null,
-                                                                            initialStream = stream
+                                                                            posterUrl = knownPoster,
+                                                                            initialStream = stream,
+                                                                            anime = derivedAnime,
                                                                         )
                                                                     )
                                                                 }

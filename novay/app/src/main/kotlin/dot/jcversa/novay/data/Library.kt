@@ -58,15 +58,22 @@ object Library {
     fun upsert(entries: List<LibraryEntry>, entry: LibraryEntry): List<LibraryEntry> {
         val kept = entries.filter { it.url.trimEnd('/') != entry.url.trimEnd('/') }
         val normalizedGenres = GenreCatalog.normalizeList(entry.genres)
+        val cleanIncomingPoster = ImageUrlSanitizer.sanitizePosterUrl(entry.posterUrl)
         val merged = entries.firstOrNull { it.url.trimEnd('/') == entry.url.trimEnd('/') }
             ?.let { existing ->
+                val resolvedPoster = cleanIncomingPoster
+                    ?: ImageUrlSanitizer.sanitizePosterUrl(existing.posterUrl)
                 entry.copy(
+                    posterUrl = resolvedPoster,
                     baseline = existing.baseline,
                     lastCounts = existing.lastCounts,
                     genres = if (normalizedGenres.isNotEmpty()) normalizedGenres else existing.genres,
                 )
             }
-            ?: entry.copy(genres = normalizedGenres)
+            ?: entry.copy(
+                posterUrl = cleanIncomingPoster,
+                genres = normalizedGenres,
+            )
         return (listOf(merged) + kept).take(MAX)
     }
 
@@ -129,11 +136,12 @@ object Library {
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
                 val langs = o.optJSONArray("languages")
                 val genresArr = o.optJSONArray("genres")
+                val rawPoster = o.optString("posterUrl").ifEmpty { null }
                 LibraryEntry(
                     title = o.optString("title"),
                     url = o.optString("url"),
                     slug = o.optString("slug"),
-                    posterUrl = o.optString("posterUrl").ifEmpty { null },
+                    posterUrl = ImageUrlSanitizer.sanitizePosterUrl(rawPoster) ?: rawPoster,
                     languages = if (langs == null) {
                         emptyList()
                     } else {
@@ -249,5 +257,31 @@ object Library {
             }
             if (changed) save(context, next)
         }
+    }
+
+    /** Répare ou met à jour l'URL d'affiche d'un animé suivi sans toucher à ses compteurs ni son ordre. */
+    fun updatePoster(context: Context, url: String, posterUrl: String): Boolean {
+        val normalizedPoster = ImageUrlSanitizer.sanitizePosterUrl(posterUrl) ?: return false
+        val targetKey = catalogIdentityKey(url)
+        synchronized(this) {
+            val current = all(context)
+            var changed = false
+            val next = current.map { entry ->
+                if (catalogIdentityKey(entry.url) == targetKey && entry.posterUrl != normalizedPoster) {
+                    changed = true
+                    entry.copy(posterUrl = normalizedPoster)
+                } else {
+                    entry
+                }
+            }
+            if (changed) save(context, next)
+            return changed
+        }
+    }
+
+    private fun catalogIdentityKey(url: String): String {
+        val clean = url.trim().trimEnd('/')
+        val idx = clean.indexOf("/catalogue/", ignoreCase = true)
+        return if (idx >= 0) clean.substring(idx).lowercase() else clean
     }
 }

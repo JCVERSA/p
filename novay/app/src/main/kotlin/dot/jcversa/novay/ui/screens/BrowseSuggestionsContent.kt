@@ -440,6 +440,8 @@ private fun AnimeSuggestionRow(
         PosterImage(
             url = item.anime.posterUrl,
             contentDescription = item.anime.title,
+            animeUrl = item.anime.url,
+            animeTitle = item.anime.title,
             modifier = Modifier
                 .size(width = 46.dp, height = 64.dp)
                 .novaySharedPoster(item.anime.url)
@@ -513,6 +515,8 @@ private fun QuickJumpAnimeChipCard(
         PosterImage(
             url = item.anime.posterUrl,
             contentDescription = item.anime.title,
+            animeUrl = item.anime.url,
+            animeTitle = item.anime.title,
             modifier = Modifier
                 .size(width = 40.dp, height = 56.dp)
                 .novaySharedPoster(item.anime.url)

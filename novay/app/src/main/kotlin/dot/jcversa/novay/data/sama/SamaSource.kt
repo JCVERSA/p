@@ -97,6 +97,8 @@ class SamaSource(
     private val searchCache = LruTtlCache<String, List<AnimeSearchResult>>(24, SEARCH_TTL_MS, clockMs)
     private val genreCatalogCache = LruTtlCache<String, List<AnimeSearchResult>>(24, FEATURED_TTL_MS, clockMs)
     private val animeGenresCache = LruTtlCache<String, List<String>>(64, SEASONS_TTL_MS, clockMs)
+    private val listingPosterCache = LruTtlCache<String, String>(128, SEASONS_TTL_MS, clockMs)
+    private val showPagePosterCache = LruTtlCache<String, String>(128, SEASONS_TTL_MS, clockMs)
     private val seasonsCache = LruTtlCache<String, List<AnimeSeason>>(32, SEASONS_TTL_MS, clockMs)
     private val episodesCache = LruTtlCache<String, List<AnimeEpisode>>(32, EPISODES_TTL_MS, clockMs)
 
@@ -114,10 +116,13 @@ class SamaSource(
             if (resolved != null) {
                 cachedOrigin = resolved
                 cachedAt = clockMs()
+                dot.jcversa.novay.NovayImagePipeline.activeSiteOrigin = resolved
                 return@withLock resolved
             }
             // Lanceur muet : dernier domaine connu, sinon repli validé.
-            cachedOrigin ?: SamaParsers.FALLBACK_ORIGIN
+            val fallback = cachedOrigin ?: SamaParsers.FALLBACK_ORIGIN
+            dot.jcversa.novay.NovayImagePipeline.activeSiteOrigin = fallback
+            fallback
         }
     }
 
@@ -186,6 +191,14 @@ class SamaSource(
             cards = SamaParsers.parseHomeCards(html, base)
         )
         if (home.heroes.isNotEmpty() || home.cards.isNotEmpty()) {
+            home.heroes.forEach { hero ->
+                val animeUrl = dot.jcversa.novay.data.ImageUrlSanitizer.extractAnimeUrlFromSeasonUrl(hero.seasonUrl)
+                    ?: hero.seasonUrl
+                cacheListingPoster(animeUrl, hero.posterUrl)
+            }
+            home.cards.forEach { card ->
+                cacheListingPoster(card.animeUrl, card.posterUrl)
+            }
             cachedHome = home to (clockMs() + HOME_TTL_MS)
         }
         home
@@ -206,6 +219,7 @@ class SamaSource(
             SamaParsers.parseSamaCatalogueCards(homeHtml, base)
         }
         if (result.isNotEmpty()) {
+            result.forEach { cacheListingPoster(it.url, it.posterUrl) }
             cachedFeatured = result to (clockMs() + FEATURED_TTL_MS)
         }
         result
@@ -313,6 +327,7 @@ class SamaSource(
                 )
                 val results = SamaParsers.parseSamaSearch(html, base)
                 if (results.isNotEmpty()) {
+                    results.forEach { cacheListingPoster(it.url, it.posterUrl) }
                     searchCache.put(cacheKey, results)
                     return@withContext results
                 }
@@ -327,6 +342,50 @@ class SamaSource(
         emptyList()
     }
 
+    override suspend fun resolvePosterUrl(anime: AnimeSearchResult): String? =
+        withContext(Dispatchers.IO) {
+            val key = posterCacheKey(anime.url)
+            val failingUrl = dot.jcversa.novay.data.ImageUrlSanitizer.sanitizePosterUrl(anime.posterUrl)
+
+            val showCached = showPagePosterCache.get(key)
+            if (showCached != null && showCached != failingUrl) {
+                return@withContext showCached
+            }
+
+            if (failingUrl == null) {
+                val listCached = listingPosterCache.get(key)
+                if (listCached != null) return@withContext listCached
+            } else {
+                val listCached = listingPosterCache.get(key)
+                if (listCached != null && listCached != failingUrl) {
+                    return@withContext listCached
+                }
+            }
+
+            val base = origin()
+            val showUrl = rewriteMirrorIfNeeded(anime.url, base)
+            val html = runCatching { fetchBlocking(showUrl, "$base/") }.getOrNull()
+                ?: if (showUrl != anime.url) runCatching { fetchBlocking(anime.url, "$base/") }.getOrNull() else null
+            val parsed = html?.let { SamaParsers.parseAnimePoster(it, base) }
+            if (parsed != null) {
+                showPagePosterCache.put(key, parsed)
+                if (parsed != failingUrl) return@withContext parsed
+            }
+
+            // Dernier repli : recherche du titre dans le catalogue courant si l'URL d'origine a changé.
+            if (anime.title.isNotBlank()) {
+                val matches = runCatching { search(anime.title) }.getOrDefault(emptyList())
+                val matchedPoster = matches.firstOrNull { posterCacheKey(it.url) == key }?.posterUrl
+                    ?: matches.firstOrNull { it.posterUrl != null }?.posterUrl
+                val sanitizedMatch = dot.jcversa.novay.data.ImageUrlSanitizer.sanitizePosterUrl(matchedPoster, base)
+                if (sanitizedMatch != null && sanitizedMatch != failingUrl) {
+                    showPagePosterCache.put(key, sanitizedMatch)
+                    return@withContext sanitizedMatch
+                }
+            }
+            parsed ?: failingUrl
+        }
+
     // ── Saisons ───────────────────────────────────────────────────────────
 
     override suspend fun seasons(anime: AnimeSearchResult): List<AnimeSeason> =
@@ -335,12 +394,17 @@ class SamaSource(
             seasonsCache.get(cacheKey)?.let { return@withContext it }
 
             val base = origin()
-            val html = fetchBlocking(anime.url, "$base/")
+            val targetUrl = rewriteMirrorIfNeeded(anime.url, base)
+            val html = fetchBlocking(targetUrl, "$base/")
+            val parsedPoster = SamaParsers.parseAnimePoster(html, base)
+            if (parsedPoster != null) {
+                showPagePosterCache.put(posterCacheKey(anime.url), parsedPoster)
+            }
             val parsedGenres = SamaParsers.parseAnimeGenres(html)
             if (parsedGenres.isNotEmpty()) {
                 animeGenresCache.put(cacheKey, parsedGenres)
             }
-            val panels = SamaParsers.parsePanneauSeasons(html, anime.url)
+            val panels = SamaParsers.parsePanneauSeasons(html, targetUrl)
 
             // Terrain 13/11 : la page statique ne liste que la langue par
             // défaut (VOSTFR) — la VF vit à l'URL miroir (.../vf/), validée
@@ -564,6 +628,31 @@ class SamaSource(
             val body = resp.body?.string() ?: return emptyList()
             return SamaParsers.parseHlsMasterPlaylist(body, masterUrl)
         }
+    }
+
+    private fun cacheListingPoster(animeUrl: String, posterUrl: String?) {
+        val clean = dot.jcversa.novay.data.ImageUrlSanitizer.sanitizePosterUrl(posterUrl) ?: return
+        val key = posterCacheKey(animeUrl)
+        if (key.isNotEmpty()) listingPosterCache.put(key, clean)
+    }
+
+    private fun posterCacheKey(animeUrl: String): String {
+        val clean = animeUrl.trim().trimEnd('/')
+        val idx = clean.indexOf("/catalogue/", ignoreCase = true)
+        return if (idx >= 0) clean.substring(idx).lowercase() else clean
+    }
+
+    private fun rewriteMirrorIfNeeded(rawUrl: String, activeBase: String): String {
+        val clean = rawUrl.trim()
+        if (clean.startsWith("/")) return SamaParsers.resolveUrl(clean, "$activeBase/")
+        val idx = clean.indexOf("/catalogue/", ignoreCase = true)
+        if (idx > 0) {
+            val host = runCatching { java.net.URI(clean).host?.lowercase() }.getOrNull()
+            if (host != null && host.startsWith("anime-sama.")) {
+                return "${activeBase.trimEnd('/')}${clean.substring(idx)}"
+            }
+        }
+        return clean
     }
 
     private fun urlEncode(s: String): String = try {

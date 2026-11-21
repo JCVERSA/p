@@ -164,6 +164,8 @@ fun AnimeComfortableGridItem(
             PosterImage(
                 url = posterUrl,
                 contentDescription = title,
+                animeUrl = animeUrl.ifBlank { null },
+                animeTitle = title,
                 modifier = Modifier
                     .matchParentSize()
                     .alpha(if (isSelected) 0.72f else 1f),
@@ -264,6 +266,8 @@ fun AnimeCompactGridItem(
         PosterImage(
             url = posterUrl,
             contentDescription = title,
+            animeUrl = animeUrl.ifBlank { null },
+            animeTitle = title,
             modifier = Modifier
                 .matchParentSize()
                 .alpha(if (isSelected) 0.72f else 1f),
@@ -379,6 +383,8 @@ fun AnimeListItem(
             PosterImage(
                 url = posterUrl,
                 contentDescription = title,
+                animeUrl = animeUrl.ifBlank { null },
+                animeTitle = title,
                 modifier = Modifier
                     .size(width = 58.dp, height = 84.dp)
                     .novaySharedPoster(animeUrl = animeUrl, enabled = sharedTransitionEnabled)

@@ -274,9 +274,14 @@ private fun HistoryRow(
             modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 6.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            val resolvedAnimeUrl = entry.animeUrl.ifBlank {
+                dot.jcversa.novay.data.ImageUrlSanitizer.extractAnimeUrlFromSeasonUrl(entry.seasonUrl) ?: ""
+            }
             PosterImage(
                 url = entry.posterUrl,
                 contentDescription = entry.animeTitle,
+                animeUrl = resolvedAnimeUrl.ifBlank { null },
+                animeTitle = entry.animeTitle,
                 modifier = Modifier
                     .size(width = 58.dp, height = 84.dp)
                     .clip(MaterialTheme.shapes.extraSmall),

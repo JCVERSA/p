@@ -151,18 +151,34 @@ fun LibraryScreen(
                     putIfAbsent(h.animeUrl.trimEnd('/'), h)
                 }
             }
+            val libPosters = lib.mapNotNull { e ->
+                e.posterUrl?.let { e.url.trimEnd('/') to it }
+            }.toMap()
+            val histPosters = history.mapNotNull { h ->
+                h.posterUrl?.let { h.animeUrl.trimEnd('/') to it }
+            }.toMap()
             val items = lib.map { entry ->
                 val normalized = entry.url.trimEnd('/')
+                val repairedPoster = entry.posterUrl ?: histPosters[normalized]
+                val effectiveEntry = if (repairedPoster != null && entry.posterUrl == null) {
+                    entry.copy(posterUrl = repairedPoster)
+                } else {
+                    entry
+                }
                 LibraryItemUi(
-                    entry = entry,
+                    entry = effectiveEntry,
                     downloadedCount = completedByTitle[entry.title] ?: 0,
                     resume = resumeByUrl[normalized],
                 )
             }
+            val effectiveLatest = latest?.let { h ->
+                val libPoster = libPosters[h.animeUrl.trimEnd('/')]
+                if (h.posterUrl == null && libPoster != null) h.copy(posterUrl = libPoster) else h
+            }
             LibraryUiState(
                 isLoading = false,
                 items = items,
-                latestResume = latest,
+                latestResume = effectiveLatest,
                 hasVf = lib.any { e -> e.languages.any { it.equals("VF", true) } },
                 hasVostfr = lib.any { e -> e.languages.any { it.equals("VOSTFR", true) } },
                 availableGenres = GenreCatalog.mergeGenresForBar(lib.flatMap { it.genres }),
@@ -728,6 +744,8 @@ private fun ResumeCinemaBanner(
         PosterImage(
             url = entry.posterUrl,
             contentDescription = null,
+            animeUrl = entry.animeUrl,
+            animeTitle = entry.animeTitle,
             modifier = Modifier
                 .matchParentSize()
                 .then(if (supportsBlur) Modifier.blur(16.dp) else Modifier)
@@ -753,6 +771,8 @@ private fun ResumeCinemaBanner(
             PosterImage(
                 url = entry.posterUrl,
                 contentDescription = null,
+                animeUrl = entry.animeUrl,
+                animeTitle = entry.animeTitle,
                 modifier = Modifier
                     .size(width = 52.dp, height = 76.dp)
                     .novaySharedPoster(entry.animeUrl)

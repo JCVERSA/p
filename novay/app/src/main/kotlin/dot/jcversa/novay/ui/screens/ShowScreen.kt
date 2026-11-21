@@ -140,6 +140,12 @@ fun ShowScreen(
     var downloadedBySeason by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var selectedSeason by remember(anime.url) { mutableStateOf<AnimeSeason?>(null) }
     var showGenres by remember(anime.url) { mutableStateOf(GenreCatalog.normalizeList(anime.genres)) }
+    var resolvedPosterUrl by remember(anime.url, anime.posterUrl) {
+        mutableStateOf(dot.jcversa.novay.data.ImageUrlSanitizer.sanitizePosterUrl(anime.posterUrl))
+    }
+    val effectiveAnime = remember(anime, resolvedPosterUrl) {
+        if (resolvedPosterUrl != anime.posterUrl) anime.copy(posterUrl = resolvedPosterUrl) else anime
+    }
     var showActionsSheet by remember { mutableStateOf(false) }
 
     LaunchedEffect(anime.url, retryKey) {
@@ -151,6 +157,16 @@ fun ShowScreen(
             val ordered = orderByLanguage(loaded)
             if (selectedSeason == null || loaded.none { it.url == selectedSeason?.url }) {
                 selectedSeason = ordered.firstOrNull()?.second?.firstOrNull()
+            }
+            if (resolvedPosterUrl == null) {
+                val canonicalPoster = runCatching { source.resolvePosterUrl(anime) }.getOrNull()
+                if (canonicalPoster != null) {
+                    resolvedPosterUrl = canonicalPoster
+                    withContext(Dispatchers.IO) {
+                        Library.updatePoster(context, anime.url, canonicalPoster)
+                        WatchHistory.updatePoster(context, anime.url, canonicalPoster)
+                    }
+                }
             }
             val resolvedGenres = GenreCatalog.normalizeList(
                 runCatching { source.genres(anime) }.getOrDefault(emptyList())
@@ -191,10 +207,10 @@ fun ShowScreen(
 
     fun toggleFavorite() {
         val entry = LibraryEntry(
-            title = anime.title,
-            url = anime.url,
-            slug = anime.slug,
-            posterUrl = anime.posterUrl,
+            title = effectiveAnime.title,
+            url = effectiveAnime.url,
+            slug = effectiveAnime.slug,
+            posterUrl = effectiveAnime.posterUrl,
             languages = seasons.orEmpty().mapNotNull { it.language?.uppercase() }.distinct(),
             addedAt = System.currentTimeMillis(),
             genres = showGenres,
@@ -303,7 +319,7 @@ fun ShowScreen(
                                     contentPadding = PaddingValues(bottom = 32.dp),
                                 ) {
                                     showOverviewAndSeasons(
-                                        anime = anime,
+                                        anime = effectiveAnime,
                                         seasons = seasons.orEmpty(),
                                         grouped = grouped,
                                         firstSeason = firstSeason,
@@ -315,6 +331,7 @@ fun ShowScreen(
                                         animateItems = !motion.reduceMotion,
                                         onResume = onResume,
                                         onToggleFavorite = ::toggleFavorite,
+                                        onPosterResolved = { resolvedPosterUrl = it },
                                         onSelectSeason = { season ->
                                             selectedSeason = season
                                             markSeasonSeen(season)
@@ -354,7 +371,7 @@ fun ShowScreen(
                                     contentPadding = PaddingValues(bottom = 96.dp + bottomChrome),
                                 ) {
                                     showOverviewAndSeasons(
-                                        anime = anime,
+                                        anime = effectiveAnime,
                                         seasons = seasons.orEmpty(),
                                         grouped = grouped,
                                         firstSeason = firstSeason,
@@ -366,6 +383,7 @@ fun ShowScreen(
                                         animateItems = !motion.reduceMotion,
                                         onResume = onResume,
                                         onToggleFavorite = ::toggleFavorite,
+                                        onPosterResolved = { resolvedPosterUrl = it },
                                         onSelectSeason = { season ->
                                             markSeasonSeen(season)
                                             onOpenEpisodes(season)
@@ -539,6 +557,7 @@ private fun LazyListScope.showOverviewAndSeasons(
     animateItems: Boolean,
     onResume: (WatchHistoryEntry) -> Unit,
     onToggleFavorite: () -> Unit,
+    onPosterResolved: (String) -> Unit,
     onSelectSeason: (AnimeSeason) -> Unit,
 ) {
     item(key = "header", contentType = "hero") {
@@ -547,6 +566,7 @@ private fun LazyListScope.showOverviewAndSeasons(
             seasonCount = seasons.size,
             languages = grouped.map { it.first },
             parallaxOffsetProvider = parallaxOffsetProvider,
+            onPosterResolved = onPosterResolved,
         )
     }
 
@@ -700,6 +720,7 @@ private fun CinemaShowHeader(
     seasonCount: Int,
     languages: List<String>,
     parallaxOffsetProvider: () -> Float,
+    onPosterResolved: (String) -> Unit,
 ) {
     val posterShape = MaterialTheme.shapes.medium
     val overlays = NovayTheme.overlays
@@ -708,6 +729,9 @@ private fun CinemaShowHeader(
         PosterImage(
             url = anime.posterUrl,
             contentDescription = null,
+            animeUrl = anime.url,
+            animeTitle = anime.title,
+            onPosterResolved = onPosterResolved,
             modifier = Modifier
                 .matchParentSize()
                 .graphicsLayer {
@@ -738,6 +762,9 @@ private fun CinemaShowHeader(
             PosterImage(
                 url = anime.posterUrl,
                 contentDescription = anime.title,
+                animeUrl = anime.url,
+                animeTitle = anime.title,
+                onPosterResolved = onPosterResolved,
                 modifier = Modifier
                     .size(width = 112.dp, height = 168.dp)
                     .novaySharedPoster(anime.url)

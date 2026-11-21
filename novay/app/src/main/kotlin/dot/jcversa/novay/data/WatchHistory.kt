@@ -52,8 +52,14 @@ object WatchHistory {
      */
     fun upsert(entries: List<WatchHistoryEntry>, entry: WatchHistoryEntry): List<WatchHistoryEntry> {
         val key = entryKey(entry.seasonUrl, entry.episodeNumber)
+        val existingForAnime = entries.firstOrNull {
+            it.animeUrl.isNotBlank() && catalogIdentityKey(it.animeUrl) == catalogIdentityKey(entry.animeUrl)
+        }
+        val cleanPoster = ImageUrlSanitizer.sanitizePosterUrl(entry.posterUrl)
+            ?: ImageUrlSanitizer.sanitizePosterUrl(existingForAnime?.posterUrl)
+        val normalizedEntry = if (cleanPoster != entry.posterUrl) entry.copy(posterUrl = cleanPoster) else entry
         val kept = entries.filter { entryKey(it.seasonUrl, it.episodeNumber) != key }
-        return (listOf(entry) + kept).take(MAX)
+        return (listOf(normalizedEntry) + kept).take(MAX)
     }
 
     fun encode(entries: List<WatchHistoryEntry>): String {
@@ -85,10 +91,11 @@ object WatchHistory {
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
                 val liens = o.optJSONArray("lienIds")
+                val rawPoster = o.optString("posterUrl").ifEmpty { null }
                 WatchHistoryEntry(
                     animeTitle = o.optString("animeTitle"),
                     animeUrl = o.optString("animeUrl"),
-                    posterUrl = o.optString("posterUrl").ifEmpty { null },
+                    posterUrl = ImageUrlSanitizer.sanitizePosterUrl(rawPoster) ?: rawPoster,
                     seasonName = o.optString("seasonName"),
                     seasonUrl = o.optString("seasonUrl"),
                     episodeNumber = o.optInt("episodeNumber"),
@@ -207,4 +214,37 @@ object WatchHistory {
     /** Position enregistrée d'un épisode (0 si absent). */
     fun positionOf(context: Context, seasonUrl: String, episodeNumber: Int): Long =
         findPosition(recent(context), seasonUrl, episodeNumber)
+
+    /** Répare l'affiche sur toutes les entrées de l'historique correspondant à [animeUrl]. */
+    fun updatePoster(context: Context, animeUrl: String, posterUrl: String): Boolean {
+        val normalizedPoster = ImageUrlSanitizer.sanitizePosterUrl(posterUrl) ?: return false
+        val targetKey = catalogIdentityKey(animeUrl)
+        if (targetKey.isEmpty()) return false
+        synchronized(this) {
+            val current = recent(context)
+            var changed = false
+            val next = current.map { entry ->
+                val sameShow = catalogIdentityKey(entry.animeUrl) == targetKey ||
+                    ImageUrlSanitizer.extractAnimeUrlFromSeasonUrl(entry.seasonUrl)
+                        ?.let { catalogIdentityKey(it) == targetKey } == true
+                if (sameShow && entry.posterUrl != normalizedPoster) {
+                    changed = true
+                    entry.copy(posterUrl = normalizedPoster)
+                } else {
+                    entry
+                }
+            }
+            if (changed) {
+                cachedEntries = next
+                prefs(context).edit().putString(KEY, encode(next)).apply()
+            }
+            return changed
+        }
+    }
+
+    private fun catalogIdentityKey(url: String): String {
+        val clean = url.trim().trimEnd('/')
+        val idx = clean.indexOf("/catalogue/", ignoreCase = true)
+        return if (idx >= 0) clean.substring(idx).lowercase() else clean
+    }
 }

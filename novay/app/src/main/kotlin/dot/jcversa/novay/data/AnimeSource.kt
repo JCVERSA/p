@@ -148,4 +148,11 @@ interface AnimeSource {
 
     /** Catalogue filtré par genre (vide si non supporté par la source). */
     suspend fun catalogByGenre(genre: String): List<AnimeSearchResult> = emptyList()
+
+    /**
+     * Résout l'affiche canonique depuis la fiche de l'animé quand [anime.posterUrl]
+     * est absente, cassée ou issue d'un miroir obsolète.
+     */
+    suspend fun resolvePosterUrl(anime: AnimeSearchResult): String? =
+        ImageUrlSanitizer.sanitizePosterUrl(anime.posterUrl)
 }
