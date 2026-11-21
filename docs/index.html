@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NoVaY — Télécharge l'application</title>
+<meta name="description" content="NoVaY : application Android de streaming et de téléchargement d'animes en français. Dernière version, APK universel Android 7+, installation simple.">
+<meta name="theme-color" content="#09090D">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23FB3758'/%3E%3Cpath d='M26 20l18 12-18 12z' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#09090D;
+    --surface:#111117;
+    --surface-2:#16161E;
+    --line:rgba(255,255,255,.08);
+    --line-strong:rgba(255,255,255,.14);
+    --txt:#F4F4F6;
+    --muted:#A0A0AC;
+    --crimson:#FB3758;
+    --crimson-deep:#E11D48;
+    --amber:#F59E0B;
+    --emerald:#34D399;
+    --radius:18px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+    overflow-x:hidden;
+  }
+  .bg-glow{
+    position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(600px 400px at 15% -5%, rgba(251,55,88,.16), transparent 65%),
+      radial-gradient(500px 380px at 95% 10%, rgba(245,158,11,.07), transparent 60%);
+  }
+  .wrap{position:relative;z-index:1;max-width:920px;margin:0 auto;padding:0 20px}
+
+  /* ── En-tête ─────────────────────────────────────────── */
+  header.nav{
+    display:flex;align-items:center;gap:12px;
+    padding:22px 0 8px;
+  }
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:1.25rem;letter-spacing:.02em}
+  .brand svg{display:block}
+  .nav-pill{
+    margin-left:auto;font-size:.78rem;font-weight:600;color:var(--emerald);
+    border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.08);
+    padding:4px 12px;border-radius:999px;white-space:nowrap;
+  }
+
+  /* ── Héros ────────────────────────────────────────────── */
+  .hero{padding:44px 0 10px;text-align:left}
+  .hero h1{
+    font-size:clamp(1.9rem,5vw,2.9rem);line-height:1.15;font-weight:800;letter-spacing:-.02em;
+    max-width:17ch;
+  }
+  .hero h1 em{font-style:normal;color:var(--crimson)}
+  .hero .sub{color:var(--muted);max-width:56ch;margin-top:14px;font-size:1.02rem}
+  .version-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:20px}
+  .version-pill{
+    display:inline-flex;align-items:center;gap:8px;
+    background:var(--surface-2);border:1px solid var(--line-strong);
+    padding:6px 14px;border-radius:999px;font-size:.9rem;font-weight:700;
+  }
+  .version-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--emerald);box-shadow:0 0 8px rgba(52,211,153,.8)}
+  .release-date{color:var(--muted);font-size:.88rem}
+
+  .hero-grid{display:grid;grid-template-columns:1.5fr 1fr;gap:22px;margin-top:28px;align-items:stretch}
+  @media (max-width:720px){.hero-grid{grid-template-columns:1fr}}
+
+  .download-card{
+    background:linear-gradient(180deg,var(--surface-2),var(--surface));
+    border:1px solid var(--line-strong);border-radius:var(--radius);
+    padding:26px;display:flex;flex-direction:column;gap:16px;
+  }
+  .btn-primary{
+    display:flex;align-items:center;justify-content:center;gap:12px;
+    background:linear-gradient(135deg,var(--crimson),var(--crimson-deep));
+    color:#fff;text-decoration:none;font-weight:800;font-size:1.12rem;
+    padding:17px 22px;border-radius:14px;
+    box-shadow:0 8px 28px rgba(251,55,88,.35), inset 0 1px 0 rgba(255,255,255,.22);
+    transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 34px rgba(251,55,88,.45), inset 0 1px 0 rgba(255,255,255,.22)}
+  .btn-primary:active{transform:translateY(0)}
+  .btn-primary .filesize{font-weight:600;font-size:.85rem;opacity:.85}
+  .secondary-row{display:flex;gap:10px;flex-wrap:wrap}
+  .btn-ghost{
+    flex:1;min-width:180px;display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    color:var(--txt);text-decoration:none;font-weight:600;font-size:.92rem;
+    background:transparent;border:1px solid var(--line-strong);border-radius:12px;
+    padding:11px 16px;transition:border-color .15s ease,background .15s ease;
+  }
+  .btn-ghost:hover{border-color:rgba(255,255,255,.3);background:rgba(255,255,255,.04)}
+  .sha-row{
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    font-size:.78rem;color:var(--muted);
+  }
+  .sha-row code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    background:rgba(255,255,255,.05);border:1px solid var(--line);
+    padding:4px 8px;border-radius:8px;word-break:break-all;flex:1;min-width:200px;
+  }
+  .copy-btn{
+    background:transparent;border:1px solid var(--line-strong);color:var(--txt);
+    border-radius:8px;padding:5px 12px;font-size:.78rem;font-weight:600;cursor:pointer;
+    transition:border-color .15s ease;
+  }
+  .copy-btn:hover{border-color:rgba(255,255,255,.3)}
+  .hint{font-size:.8rem;color:var(--muted)}
+  .hint a{color:var(--txt)}
+
+  .qr-card{
+    background:linear-gradient(180deg,var(--surface-2),var(--surface));
+    border:1px solid var(--line-strong);border-radius:var(--radius);
+    padding:22px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;
+  }
+  .qr-card img{
+    width:172px;height:172px;border-radius:14px;background:#fff;padding:10px;
+    box-shadow:0 6px 22px rgba(0,0,0,.45);
+  }
+  .qr-card .qr-title{font-weight:700;font-size:.95rem}
+  .qr-card .qr-sub{color:var(--muted);font-size:.82rem}
+  .qr-card .qr-url{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:.78rem;color:var(--amber);word-break:break-all;
+  }
+
+  /* ── Sections ─────────────────────────────────────────── */
+  section.block{padding:34px 0}
+  h2.section-title{font-size:1.3rem;font-weight:800;letter-spacing:-.01em;margin-bottom:6px}
+  .section-sub{color:var(--muted);font-size:.92rem;margin-bottom:18px}
+
+  details.news{
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    overflow:hidden;
+  }
+  details.news summary{
+    cursor:pointer;list-style:none;padding:18px 22px;
+    display:flex;align-items:center;gap:12px;font-weight:700;
+    user-select:none;
+  }
+  details.news summary::-webkit-details-marker{display:none}
+  details.news summary .chev{margin-left:auto;transition:transform .2s ease;color:var(--muted)}
+  details.news[open] summary .chev{transform:rotate(90deg)}
+  details.news .news-body{padding:0 22px 20px;color:var(--muted);font-size:.94rem}
+  details.news ul{list-style:none;display:flex;flex-direction:column;gap:10px}
+  details.news li{padding-left:26px;position:relative}
+  details.news li::before{
+    content:"";position:absolute;left:4px;top:.55em;width:8px;height:8px;border-radius:3px;
+    background:var(--crimson);transform:rotate(45deg);
+  }
+  details.news li strong{color:var(--txt)}
+
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media (max-width:720px){.steps{grid-template-columns:1fr}}
+  .step{
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    padding:20px;
+  }
+  .step .num{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:30px;height:30px;border-radius:10px;font-weight:800;font-size:.9rem;
+    background:rgba(251,55,88,.14);color:var(--crimson);margin-bottom:12px;
+  }
+  .step h3{font-size:.98rem;font-weight:700;margin-bottom:6px}
+  .step p{color:var(--muted);font-size:.88rem}
+
+  .files{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:720px){.files{grid-template-columns:1fr}}
+  .file-card{
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    padding:20px;display:flex;flex-direction:column;gap:8px;
+  }
+  .file-card .file-head{display:flex;align-items:center;gap:10px;font-weight:700}
+  .file-card .file-head .tag{
+    font-size:.68rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    background:rgba(251,55,88,.14);color:var(--crimson);
+    padding:3px 9px;border-radius:999px;margin-left:auto;
+  }
+  .file-card.reco .file-head .tag{background:rgba(52,211,153,.14);color:var(--emerald)}
+  .file-card p{color:var(--muted);font-size:.88rem}
+  .file-card a{color:var(--amber);font-weight:600;font-size:.88rem;text-decoration:none;margin-top:auto}
+  .file-card a:hover{text-decoration:underline}
+
+  ul.facts{list-style:none;display:flex;flex-direction:column;gap:12px}
+  ul.facts li{display:flex;gap:12px;align-items:flex-start;color:var(--muted);font-size:.94rem}
+  ul.facts li svg{flex:none;margin-top:3px}
+  ul.facts li strong{color:var(--txt)}
+
+  footer{
+    margin-top:26px;border-top:1px solid var(--line);
+    padding:26px 0 40px;color:var(--muted);font-size:.85rem;
+    display:flex;flex-direction:column;gap:8px;align-items:center;text-align:center;
+  }
+  footer a{color:var(--txt);text-decoration:none;font-weight:600}
+  footer a:hover{text-decoration:underline}
+  .auto-note{
+    display:inline-flex;align-items:center;gap:8px;
+    background:rgba(52,211,153,.07);border:1px solid rgba(52,211,153,.25);
+    color:var(--emerald);padding:6px 14px;border-radius:999px;font-size:.8rem;font-weight:600;
+  }
+</style>
+</head>
+<body>
+<div class="bg-glow"></div>
+<div class="wrap">
+
+  <header class="nav">
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 64 64" aria-hidden="true">
+        <rect width="64" height="64" rx="16" fill="#FB3758"/>
+        <path d="M26 20l18 12-18 12z" fill="#fff"/>
+      </svg>
+      NoVaY
+    </div>
+    <span class="nav-pill">Android 7.0+ · gratuit · sans pub</span>
+  </header>
+
+  <section class="hero">
+    <h1>Stream et télécharge tes animes, <em>même hors-ligne</em>.</h1>
+    <p class="sub">
+      Catalogues anime-sama et voiranime, lecteur vidéo intégré, bibliothèque, historique,
+      scans en CBZ et téléchargements par saison entière — les fichiers restent les tiens,
+      dans <strong style="color:var(--txt)">Download/NoVaY/</strong>.
+    </p>
+    <div class="version-row">
+      <span class="version-pill"><span class="dot"></span><span id="version-pill">Dernière version</span></span>
+      <span class="release-date" id="release-date"></span>
+    </div>
+
+    <div class="hero-grid">
+      <div class="download-card">
+        <a class="btn-primary" id="btn-apk" href="https://github.com/JCVERSA/p/releases/latest/download/novay-universal-release.apk">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+          </svg>
+          <span>Télécharger l'APK&nbsp;&nbsp;<span class="filesize" id="apk-size"></span></span>
+        </a>
+        <div class="secondary-row">
+          <a class="btn-ghost" href="https://github.com/JCVERSA/p/releases/latest/download/novay-universal-release.7z">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            Version compressée .7z <span id="7z-size" style="color:var(--muted);font-weight:500"></span>
+          </a>
+        </div>
+        <div class="sha-row" id="sha-row" hidden>
+          <span>SHA-256&nbsp;:</span>
+          <code id="sha-code"></code>
+          <button class="copy-btn" id="sha-copy" type="button">Copier</button>
+        </div>
+        <p class="hint">
+          Le bouton pointe toujours sur la <strong style="color:var(--txt)">plus récente version publiée</strong> —
+          aucun compte GitHub n'est nécessaire. Toutes les versions&nbsp;:
+          <a href="https://github.com/JCVERSA/p/releases" style="color:var(--amber)">historique des releases</a>.
+        </p>
+      </div>
+
+      <aside class="qr-card">
+        <img src="data:image/png;base64,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" alt="QR code pointant vers cette page" width="172" height="172">
+        <div>
+          <div class="qr-title">Scanne ce code</div>
+          <div class="qr-sub">pour ouvrir cette page directement sur ton téléphone</div>
+        </div>
+        <div class="qr-url">jcversa.github.io/p/</div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="block" id="nouveautes" hidden>
+    <h2 class="section-title">Nouveautés de cette version</h2>
+    <p class="section-sub" id="news-sub"></p>
+    <details class="news" open>
+      <summary>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 2l2.4 5.4L20 8l-4 4 1 5.6L12 15l-5 2.6L8 12 4 8l5.6-.6z" stroke="#FB3758" stroke-width="1.8" stroke-linejoin="round"/>
+        </svg>
+        <span id="news-title">Journal des modifications</span>
+        <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </summary>
+      <div class="news-body"><ul id="changelog-list"></ul></div>
+    </details>
+  </section>
+
+  <section class="block">
+    <h2 class="section-title">Installation</h2>
+    <p class="section-sub">Trois minutes, sans désinstaller quoi que ce soit.</p>
+    <div class="steps">
+      <div class="step">
+        <span class="num">1</span>
+        <h3>Télécharge l'APK</h3>
+        <p>Avec le gros bouton ci-dessus. Connexion lente&nbsp;? Prends le .7z et décompresse-le avec 7-Zip ou ZArchiver.</p>
+      </div>
+      <div class="step">
+        <span class="num">2</span>
+        <h3>Autorise l'installation</h3>
+        <p>Android demande d'autoriser ton navigateur à installer des applications inconnues — c'est normal, accepte.</p>
+      </div>
+      <div class="step">
+        <span class="num">3</span>
+        <h3>Installe par-dessus</h3>
+        <p>Mise à jour d'une version précédente&nbsp;? Installe <strong style="color:var(--txt)">sans désinstaller</strong> — la signature est stable, tes téléchargements et ta bibliothèque sont conservés.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <h2 class="section-title">Quel fichier choisir&nbsp;?</h2>
+    <p class="section-sub">Un seul APK fonctionne sur tous les téléphones.</p>
+    <div class="files">
+      <div class="file-card reco">
+        <div class="file-head">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="6" y="2.5" width="12" height="19" rx="2.5" stroke="#34D399" stroke-width="1.8"/>
+            <path d="M10.5 17.5h3" stroke="#34D399" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          novay-universal-release.apk
+          <span class="tag">Recommandé</span>
+        </div>
+        <p>Pour <strong style="color:var(--txt)">tous les téléphones Android 7.0 et plus</strong>, 32 comme 64 bits. C'est le fichier du gros bouton.</p>
+        <a href="https://github.com/JCVERSA/p/releases/latest/download/novay-universal-release.apk">Télécharger l'APK</a>
+      </div>
+      <div class="file-card">
+        <div class="file-head">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16" stroke="#F59E0B" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          novay-universal-release.7z
+          <span class="tag">Connexion lente</span>
+        </div>
+        <p>Le même APK compressé en LZMA2 — plus léger à télécharger, à décompresser avec 7-Zip ou ZArchiver avant installation.</p>
+        <a href="https://github.com/JCVERSA/p/releases/latest/download/novay-universal-release.7z">Télécharger le .7z</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <h2 class="section-title">Bon à savoir</h2>
+    <ul class="facts" style="margin-top:16px">
+      <li>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 13l4 4L19 7" stroke="#34D399" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span><strong>Configuration minimale&nbsp;: Android 7.0.</strong> Permissions demandées&nbsp;: réseau, notifications, et stockage uniquement sur Android 7 à 9 pour les téléchargements.</span>
+      </li>
+      <li>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 13l4 4L19 7" stroke="#34D399" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span><strong>Les fichiers téléchargés t'appartiennent.</strong> Épisodes en <code style="font-size:.85em">.ts</code> (H.264) et scans en <code style="font-size:.85em">.cbz</code>, rangés dans Download/NoVaY/ — lisibles dans l'app, VLC, MX Player et la plupart des lecteurs.</span>
+      </li>
+      <li>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 13l4 4L19 7" stroke="#34D399" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span><strong>Vérifie l'intégrité si tu veux.</strong> L'empreinte SHA-256 de l'APK est affichée sous le bouton de téléchargement (et dans chaque release).</span>
+      </li>
+      <li>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 13l4 4L19 7" stroke="#34D399" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span><strong>Pas de compte, pas de pub, pas de traqueur.</strong> Le téléchargement depuis cette page est direct.</span>
+      </li>
+    </ul>
+  </section>
+
+  <footer>
+    <span class="auto-note">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 12a9 9 0 11-2.6-6.3M21 3v6h-6" stroke="#34D399" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Cette page suit automatiquement la dernière release publiée
+    </span>
+    <span>Projet et code source sur <a href="https://github.com/JCVERSA/p">GitHub — JCVERSA/p</a> · Versions précédentes&nbsp;: <a href="https://github.com/JCVERSA/p/releases">releases</a></span>
+    <span>NoVaY — streaming et téléchargement d'animes, fait avec soin.</span>
+  </footer>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var API = "https://api.github.com/repos/JCVERSA/p/releases/latest";
+
+  function $(id){ return document.getElementById(id); }
+  function escapeHtml(s){
+    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+            .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  }
+  function grasMarkdown(s){
+    return escapeHtml(s).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>");
+  }
+  function enMo(octets){
+    return (octets/1048576).toFixed(2).replace(".",",") + "\u00A0Mo";
+  }
+
+  /* Journal des modifications : lignes "- ..." de la section Nouveautes. */
+  function extraireNouveautes(corps){
+    var lignes = corps.split("\n"), out = [], dans = false;
+    for (var i = 0; i < lignes.length; i++){
+      var l = lignes[i];
+      if (l.indexOf("## ") === 0){
+        if (dans) break;
+        dans = /nouveaut/i.test(l);
+        continue;
+      }
+      if (dans && /^-\s/.test(l)) out.push(l.replace(/^-\s/,"").trim());
+    }
+    return out;
+  }
+
+  fetch(API, { headers: { "Accept": "application/vnd.github+json" } })
+    .then(function(r){ if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(function(rel){
+      var version = (rel.tag_name || "").replace(/^v/,"");
+      if (version){
+        $("version-pill").textContent = "Version " + version;
+        $("news-title").textContent = "Journal — version " + version;
+      }
+      if (rel.published_at){
+        var d = new Date(rel.published_at);
+        $("release-date").textContent = "publiée le " +
+          d.toLocaleDateString("fr-FR", { day:"numeric", month:"long", year:"numeric" });
+        $("news-sub").textContent = "Ce que la version " + (version || "la plus récente") + " apporte.";
+      }
+      var assets = rel.assets || [];
+      for (var i = 0; i < assets.length; i++){
+        if (assets[i].name === "novay-universal-release.apk"){
+          $("apk-size").textContent = "· " + enMo(assets[i].size);
+        } else if (assets[i].name === "novay-universal-release.7z"){
+          $("7z-size").textContent = "· " + enMo(assets[i].size);
+        }
+      }
+      var m = /([0-9a-f]{64})\s+novay-universal-release\.apk/i.exec(rel.body || "");
+      if (m){
+        $("sha-code").textContent = m[1];
+        $("sha-row").hidden = false;
+        $("sha-copy").addEventListener("click", function(){
+          var t = m[1];
+          function fait(ok){
+            var b = $("sha-copy"), ancien = b.textContent;
+            b.textContent = ok ? "Copié\u00A0!" : "Échec";
+            setTimeout(function(){ b.textContent = ancien; }, 1600);
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText){
+            navigator.clipboard.writeText(t).then(function(){ fait(true); }, function(){ fait(false); });
+          } else { fait(false); }
+        });
+      }
+      var news = extraireNouveautes(rel.body || "");
+      if (news.length){
+        var ul = $("changelog-list"), html = "";
+        for (var j = 0; j < news.length; j++){ html += "<li>" + grasMarkdown(news[j]) + "</li>"; }
+        ul.innerHTML = html;
+        $("nouveautes").hidden = false;
+      }
+    })
+    .catch(function(){
+      /* API GitHub injoignable : la page reste pleinement utilisable,
+         le bouton pointe toujours sur la derniere release (URL permanente). */
+    });
+})();
+</script>
+</body>
+</html>
