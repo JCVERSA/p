@@ -5,7 +5,7 @@ plugins {
 
 android {
   namespace = "dot.jcversa.novay.baselineprofile"
-  compileSdk = 36
+  compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
     minSdk = 28

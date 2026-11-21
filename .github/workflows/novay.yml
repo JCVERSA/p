@@ -134,6 +134,11 @@ jobs:
           grep -E "^e: |error: |Execution failed" test.log | head -n 2 | while IFS= read -r ligne; do
             echo "::error::${ligne:0:240}"
           done
+          # Details Gradle : les lignes > sous What went wrong (erreurs de
+          # configuration/buildscript, non capturees par les greps ci-dessus).
+          grep -A4 "What went wrong" test.log | head -n 7 | while IFS= read -r ligne; do
+            echo "::error::${ligne:0:240}"
+          done
 
       # Audit Q-02 : lint statique Android - NON BLOQUANT dans un premier
       # temps : le rapport part en artefact pour analyse, on ne casse pas
