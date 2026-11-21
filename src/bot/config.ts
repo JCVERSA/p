@@ -6,8 +6,13 @@ export interface BotConfig {
   prefix: string;
   botImage: string;
   ownerNumber: string;
+  /** 9.18jjj : identité owner affichée dans le menu (env OWNER_NAME prioritaire). */
+  ownerName?: string;
+  ownerTelegram?: string;
   newsletterUrl: string;
   newsletterName: string;
+  /** IANA timezone of the bot (menu clock, reminders). Global env NEBULA_TZ wins; default UTC — no baked-in country (9.18hhh). */
+  timezone?: string;
   browserPlatform?: string;
   browserName?: string;
   browserVersion?: string;
@@ -19,8 +24,11 @@ export const defaultConfig: BotConfig = {
   botImage: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=600&q=80",
   // Empty by default: the engine only notifies the owner when a valid number is configured.
   ownerNumber: "",
+  ownerName: "",
+  ownerTelegram: "",
   newsletterUrl: "https://whatsapp.com/channel/0029VaNebulaChannel",
   newsletterName: "Nebula Bot Official News",
+  timezone: "UTC",
   browserPlatform: "Ubuntu",
   browserName: "Chrome",
   browserVersion: "22.04.4",
@@ -68,4 +76,17 @@ export function updateConfig(newConfig: Partial<BotConfig>): BotConfig {
     console.error("[Config] Failed to persist config:", e?.message || e);
   }
   return currentConfig;
+}
+
+
+/**
+ * 9.18hhh — fuseau global du bot : UNE source de vérité, aucun pays codé dur.
+ * Priorité : NEBULA_TZ (env) > timezone de la config panneau > UTC.
+ * Le menu s'y raccorde ; rappels/veilles/digest lisent l'env directement.
+ */
+export function effectiveTimezone(): string {
+  const fromEnv = (process.env.NEBULA_TZ || "").trim();
+  if (fromEnv) return fromEnv;
+  const fromConfig = (getConfig().timezone || "").trim();
+  return fromConfig || "UTC";
 }

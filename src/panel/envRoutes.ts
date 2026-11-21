@@ -1,0 +1,326 @@
+import fs from "fs";
+import path from "path";
+import type { Express } from "express";
+
+/**
+ * 9.3 — Éditeur .env du panneau (section Système).
+ *
+ * Décision owner : pouvoir régler certaines variables depuis le dashboard
+ * (quotas, moteur IA, digest, veille) ET coller les clés API en écriture
+ * seule (Tavily, Gemini, NIM, chemin cookies YouTube) — sans SSH.
+ *
+ * Sécurité :
+ *  - LISTE BLANCHE STRICTE des clés éditables (spécifications ci-dessous) ;
+ *  - validation par type AVANT écriture (entiers bornés, énumérés, pas de
+ *    retours ligne/quotes — aucune injection possible dans le .env) ;
+ *  - écriture atomique (tmp + rename) au format de manage.sh (KEY="valeur"),
+ *    chmod 600 conservé ;
+ *  - les secrets ne sont JAMAIS renvoyés en clair : masqués à l'affichage
+ *    (écriture seule) ;
+ *  - la plupart des variables sont lues au BOOT : la réponse indique
+ *    restartRequired (le bouton Redémarrer de la section Système applique).
+ *    Exceptions « à chaud » : quota web et TAVILY_API_KEY (lus à chaque
+ *    utilisation).
+ */
+
+export type EnvEditType = "number" | "boolean" | "enum" | "string" | "path" | "secret";
+
+export interface EnvKeySpec {
+  key: string;
+  label: string;
+  description: string;
+  type: EnvEditType;
+  group: "quotas" | "agent" | "digest" | "keys";
+  default?: string;
+  min?: number;
+  max?: number;
+  choices?: string[];
+  /** Appliqué seulement après un redémarrage (défaut true). */
+  hot?: boolean;
+}
+
+const MAX_VALUE_LEN = 500;
+
+export const ENV_EDITABLE_SPECS: EnvKeySpec[] = [
+  {
+    key: "NEBULA_AI_DAILY_LIMIT", label: "Quota IA / jour / utilisateur",
+    description: "Budget de requêtes IA par utilisateur et par jour (défaut 40).",
+    type: "number", group: "quotas", default: "40", min: 1, max: 1000,
+  },
+  {
+    key: "NEBULA_AI_MAX_CONCURRENT", label: "Requêtes IA simultanées",
+    description: "Appels IA en parallèle maximum (défaut 3 — au-delà, risque de saturation).",
+    type: "number", group: "quotas", default: "3", min: 1, max: 10,
+  },
+  {
+    key: "NEBULA_WEB_DAILY_LIMIT", label: "Quota web / jour / utilisateur",
+    description: "Recherches/lectures web (.search/.fetch/.wiki) par utilisateur et par jour (défaut 20).",
+    type: "number", group: "quotas", default: "20", min: 0, max: 500,
+  },
+  {
+    key: "NEBULA_UPLOAD_MAX_MB", label: "Taille max .up (Mo)",
+    description: "Taille maximum par fichier uploadé via .up/.upload (défaut 500 Mo).",
+    type: "number", group: "quotas", default: "500", min: 10, max: 4096,
+  },
+  {
+    key: "NEBULA_SLIM_MAX_MB", label: "Seuil de l'offre d'allègement (Mo)",
+    description: "Au-delà, la livraison propose .slim (jamais imposé) : version allégée 2-pass à la demande (défaut 250 Mo).",
+    type: "number", group: "quotas", default: "250", min: 50, max: 2000,
+  },
+  {
+    key: "NEBULA_SLIM_TARGET_MB", label: "Cible de l'allègement .slim (Mo)",
+    description: "Taille visée par le ré-encodage à la demande (2-pass tune animation, même résolution ; défaut 190, bornes 80-400).",
+    type: "number", group: "quotas", default: "190", min: 80, max: 400,
+  },
+  {
+    key: "NEBULA_GH_REPO", label: "Repo d'encodage GitHub (owner/repo)",
+    description: "Repo public dédié dont les runners encodent .slim (GitHub d'abord, repli local automatique). Vide = toujours local.",
+    type: "string", group: "quotas", default: "",
+  },
+  {
+    key: "NEBULA_GH_TOKEN", label: "Token GitHub du compte bot",
+    description: "PAT fine-grained (Actions read/write) du compte propriétaire du repo d'encodage — vit dans .env, jamais dans le code.",
+    type: "secret", group: "keys", default: "",
+  },
+  {
+    key: "NEBULA_TTS_DAILY_LIMIT", label: "Voix Gemini / jour / utilisateur",
+    description: "Synthèses voix naturelle Gemini max par utilisateur et par jour (défaut 10, 0 = désactive ; owner illimité ; au-delà repli Edge Henri).",
+    type: "number", group: "quotas", default: "10", min: 0, max: 500,
+  },
+  {
+    key: "NEBULA_AI_PRIMARY", label: "Moteur IA primaire",
+    description: "gemini (défaut) ou nim — les images vont toujours à Gemini.",
+    type: "enum", group: "quotas", default: "gemini", choices: ["gemini", "nim"],
+  },
+  {
+    key: "NEBULA_ASR_MODEL", label: "Modèle de transcription (notes vocales)",
+    description: "Modèle GEMINI pour transcrire les notes vocales (défaut gemini-3.7-flash). L'audio est natif chez Gemini — la clé Gemini est requise.",
+    type: "string", group: "agent", default: "gemini-3.7-flash", hot: true,
+  },
+  {
+    key: "NEBULA_TTS_MODEL", label: "Modèle de synthèse vocale (Gemini)",
+    description: "Modèle Gemini TTS pour la voix naturelle (défaut gemini-3.1-flash-tts-preview — free tier ; repli possible gemini-2.5-flash-preview-tts).",
+    type: "string", group: "agent", default: "gemini-3.1-flash-tts-preview", hot: true,
+  },
+  {
+    key: "NEBULA_TTS_VOICE", label: "Voix naturelle (Gemini TTS)",
+    description: "Voix préconstruite parmi 30 (défaut Charon, masculine informative ; ex Kore, Puck, Sulafat, Fenrir). Repli gratuit : Edge Henri.",
+    type: "string", group: "agent", default: "Charon", hot: true,
+  },
+  {
+    key: "NEBULA_ASR_ENABLED", label: "Transcription des notes vocales",
+    description: "0 pour couper la transcription vers l'agent (défaut activé — nécessite la clé NIM).",
+    type: "boolean", group: "agent", default: "1", hot: true,
+  },
+  {
+    key: "NEBULA_REUSE_ENABLED", label: "Cache de réutilisation des médias",
+    description: "0 pour couper le cache 24 h (redemande = lien instantané sur le fichier existant).",
+    type: "boolean", group: "agent", default: "1", hot: true,
+  },
+  {
+    key: "NEBULA_REUSE_TTL_HOURS", label: "Durée du cache (heures)",
+    description: "Fenêtre glissante du cache de réutilisation (défaut 24, borné 1-168).",
+    type: "number", group: "agent", default: "24", min: 1, max: 168, hot: true,
+  },
+  {
+    key: "NEBULA_REUSE_MAX_MB", label: "Plafond disque du cache (Mo)",
+    description: "Au-delà, éviction LRU (défaut 1024, borné 64-4096).",
+    type: "number", group: "agent", default: "1024", min: 64, max: 4096, hot: true,
+  },
+  {
+    key: "NEBULA_DIGEST", label: "Digest quotidien owner",
+    description: "0 pour couper le digest quotidien en DM (défaut activé).",
+    type: "boolean", group: "digest", default: "1",
+  },
+  {
+    key: "NEBULA_DIGEST_HOUR", label: "Heure du digest",
+    description: "Heure d'envoi du digest, 0-23 (défaut 8, fuseau de la veille).",
+    type: "number", group: "digest", default: "8", min: 0, max: 23,
+  },
+  {
+    key: "NEBULA_TZ", label: "Fuseau horaire global",
+    description: "Fuseau IANA global du bot (menu, rappels ; repli veilles/digest). Ex. Europe/Paris, UTC.",
+    type: "string", group: "digest", default: "UTC",
+  },
+  {
+    key: "NEBULA_WATCH_TZ", label: "Fuseau horaire (veille + digest)",
+    description: "Fuseau IANA dédié veille/digest (repli : NEBULA_TZ).",
+    type: "string", group: "digest", default: "UTC",
+  },
+  {
+    key: "GEMINI_API_KEY", label: "Clé Gemini",
+    description: "Clé API Google Gemini (IA texte/image/transcription).",
+    type: "secret", group: "keys",
+  },
+  {
+    key: "NVIDIA_NIM_API_KEY", label: "Clé NVIDIA NIM",
+    description: "Clé NIM (nvapi-…) — IA de secours (gratuite sur build.nvidia.com).",
+    type: "secret", group: "keys",
+  },
+  {
+    key: "TAVILY_API_KEY", label: "Clé Tavily",
+    description: "Clé (tvly-…) qui améliore .search — gratuite sur app.tavily.com. Vide = DuckDuckGo.",
+    type: "secret", group: "keys",
+  },
+  {
+    key: "NEBULA_YTDLP_COOKIES", label: "Fichier cookies YouTube",
+    description: "Chemin du cookies.txt (format Netscape) pour débloquer .ytv/.ytm.",
+    type: "path", group: "keys",
+  },
+];
+
+const SPEC_BY_KEY = new Map(ENV_EDITABLE_SPECS.map((s) => [s.key, s]));
+
+export function validateEnvValue(spec: EnvKeySpec, value: string): string | null {
+  if (value.length > MAX_VALUE_LEN) return "Valeur trop longue (500 max).";
+  if (/[\r\n\0]/.test(value)) return "Les retours ligne sont interdits.";
+  if (/"/.test(value)) return "Les guillemets sont interdits.";
+  switch (spec.type) {
+    case "number": {
+      if (!/^-?\d+$/.test(value)) return "Nombre entier attendu.";
+      const n = Number(value);
+      if (spec.min !== undefined && n < spec.min) return `Minimum ${spec.min}.`;
+      if (spec.max !== undefined && n > spec.max) return `Maximum ${spec.max}.`;
+      return null;
+    }
+    case "boolean":
+      return value === "0" || value === "1" ? null : "0 ou 1 attendu.";
+    case "enum":
+      return spec.choices?.includes(value) ? null : `Valeurs possibles : ${(spec.choices || []).join(", ")}.`;
+    case "secret":
+      return /\s/.test(value) ? "Une clé ne contient pas d'espaces." : null;
+    case "path":
+      return /\s/.test(value) ? "Un chemin ne contient pas d'espaces." : null;
+    default:
+      return null;
+  }
+}
+
+export function maskSecret(value: string): string {
+  if (!value) return "";
+  if (value.length <= 8) return "••••";
+  return `${value.slice(0, 4)}…${value.slice(-4)}`;
+}
+
+export interface EnvEditorOptions {
+  envFile?: string;
+}
+
+/** Parse naïf du .env (KEY="v" ou KEY=v) — suffisant pour l'affichage. */
+export function parseEnvFile(content: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of content.split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (!m) continue;
+    let v = m[2].trim();
+    if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);
+    out[m[1]] = v;
+  }
+  return out;
+}
+
+/** Réécrit le .env en remplaçant/supprimant UNE clé (atomique, format manage.sh). */
+export function upsertEnvKey(content: string, key: string, value: string | null): string {
+  const lines = content.split("\n").filter((l) => !new RegExp(`^\\s*${key}=`).test(l));
+  if (value !== null) lines.push(`${key}="${value}"`);
+  let out = lines.join("\n").replace(/\n{3,}/g, "\n\n");
+  if (!out.endsWith("\n")) out += "\n";
+  return out;
+}
+
+export interface EnvValueView {
+  key: string;
+  label: string;
+  description: string;
+  type: EnvEditType;
+  group: EnvKeySpec["group"];
+  choices?: string[];
+  default?: string;
+  set: boolean;
+  value: string; // masquée pour les secrets
+  restartRequired: boolean;
+}
+
+export interface EnvEditor {
+  list(): EnvValueView[];
+  set(key: string, value: string): { ok: true; restartRequired: boolean } | { ok: false; error: string; status: number };
+}
+
+export function createEnvEditor(opts: EnvEditorOptions = {}): EnvEditor {
+  const envFile = opts.envFile || path.join(process.cwd(), ".env");
+
+  function readRaw(): string {
+    try {
+      return fs.readFileSync(envFile, "utf-8");
+    } catch {
+      return "";
+    }
+  }
+
+  function writeRaw(content: string): void {
+    fs.mkdirSync(path.dirname(envFile), { recursive: true });
+    const tmp = `${envFile}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmp, content, "utf-8");
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, envFile);
+  }
+
+  return {
+    list(): EnvValueView[] {
+      const parsed = parseEnvFile(readRaw());
+      return ENV_EDITABLE_SPECS.map((spec) => {
+        const raw = parsed[spec.key] ?? "";
+        const isSecret = spec.type === "secret";
+        return {
+          key: spec.key,
+          label: spec.label,
+          description: spec.description,
+          type: spec.type,
+          group: spec.group,
+          choices: spec.choices,
+          default: spec.default,
+          set: Boolean(raw),
+          value: isSecret ? maskSecret(raw) : raw,
+          restartRequired: !spec.hot,
+        };
+      });
+    },
+    set(key, value) {
+      const spec = SPEC_BY_KEY.get(key);
+      if (!spec) return { ok: false, error: "Variable non éditable depuis le panneau.", status: 400 };
+      const trimmed = value.trim();
+      if (!trimmed) {
+        // Vide = supprimer (retour au défaut documenté) — même sémantique
+        // que le menu `nebula env`.
+        writeRaw(upsertEnvKey(readRaw(), key, null));
+        return { ok: true, restartRequired: !spec.hot };
+      }
+      const err = validateEnvValue(spec, trimmed);
+      if (err) return { ok: false, error: err, status: 400 };
+      writeRaw(upsertEnvKey(readRaw(), key, trimmed));
+      return { ok: true, restartRequired: !spec.hot };
+    },
+  };
+}
+
+export function registerEnvRoutes(app: Express, options: { editor?: EnvEditor; limiter?: any } = {}): void {
+  const editor = options.editor || createEnvEditor();
+
+  app.get("/api/system/env", (_req, res) => {
+    res.json({ vars: editor.list() });
+  });
+
+  const post = (req: any, res: any) => {
+    const key = String(req.body?.key || "");
+    const value = String(req.body?.value ?? "");
+    const result = editor.set(key, value);
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true, restartRequired: result.restartRequired });
+  };
+
+  if (options.limiter) app.post("/api/system/env", options.limiter, post);
+  else app.post("/api/system/env", post);
+}
