@@ -159,8 +159,10 @@ jobs:
           sha256sum novay-*.apk novay-*.7z > SHA256SUMS
           cat SHA256SUMS
 
-      # Notes de release en francais : quel fichier choisir (universel vs
-      # arm32, 7z pour connexion lente), installation, a savoir (alpha).
+      # Notes de release en francais : quel fichier choisir (universel,
+      # 7z pour connexion lente), installation, et changelog MAPPE PAR TAG -
+      # une version inconnue retombe sur un texte generique, jamais un
+      # inventaire faux.
       - name: Notes de release (FR)
         run: |
           set -e
@@ -169,9 +171,40 @@ jobs:
           ls -l dist/ || true
           [ -f dist/SHA256SUMS ] || { echo "::error::dist/SHA256SUMS absent"; exit 1; }
           tag="${GITHUB_REF_NAME}"
-          titre="NoVaY ${tag#v}"
+          case "$tag" in
+            v3.3.0)
+              titre="NoVaY 3.3.0 - Lots de telechargements"
+              nouveautes="$(cat <<'CGL'
+          ## Nouveautes : les lots de telechargements
+
+          - **Telecharger une saison entiere** : une carte en tete de la liste des episodes lance tout le lot d un coup, meme qualite pour tous (les episodes deja termines ou en cours sont exclus).
+          - **Tailles honnetes, jamais inventees** : le choix de la qualite affiche une estimation par episode et le total du lot, calcules sur les tailles REELLES des episodes deja telecharges de la saison ; sans repere, l application dit « taille inconnue ».
+          - **Controle du stockage** : espace libre affiche avant le lancement du lot, alerte si le lot depasse l espace disponible, et blocage du lancement plutot qu un echec a mi-parcours.
+          - **Cartes de lot dans Telechargements** : chaque saison forme une carte - progression agregee, comptes par etat, badge d echecs, octets recus / total.
+          - **Pause et reprise d un lot** : l episode en cours s arrete au segment pres (segments deja recus conserves), tout le lot repart d un geste.
+          - **Episodes independants** : reessai d un episode echoue (reprise aux segments), priorisation d un episode en file, annulation individuelle.
+          - **Retirer ou Supprimer** : « Retirer de la liste » garde le fichier publie dans Download/NoVaY/, « Supprimer le fichier » l efface - confirmation systematique.
+
+          ## Egalement depuis la derniere release (2.9.5)
+
+          - **V3.0** : catalogue de scans en ligne, lecture chapitre par chapitre.
+          - **V3.1** : telechargement des scans en fichiers CBZ lisibles partout.
+          - **V3.2** : nouvelle interface - animations, palette, performances.
+          CGL
+          )"
+              ;;
+            *)
+              titre="NoVaY ${tag#v}"
+              nouveautes="$(cat <<'CGL'
+          ## Nouveautes
+
+          - Ameliorations et corrections : voir les commits de ce tag.
+          CGL
+          )"
+              ;;
+          esac
           {
-            echo "# ${titre} (alpha)"
+            echo "# ${titre}"
             echo
             echo "**NoVaY** : application Android de streaming et de telechargement d animes en francais (catalogues anime-sama et voiranime), avec lecteur integre, bibliotheque, historique et telechargements hors-ligne dans Download/NoVaY/."
             echo
@@ -190,11 +223,12 @@ jobs:
             echo
             echo "Configuration minimale : **Android 7.0**. L application ne demande que les permissions reseau, notifications et (Android 7-9 uniquement) stockage pour les telechargements."
             echo
-            echo "## Alpha - a savoir"
+            echo "$nouveautes"
             echo
-            echo "- Testee en conditions reelles sur un telephone Android 7 32 bits : streaming, telechargements (fichiers .ts lisibles partout, badge codec), lecture hors-ligne, historique."
-            echo "- Version alpha : certaines finitions visuelles restent en cours."
-            echo "- Les episodes telecharges sortent en \`.ts\` (H.264) : lisibles dans l application, VLC, MX Player et la plupart des lecteurs."
+            echo "## A savoir"
+            echo
+            echo "- Testee en conditions reelles sur un telephone Android 7 32 bits : streaming, telechargements, lecture hors-ligne, historique, scans."
+            echo "- Les episodes telecharges sortent en \`.ts\` (H.264) et les scans en \`.cbz\` : lisibles dans l application, VLC, MX Player et la plupart des lecteurs."
             echo
             echo "## Empreintes SHA-256"
             echo
