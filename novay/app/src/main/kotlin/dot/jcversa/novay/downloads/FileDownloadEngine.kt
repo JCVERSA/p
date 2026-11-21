@@ -179,6 +179,30 @@ object FileDownloadEngine {
         pump()
     }
 
+    /**
+     * V3.3 : remet une tâche ÉCHOUÉE en file (réessai manuel). Les segments
+     * déjà reçus sont conservés — la reprise repart de segmentsDone.
+     */
+    fun retry(id: String) {
+        val task = find(id) ?: return
+        if (task.state != State.FAILED) return
+        task.state = State.QUEUED
+        task.error = null
+        persist()
+        pump()
+    }
+
+    /**
+     * V3.3 : retire une tâche de la file SANS toucher au fichier publié —
+     * « retirer de la liste » ≠ « supprimer le téléchargement ».
+     */
+    fun removeKeepingFile(id: String) {
+        val task = find(id) ?: return
+        tasksInternal.remove(task)
+        persist()
+        pump()
+    }
+
     /** Ajoute une tâche (dédupliquée par id) et lance la file. */
     fun enqueue(context: Context, task: Task) {
         init(context)

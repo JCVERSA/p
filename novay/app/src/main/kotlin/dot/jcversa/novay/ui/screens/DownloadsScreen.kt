@@ -37,7 +37,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberTopAppBarState
@@ -106,6 +108,8 @@ fun DownloadsScreen(
     var speeds by remember { mutableStateOf<Map<String, SpeedMeter.Reading>>(emptyMap()) }
     val meters = remember { mutableMapOf<String, SpeedMeter>() }
     var wifiOnly by remember { mutableStateOf(Downloads.isWifiOnly(context)) }
+    // V3.3 : distinction Retirer (garde le fichier) / Supprimer (l'efface).
+    var pendingDelete by remember { mutableStateOf<Downloads.DownloadInfo?>(null) }
     var paused by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -251,9 +255,17 @@ fun DownloadsScreen(
                                             )
                                             onPlay(season, episode, meta.toStream())
                                         },
+                                        onRetry = {
+                                            Downloads.retry(info.id)
+                                            toast.show("Réessai lancé", NovayToastTone.INFO)
+                                        },
                                         onRemove = {
-                                            Downloads.remove(context, info.id)
-                                            toast.show("Téléchargement supprimé", NovayToastTone.INFO)
+                                            if (info.isCompleted) {
+                                                pendingDelete = info
+                                            } else {
+                                                Downloads.remove(context, info.id, deleteFile = true)
+                                                toast.show("Téléchargement annulé", NovayToastTone.INFO)
+                                            }
                                         },
                                     )
                                 }
@@ -262,6 +274,46 @@ fun DownloadsScreen(
                     }
                 }
             }
+        }
+
+        // V3.3 : confirmation Retirer / Supprimer pour un téléchargement terminé.
+        pendingDelete?.let { target ->
+            AlertDialog(
+                onDismissRequest = { pendingDelete = null },
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                title = {
+                    Text(
+                        text = target.meta?.episodeLabel ?: "Téléchargement",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Retirer de la liste garde le fichier dans Download/NoVaY/. " +
+                            "Supprimer efface définitivement le fichier du téléphone.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            Downloads.remove(context, target.id, deleteFile = true)
+                            pendingDelete = null
+                            toast.show("Fichier supprimé", NovayToastTone.INFO)
+                        },
+                    ) { Text("Supprimer le fichier", color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            Downloads.remove(context, target.id, deleteFile = false)
+                            pendingDelete = null
+                            toast.show("Retiré de la liste — fichier conservé", NovayToastTone.INFO)
+                        },
+                    ) { Text("Retirer de la liste") }
+                },
+            )
         }
 
         AnimatedVisibility(
@@ -318,6 +370,7 @@ private fun DownloadRow(
     onPlay: () -> Unit,
     onRemove: () -> Unit,
     modifier: Modifier = Modifier,
+    onRetry: () -> Unit = {},
 ) {
     val meta = info.meta
     val title = meta?.episodeLabel?.takeIf { it.isNotEmpty() } ?: "Épisode"
@@ -396,6 +449,21 @@ private fun DownloadRow(
                             contentDescription = "Lire hors-ligne",
                             tint = MaterialTheme.colorScheme.tertiary,
                             size = 24.dp,
+                        )
+                    }
+                }
+                if (info.isFailed) {
+                    IconButton(
+                        onClick = onRetry,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("download_retry_button"),
+                    ) {
+                        Icon(
+                            imageVector = NovayIcons.Refresh,
+                            contentDescription = "Réessayer le téléchargement",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp),
                         )
                     }
                 }

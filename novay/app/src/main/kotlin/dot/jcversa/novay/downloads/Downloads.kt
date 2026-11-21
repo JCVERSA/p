@@ -131,6 +131,83 @@ object Downloads {
     fun downloadId(seasonUrl: String, episodeNumber: Int): String =
         "${seasonUrl.trimEnd('/')}#ep$episodeNumber"
 
+    // ── V3.3 : lots (batch) ────────────────────────────────────────────────
+
+    /** Identifiant de lot d'une saison (ou d'un panneau de scans). */
+    fun batchIdFor(seasonUrl: String): String = "season:${seasonUrl.trimEnd('/')}"
+
+    /** Réessaye une tâche échouée (reprise aux segments déjà reçus). */
+    fun retry(id: String) {
+        FileDownloadEngine.retry(id)
+    }
+
+    /**
+     * Retire un téléchargement. [deleteFile] = false : « retirer de la
+     * liste » — le fichier publié dans Download/NoVaY/ est conservé.
+     */
+    fun remove(context: Context, id: String, deleteFile: Boolean = true) {
+        if (deleteFile) {
+            FileDownloadEngine.cancel(context, id)
+        } else {
+            FileDownloadEngine.removeKeepingFile(id)
+        }
+    }
+
+    /**
+     * Taille estimée d'un épisode (PUR) : moyenne des tailles RÉELLES des
+     * épisodes terminés de la même saison, à résolution égale si possible.
+     * [(hauteur, octets)] → estimation honnête, ou null si rien de connu.
+     */
+    fun estimateBytesFromCompleted(
+        completed: List<Pair<Int, Long>>,
+        preferredHeight: Int?,
+    ): Long? {
+        if (completed.isEmpty()) return null
+        val sameHeight = completed.filter { it.first == preferredHeight }
+        val sample = sameHeight.ifEmpty { completed }
+        val bytes = sample.map { it.second }.filter { it > 0 }
+        if (bytes.isEmpty()) return null
+        return bytes.sum() / bytes.size
+    }
+
+    /**
+     * Estimation affichable pour un épisode de cette saison (moenne des
+     * téléchargements terminés de la saison, même qualité de préférence).
+     */
+    fun estimateEpisodeSize(context: Context, seasonUrl: String, height: Int?): Long? {
+        val key = seasonUrl.trimEnd('/')
+        val completed = snapshot(context)
+            .filter { it.isCompleted && it.meta?.seasonUrl?.trimEnd('/') == key }
+            .mapNotNull { info ->
+                val h = info.meta?.qualityLabel?.filter { ch -> ch.isDigit() }?.toIntOrNull() ?: 0
+                h to info.totalBytes
+            }
+        return estimateBytesFromCompleted(completed, height)
+    }
+
+    /** Octets libres sur le volume des téléchargements (null si illisible). */
+    fun availableBytes(context: Context): Long? = try {
+        val dir = android.os.Environment
+            .getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+        android.os.StatFs(dir.absolutePath).availableBytes
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Format binaire lisible : « 1,4 Go », « 230 Mo », « 512 Ko ». */
+    fun formatBytes(bytes: Long): String {
+        if (bytes < 0) return "—"
+        val kb = bytes / 1024.0
+        val mb = kb / 1024.0
+        val gb = mb / 1024.0
+        return when {
+            gb >= 1.0 -> String.format(java.util.Locale.FRENCH, "%.1f Go", gb)
+            mb >= 1.0 -> String.format(java.util.Locale.FRENCH, "%.0f Mo", mb)
+            kb >= 1.0 -> String.format(java.util.Locale.FRENCH, "%.0f Ko", kb)
+            else -> "$bytes o"
+        }
+    }
+
     /** V3.0 scans : identifiant d'un chapitre téléchargé. */
     fun scanDownloadId(panelUrl: String, chapterId: Int): String =
         "${panelUrl.trimEnd('/')}#chap$chapterId"
@@ -186,6 +263,8 @@ object Downloads {
             headers = mapOf("User-Agent" to dot.jcversa.novay.data.sama.SamaParsers.UA),
             kind = EpisodeDownloadMeta.KIND_SCAN,
             pageUrls = pageUrls,
+            batchId = batchIdFor(panelUrl),
+            batchLabel = "$animeTitle — $panelName"
         )
         FileDownloadEngine.enqueue(
             context,
@@ -315,7 +394,9 @@ object Downloads {
             streamUrl = choice.url,
             isHls = choice.isHls,
             headers = stream.headers,
-            qualityLabel = choice.qualityLabel
+            qualityLabel = choice.qualityLabel,
+            batchId = batchIdFor(seasonUrl),
+            batchLabel = "$animeTitle — $seasonName"
         )
         FileDownloadEngine.enqueue(
             context,

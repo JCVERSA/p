@@ -34,6 +34,10 @@ data class EpisodeDownloadMeta(
     val kind: String = KIND_VIDEO,
     /** V3.0 scans : URLs des pages du chapitre, dans l'ordre. */
     val pageUrls: List<String> = emptyList(),
+    /** V3.3 lots : identifiant du lot (une saison ou un panneau de scans). */
+    val batchId: String = "",
+    /** V3.3 lots : libellé lisible du lot (« Overgeared — Saison 1 VF »). */
+    val batchLabel: String = "",
 ) {
     val isScan: Boolean get() = kind == KIND_SCAN
     fun toJson(): String = JSONObject().apply {
@@ -53,6 +57,8 @@ data class EpisodeDownloadMeta(
         put("videoCodec", videoCodec ?: "")
         put("kind", kind)
         put("pageUrls", org.json.JSONArray(pageUrls))
+        put("batchId", batchId)
+        put("batchLabel", batchLabel)
     }.toString()
 
     fun toStream(): ResolvedStream {
@@ -106,6 +112,8 @@ data class EpisodeDownloadMeta(
                     qualityLabel = o.optString("qualityLabel"),
                     videoCodec = o.optString("videoCodec").ifEmpty { null },
                     kind = o.optString("kind").ifEmpty { KIND_VIDEO },
+                    batchId = o.optString("batchId"),
+                    batchLabel = o.optString("batchLabel"),
                     pageUrls = run {
                         val arr = o.optJSONArray("pageUrls") ?: org.json.JSONArray()
                         (0 until arr.length()).mapNotNull { i -> arr.optString(i).ifEmpty { null } }

@@ -48,6 +48,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -120,7 +121,9 @@ private enum class EpDl { NONE, RESOLVING, QUEUED, DOWNLOADING, DONE, FAILED }
 private data class QualityDialogState(
     val episodes: List<AnimeEpisode>,
     val options: List<QualityOption>,
-    val streamsByEpisode: Map<Int, List<ResolvedStream>>
+    val streamsByEpisode: Map<Int, List<ResolvedStream>>,
+    /** V3.3 : taille estimée par épisode pour chaque hauteur (null = inconnue). */
+    val sizeByHeight: Map<Int, Long?> = emptyMap(),
 )
 
 /**
@@ -307,7 +310,8 @@ fun EpisodesPane(
                 dialog = QualityDialogState(
                     episodes = listOf(episode),
                     options = options,
-                    streamsByEpisode = mapOf(episode.number to streams)
+                    streamsByEpisode = mapOf(episode.number to streams),
+                    sizeByHeight = sizeHints(options),
                 )
             } catch (e: Exception) {
                 toast = e.message ?: "Résolution du flux impossible"
@@ -329,7 +333,8 @@ fun EpisodesPane(
                 dialog = QualityDialogState(
                     episodes = eps,
                     options = options,
-                    streamsByEpisode = mapOf(eps.first().number to streams)
+                    streamsByEpisode = mapOf(eps.first().number to streams),
+                    sizeByHeight = sizeHints(options),
                 )
             } catch (e: Exception) {
                 toast = e.message ?: "Résolution du flux impossible"
@@ -337,6 +342,25 @@ fun EpisodesPane(
                 resolvingBatch = false
             }
         }
+    }
+
+    /** Estimation honnête par hauteur : moyenne des épisodes terminés. */
+    fun sizeHints(options: List<QualityOption>): Map<Int, Long?> =
+        options.associate { opt ->
+            opt.height to Downloads.estimateEpisodeSize(context, season.url, opt.height)
+        }
+
+    /** V3.3 : télécharge toute la saison d'un coup (épisodes ni finis ni en cours). */
+    fun downloadWholeSeason() {
+        val eps = episodes?.filter { ep ->
+            val info = infoByEpisode[ep.number]
+            info == null || (!info.isCompleted && !info.isActive)
+        }.orEmpty()
+        if (eps.isEmpty() || resolvingBatch || resolving != null) return
+        ensurePermission()
+        selected.clear()
+        eps.forEach { selected.add(it.number) }
+        downloadSelected()
     }
 
     fun confirm(option: QualityOption) {
@@ -552,6 +576,21 @@ fun EpisodesPane(
                                     )
                                 }
                             }
+                            // V3.3 : téléchargement de toute la saison en un geste.
+                            val remainingForBatch = loadedEpisodes.count { ep ->
+                                val info = infoByEpisode[ep.number]
+                                info == null || (!info.isCompleted && !info.isActive)
+                            }
+                            if (remainingForBatch > 0) {
+                                item(key = "season_download_all", contentType = "season_download_all") {
+                                    SeasonDownloadAllRow(
+                                        count = remainingForBatch,
+                                        resolving = resolvingBatch || resolving != null,
+                                        onClick = { downloadWholeSeason() },
+                                        modifier = Modifier.testTag("episodes_download_season_button"),
+                                    )
+                                }
+                            }
                             itemsIndexed(
                                 items = loadedEpisodes,
                                 key = { _, ep -> ep.number },
@@ -695,6 +734,38 @@ fun EpisodesPane(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // V3.3 : total estimé du lot + stockage disponible — jamais
+                    // de taille inventée : inconnue si aucun repère terminé.
+                    val knownTotal = state.options.firstNotNullOfOrNull { opt ->
+                        state.sizeByHeight[opt.height]?.let { it * state.episodes.size }
+                    }
+                    val free = Downloads.availableBytes(context)
+                    if (state.episodes.size > 1 || knownTotal != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = buildString {
+                                if (state.episodes.size > 1) {
+                                    append("${state.episodes.size} épisodes")
+                                }
+                                if (knownTotal != null) {
+                                    append(" · total estimé ≈ ${Downloads.formatBytes(knownTotal)}")
+                                } else {
+                                    append(" · taille inconnue")
+                                }
+                                free?.let { append(" · ${Downloads.formatBytes(it)} libres") }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (knownTotal != null && free != null && knownTotal > free) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "Espace insuffisant : le lot dépasse l'espace libre.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
                     Spacer(Modifier.height(14.dp))
                     val options = state.options.ifEmpty {
                         listOf(QualityOption(height = 0, label = "Meilleure disponible", playerIndex = 0))
@@ -710,7 +781,9 @@ fun EpisodesPane(
                                 .minimumInteractiveComponentSize(),
                         ) {
                             Text(
-                                text = option.label,
+                                text = option.label + (state.sizeByHeight[option.height]
+                                    ?.let { "  ·  ≈ ${Downloads.formatBytes(it)} / ép." }
+                                    ?: ""),
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
@@ -1134,4 +1207,83 @@ internal fun formatPosition(ms: Long): String {
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "%d:%02d".format(java.util.Locale.FRENCH, minutes, seconds)
+}
+
+/**
+ * V3.3 — carte « Télécharger la saison » en tête de la liste des épisodes :
+ * même graphie qu'EpisodeRow (carte surface, icône, libellé, chevron).
+ */
+@Composable
+private fun SeasonDownloadAllRow(
+    count: Int,
+    resolving: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = MaterialTheme.shapes.medium
+    Surface(
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(shape)
+            .clickable(enabled = !resolving, onClick = onClick)
+            .minimumInteractiveComponentSize(),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, top = 12.dp, end = 6.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                shape = MaterialTheme.shapes.extraSmall,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.size(width = 46.dp, height = 34.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    if (resolving) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = NovayIcons.Download,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp),
+            ) {
+                Text(
+                    text = "Télécharger la saison",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "$count épisode${if (count > 1) "s" else ""} · même qualité pour tout le lot",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+            Icon(
+                imageVector = NovayIcons.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .padding(end = 12.dp)
+                    .size(20.dp),
+            )
+        }
+    }
 }
