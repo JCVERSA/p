@@ -76,6 +76,12 @@ jobs:
         # /assets/... = 404 sous /p/ -> page servie sans CSS ni JS
         # (bug constate 25/11 : icones geantes, texte empile). On epingle
         # base=/p/ pour que le HTML construit reference /p/assets/...
+        # NOTE : le flag CLI GAGNE sur toute base definie dans le
+        # vite.config.ts de novay-page (verifie : une base hostile
+        # /wrong-base/ dans le config est bien ecrasee par --base=/p/).
+        # Si le script de build de novay-page devient compose (&& ...) et
+        # avale le flag, la verification du build echouera bruyamment :
+        # c'est le filet, pas le flag, qui garantit le resultat.
         run: npm run build -- --base=/p/
 
       # Garde-fou : la page livree doit exister, contenir les liens
@@ -103,11 +109,25 @@ jobs:
             echo "$hors_p"
             exit 1
           fi
+          # idem dans le CSS construit : url(/...) hors /p/ = 404
+          css_hors_p=$(grep -hoE 'url\(/[^)]*\)' page/dist/assets/*.css 2>/dev/null | grep -v 'url(/p/' || true)
+          if [ -n "$css_hors_p" ]; then
+            echo "::error::url() absolus hors /p/ dans le CSS construit (404 garanties) :"
+            echo "$css_hors_p"
+            exit 1
+          fi
+          # idem dans le JS construit : litteraux /assets/ ou /src/ hors /p/
+          js_hors_p=$(grep -hoE '"/(assets|src)/[^"]*"' page/dist/assets/*.js 2>/dev/null | grep -v '"/p/' || true)
+          if [ -n "$js_hors_p" ]; then
+            echo "::error::Chemins absolus hors /p/ dans le JS construit (404 garanties) :"
+            echo "$js_hors_p"
+            exit 1
+          fi
           # Chaque asset reference doit exister reellement dans le dist
           grep -oE '"/p/[^"]*"' page/dist/index.html | tr -d '"' | sed 's|^/p/|page/dist/|' | while read -r f; do
             [ -e "$f" ] || { echo "::error::Asset reference introuvable dans le dist : $f"; exit 1; }
           done
-          echo "::notice::Page construite - ${n} liens APK permanents, chemins d assets sous /p/, $(stat -c%s page/dist/index.html) octets"
+          echo "::notice::Page construite - ${n} liens APK permanents, chemins d assets sous /p/ (HTML, CSS, JS), $(stat -c%s page/dist/index.html) octets"
 
       - name: Upload de l artifact
         uses: actions/upload-pages-artifact@v3
@@ -129,3 +149,45 @@ jobs:
       - name: Deploiement
         id: deployment
         uses: actions/deploy-pages@v4
+
+      # VERIFICATION EN LIGNE - le filet ultime : le bug du 25/11
+      # (base / -> page sans CSS) aurait echoue ICI, sur le site publie.
+      # On interroge la page en ligne, on extrait CHAQUE asset local du
+      # HTML reellement servi, et on exige HTTP 200 pour chacun. Toute
+      # regression de chemin d asset fait echouer le run - jamais une
+      # page cassee livree en silence.
+      - name: Verification en ligne (anti-regression)
+        run: |
+          set -e
+          base="${{ steps.deployment.outputs.page_url }}"
+          base="${base%/}/"
+          origin=$(echo "$base" | grep -oE '^https?://[^/]+')
+          echo "Site verifie : $base"
+          code=$(curl -fsSL --retry 4 --retry-delay 3 --retry-all-errors -o /tmp/live.html -w "%{http_code}" "$base" || true)
+          [ "$code" = "200" ] || { echo "::error::Page en ligne inaccessible (HTTP $code) : $base"; exit 1; }
+          refs=$(grep -oE '(src|href)="[^"#]+"' /tmp/live.html | cut -d'"' -f2 \
+            | grep -vE '^(https?:|//|data:|mailto:)' | sort -u || true)
+          if [ -z "$refs" ]; then
+            echo "::error::Aucun asset extrait du HTML servi - selecteur a adapter au nouveau HTML"
+            exit 1
+          fi
+          ok=0
+          fail=""
+          for ref in $refs; do
+            case "$ref" in
+              /*) url="$origin$ref" ;;
+              *)  url="$base$ref" ;;
+            esac
+            c=$(curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o /dev/null -w "%{http_code}" "$url" || true)
+            if [ "$c" = "200" ]; then
+              ok=$((ok+1))
+              echo "  OK  $url"
+            else
+              echo "::error::Asset en ligne en echec (HTTP $c) : $url"
+              fail=1
+            fi
+          done
+          [ -z "$fail" ] || exit 1
+          # le CSS doit etre parmi les assets servis (sinon page sans styles)
+          grep -q '\.css' <<< "$refs" || { echo "::error::Aucune feuille de style referencee par la page servie"; exit 1; }
+          echo "::notice::$ok assets verifies en ligne (HTTP 200) sur $base"
