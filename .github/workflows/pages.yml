@@ -71,7 +71,12 @@ jobs:
 
       - name: Build Vite
         working-directory: page
-        run: npm run build
+        # CRITIQUE : le site vit en SOUS-CHEMIN (jcversa.github.io/p/).
+        # La base par defaut de Vite ('/') fait pointer les assets vers
+        # /assets/... = 404 sous /p/ -> page servie sans CSS ni JS
+        # (bug constate 25/11 : icones geantes, texte empile). On epingle
+        # base=/p/ pour que le HTML construit reference /p/assets/...
+        run: npm run build -- --base=/p/
 
       # Garde-fou : la page livree doit exister, contenir les liens
       # APK permanents et l injection de version.
@@ -88,7 +93,21 @@ jobs:
             echo "::error::span de version absent du build - injection perdue"; exit 1; }
           grep -q "api.github.com/repos/JCVERSA/p/releases/latest" page/dist/index.html || {
             echo "::error::script de version absent du build"; exit 1; }
-          echo "::notice::Page construite - ${n} liens APK permanents, $(stat -c%s page/dist/index.html) octets"
+          # Aucune reference absolue ne doit pointer hors du sous-chemin /p/
+          # (sinon 404 -> page sans styles). src="/..." et href="/..." sont
+          # concernes ; tout ce qui commence par /p/ (ou http, //, #, data:)
+          # est sain.
+          hors_p=$(grep -oE '(src|href)="/[^"]*"' page/dist/index.html | grep -v '="/p/' || true)
+          if [ -n "$hors_p" ]; then
+            echo "::error::References d assets absolues hors /p/ (404 garanties) :"
+            echo "$hors_p"
+            exit 1
+          fi
+          # Chaque asset reference doit exister reellement dans le dist
+          grep -oE '"/p/[^"]*"' page/dist/index.html | tr -d '"' | sed 's|^/p/|page/dist/|' | while read -r f; do
+            [ -e "$f" ] || { echo "::error::Asset reference introuvable dans le dist : $f"; exit 1; }
+          done
+          echo "::notice::Page construite - ${n} liens APK permanents, chemins d assets sous /p/, $(stat -c%s page/dist/index.html) octets"
 
       - name: Upload de l artifact
         uses: actions/upload-pages-artifact@v3
