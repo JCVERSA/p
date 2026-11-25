@@ -1,17 +1,32 @@
 name: NoVaY Pages
 
-# Page publique de telechargement (demande owner 21/11) : servie par
-# GitHub Pages, deployee par Actions a chaque modification de docs/.
-# Le bouton de telechargement pointe sur l URL PERMANENTE
-# releases/latest/download/novay-universal-release.apk : la page suit
-# donc toujours la derniere release publiee, meme sans redeploiement.
-# Methode "GitHub Actions" (pas branch/*) : le site est publie par ce
-# workflow, configure-pages l active au premier run.
+# Page officielle de telechargement de NoVaY.
+#
+# La page est CONCUE ET MAINTENUE par l owner dans JCVERSA/novay-page
+# (source de verite). Ce workflow la clone, y injecte la version
+# automatique (derniere release via l API GitHub, au chargement dans
+# le navigateur), la construit (Vite) et la publie sur
+# jcversa.github.io/p/ - l adresse officielle, celle des QR codes
+# deja partages.
+#
+# Le token de la session Arena peut pousser sur p mais pas sur
+# novay-page : d ou cette topologie. Mise a jour de la page :
+#   - chaque nuit (cron 03:00 UTC) les changements de novay-page
+#     sont repris automatiquement ;
+#   - immediatement via le bouton "Run workflow" (onglet Actions) ;
+#   - a chaque commit p touchant ce workflow ou le script d injection.
+# Les numeros de version/taille/SHA, eux, sont lus dans le navigateur
+# a CHAQUE visite : une nouvelle release apparait instantanement,
+# sans redeploiement.
 
 on:
   push:
     branches: [main, arena/01a05555-p]
-    paths: ["docs/**"]
+    paths:
+      - ".github/workflows/pages.yml"
+      - ".github/scripts/**"
+  schedule:
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -22,9 +37,65 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    name: Publication de la page
+  build:
+    name: Build de la page (novay-page)
     runs-on: ubuntu-24.04  # epingle : ubuntu-24.04, pas ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Recuperation de la page (novay-page)
+        run: |
+          set -e
+          rm -rf page
+          git clone --depth 1 https://github.com/JCVERSA/novay-page.git page
+          echo "::notice::novay-page @ $(cd page && git rev-parse --short HEAD)"
+
+      # Injecte le span + le script de version dans index.html AVANT
+      # le build. Echoue bruyamment si novay-page a change de structure.
+      - name: Injection de la version automatique
+        run: python3 .github/scripts/inject_release_meta.py page/index.html
+
+      - name: Node 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # Pas de package-lock.json dans novay-page : npm install (pas ci).
+      - name: Dependances
+        working-directory: page
+        run: npm install --no-audit --no-fund
+
+      - name: Build Vite
+        working-directory: page
+        run: npm run build
+
+      # Garde-fou : la page livree doit exister, contenir les liens
+      # APK permanents et l injection de version.
+      - name: Verification du build
+        run: |
+          set -e
+          [ -f page/dist/index.html ] || { echo "::error::page/dist/index.html absent - build en echec"; exit 1; }
+          n=$(grep -c "releases/latest/download/novay-universal-release.apk" page/dist/index.html || true)
+          if [ "${n:-0}" -lt 1 ]; then
+            echo "::error::Aucun lien APK permanent dans la page construite"
+            exit 1
+          fi
+          grep -q 'id="novay-release-meta"' page/dist/index.html || {
+            echo "::error::span de version absent du build - injection perdue"; exit 1; }
+          grep -q "api.github.com/repos/JCVERSA/p/releases/latest" page/dist/index.html || {
+            echo "::error::script de version absent du build"; exit 1; }
+          echo "::notice::Page construite - ${n} liens APK permanents, $(stat -c%s page/dist/index.html) octets"
+
+      - name: Upload de l artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: page/dist
+
+  deploy:
+    name: Publication sur Pages
+    needs: build
+    runs-on: ubuntu-24.04
     permissions:
       pages: write
       id-token: write
@@ -33,21 +104,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      # Active Pages au premier run (source : GitHub Actions).
-      - name: Configuration Pages
-        id: pages
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
-
-      - name: Upload de la page
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs
-
       - name: Deploiement
         id: deployment
         uses: actions/deploy-pages@v4
