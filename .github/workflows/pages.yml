@@ -62,9 +62,12 @@ jobs:
           node-version: "22"
 
       # Pas de package-lock.json dans novay-page : npm install (pas ci).
+      # --legacy-peer-deps : le devDep esbuild ^0.25.0 de novay-page
+      # confirme avec le peerOptionnel de vite 8.3 (^0.27 || ^0.28) -
+      # conflit benin (peer optionnel), build verifie OK avec 0.25.
       - name: Dependances
         working-directory: page
-        run: npm install --no-audit --no-fund
+        run: npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Build Vite
         working-directory: page
