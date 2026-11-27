@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NoVaY</string>
+
+    <!-- Navigation -->
+    <string name="nav_library">Bibliothèque</string>
+    <string name="nav_updates">Mises à jour</string>
+    <string name="nav_history">Historique</string>
+    <string name="nav_browse">Catalogue</string>
+    <string name="nav_more">Plus</string>
+
+    <!-- Erreurs & Actions -->
+    <string name="error_connection_title">Connexion interrompue</string>
+    <string name="error_catalog_title">Catalogue inaccessible</string>
+    <string name="error_episodes_title">Épisodes indisponibles</string>
+    <string name="error_stream_title">Flux vidéo indisponible</string>
+    <string name="action_retry">Réessayer</string>
+    <string name="action_resume_episode">Reprendre l\'épisode</string>
+    <string name="action_expand_player">Agrandir le lecteur</string>
+    <string name="action_close_mini_player">Fermer le mini-lecteur</string>
+    <string name="action_cycle_corner">Changer de coin</string>
+    <string name="filter_all">Tout</string>
+    <string name="action_reset_filters">Réinitialiser les filtres</string>
+    <string name="action_show_all">Tout afficher</string>
+    <string name="action_explore_catalog">Explorer le catalogue</string>
+    <string name="action_refresh">Actualiser</string>
+    <string name="action_dismiss">Fermer</string>
+
+    <!-- États unifiés -->
+    <string name="state_offline_title">Mode hors-ligne</string>
+    <string name="state_offline_subtitle">Impossible de joindre le catalogue pour le moment. Vérifie ta connexion ou retrouve tes épisodes téléchargés.</string>
+    <string name="state_offline_downloads_cta">Mes téléchargements</string>
+    <string name="state_no_results_title">Aucun résultat</string>
+    <string name="state_no_results_subtitle">Rien trouvé pour « %1$s » — essaie un autre mot-clé ou une suggestion ci-dessous.</string>
+    <string name="state_no_results_suggestions_label">Pistes de recherche</string>
+
+    <!-- Identité & Marque -->
+    <string name="brand_tagline">Streaming &amp; hors-ligne · VF &amp; VOSTFR</string>
+    <string name="brand_version">v3.1.0</string>
+
+    <!-- Permissions téléchargements -->
+    <string name="permission_notifications_denied_notice">Notifications désactivées — tes téléchargements continuent en file.</string>
+    <string name="permission_storage_denied_notice">Permission de stockage requise pour enregistrer les épisodes dans Téléchargements.</string>
+
+    <!-- Fiche anime & Épisodes -->
+    <string name="show_details_action">Infos</string>
+    <string name="show_details_sheet_title">Informations de l\'animé</string>
+    <string name="show_synopsis_read_more">Lire la suite</string>
+    <string name="show_synopsis_read_less">Réduire</string>
+    <string name="show_language_all">Tout</string>
+    <string name="show_related_heading">Dans le même univers</string>
+    <string name="show_seasons_heading">Saisons &amp; épisodes</string>
+    <string name="episode_active_badge">En cours</string>
+    <string name="episode_watched_badge">Vu</string>
+    <string name="episode_unwatched_badge">À voir</string>
+
+    <!-- Catalogue hybride, Ambiances & Filtres avancés -->
+    <string name="catalog_filter_button_cd">Filtres avancés</string>
+    <string name="catalog_filter_sheet_title">Filtres avancés</string>
+    <string name="catalog_filter_apply">Appliquer</string>
+    <string name="catalog_filter_reset">Réinitialiser</string>
+    <string name="catalog_filter_genres">Genres</string>
+    <string name="catalog_filter_language">Langue</string>
+    <string name="catalog_filter_format">Format</string>
+    <string name="catalog_filter_year">Année</string>
+    <string name="catalog_filter_status">Statut</string>
+    <string name="catalog_filter_sort">Trier par</string>
+    <string name="catalog_section_featured">Sélection du catalogue</string>
+    <string name="catalog_section_continue_watching">Reprendre la lecture</string>
+    <string name="catalog_section_moods">Ambiances &amp; Découverte</string>
+    <string name="catalog_section_latest">Derniers épisodes</string>
+    <string name="catalog_section_trending">Tendances &amp; En cours</string>
+    <string name="catalog_section_random">Aléatoire</string>
+    <string name="catalog_section_complete">Catalogue complet</string>
+    <string name="catalog_pagination_loading">Chargement de la suite…</string>
+    <string name="catalog_pagination_error">Impossible de charger la page suivante</string>
+    <string name="catalog_empty_filtered_title">Aucun animé correspondant</string>
+    <string name="catalog_empty_filtered_subtitle">Essaie de retirer un critère ou réinitialise les filtres pour explorer tout le catalogue.</string>
+
+    <!-- Bibliothèque & Collections -->
+    <string name="library_collections_label">Collections</string>
+    <string name="library_collection_all">Toutes</string>
+    <string name="library_collection_new">Nouvelle collection</string>
+    <string name="library_collection_add_action">Collections</string>
+
+    <!-- Téléchargements & Réglages -->
+    <string name="downloads_dashboard_title">Tableau de bord</string>
+    <string name="more_appearance_title">Apparence &amp; Thèmes</string>
+    <string name="more_motion_title">Mouvement &amp; Animations</string>
+    <string name="more_performance_title">Performances &amp; fluidité</string>
+</resources>

@@ -1,0 +1,259 @@
+name: NoVaY Release
+
+# Publication des releases (demande owner 15/11) : declenchee UNIQUEMENT
+# par le push d un tag v*. Les assets d une Release publique sont
+# telechargeables SANS compte GitHub, contrairement aux artifacts de
+# build - c est le canal de partage de l app.
+# Le CI quotidien (novay.yml) construit le meme APK universel ; ce
+# workflow reconstruit tout depuis le tag : tests, APK universel
+# (arm32+arm64), 7z, verification ABI, puis publie la Release avec les
+# empreintes sha256 et les notes en francais. Owner (15/11) : livraison
+# UNIQUE = universel, plus de build 32 bits separe.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build et publication Release
+    runs-on: ubuntu-24.04  # epingle : ubuntu-24.04, pas ubuntu-latest
+    # Ecriture de la Release : permission ELARGIE pour CE job seulement.
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: novay
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Licences Android SDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      # Keystore STABLE entre les runs (cache) : meme signature que les
+      # builds quotidiens - les APK s installent l un par dessus l autre.
+      - name: Cache du keystore debug
+        uses: actions/cache@v6
+        with:
+          path: novay/debug.keystore
+          key: novay-debug-keystore-v1
+
+      - name: Keystore debug si absent
+        run: |
+          [ -f debug.keystore ] || keytool -genkeypair -v \
+            -keystore debug.keystore -storepass android \
+            -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=NoVaY Debug,O=NoVaY,C=CM"
+
+      # Une release ne doit JAMAIS embarquer un parseur casse : les tests
+      # unitaires (memes gardes-fous que le CI quotidien) passent avant.
+      - name: Tests unitaires
+        run: |
+          set +e
+          gradle :app:testDebugUnitTest --no-daemon 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            {
+              grep -E "^e: |error: |What went wrong|Caused by|Could not|Execution failed|unresolved" test.log | head -n 4
+              grep -lE '<failure|<error' app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | while read -r xf; do
+                grep -oE '<failure message="[^"]{0,200}|<error message="[^"]{0,200}' "$xf" | head -n 4
+                grep -oE '<testcase name="[^"]*"' "$xf" | head -n 2
+              done
+              grep -vE "^> |^[[:space:]]*$|^Download" test.log | tail -n 3
+            } | while IFS= read -r line; do
+              echo "::error::${line:0:240}"
+            done
+            exit "$status"
+          fi
+          reports=$(ls app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | wc -l)
+          if [ "$reports" -eq 0 ]; then
+            echo "::error::Aucun test execute - le source set src/test/kotlin n est pas pris en compte"
+            exit 1
+          fi
+          tests=$(grep -ho 'tests="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | grep -o '[0-9]*' | awk '{s+=$1} END {print s}')
+          echo "::notice::${tests} tests unitaires passes"
+
+      # ── APK universel (arm32 + arm64 dans le meme APK, ~103 Mo avant
+      # compression) : LA livraison unique - s installe sur tous les
+      # telephones Android 7+, y compris les 32 bits. Le 7z maitrise le
+      # poids (~39 Mo). Un seul build : plus rapide qu avant.
+      - name: Build APK universel (arm32+arm64, release)
+        run: |
+          set +e
+          gradle :app:assembleRelease -PnovayAbi=armeabi-v7a,arm64-v8a --no-daemon 2>&1 | tee build-universal.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            grep -E "^e: |error: |FAILURE|What went wrong|Caused by|OutOfMemory|FAILED" build-universal.log | head -n 6 | while IFS= read -r line; do
+              echo "::error::${line:0:240}"
+            done
+            tail -n 40 build-universal.log | grep -v "^> Task" | tail -n 4 | while IFS= read -r line; do
+              echo "::error::${line:0:240}"
+            done
+            exit "$status"
+          fi
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk dist/novay-universal-release.apk
+
+      # 7z (LZMA2 niveau 9) : le code natif se compresse d'environ moitie -
+      # precieux pour les connexions lentes. Flags owner.
+      - name: Compression 7z des APK
+        run: |
+          set -e
+          SEVENZ="$(command -v 7zz || command -v 7z)"
+          if [ -z "$SEVENZ" ]; then
+            echo "::error::p7zip introuvable sur le runner (attendu preinstalle)"
+            exit 1
+          fi
+          cd dist
+          for abi in universal; do
+            "$SEVENZ" a -t7z -m0=lzma2 -mx=9 -md=128m -ms=on \
+              "novay-${abi}-release.7z" "novay-${abi}-release.apk" > /dev/null
+          done
+
+      # Garde-fou ABI : arm32 = uniquement armeabi-v7a ; universel = les
+      # DEUX ABI presentes, AUCUNE fuite (x86 etc.).
+      - name: Verification ABI et tailles livrees
+        run: |
+          set -e
+          cd dist
+          fuiteU=$(unzip -l novay-universal-release.apk | grep "lib/" | grep -cvE "lib/(armeabi-v7a|arm64-v8a)/" || true)
+          if [ "${fuiteU:-0}" -ne 0 ]; then
+            echo "::error::novay-universal-release.apk embarque $fuiteU natives hors arm32/arm64 - filtre ABI en echec"
+            exit 1
+          fi
+          for abi in armeabi-v7a arm64-v8a; do
+            n=$(unzip -l novay-universal-release.apk | grep -c "lib/$abi/" || true)
+            if [ "${n:-0}" -eq 0 ]; then
+              echo "::error::novay-universal-release.apk ne contient aucune native $abi - libvlc absent du packaging"
+              exit 1
+            fi
+          done
+          mo() { awk -v b="$(stat -c%s "$1")" 'BEGIN {printf "%.2f", b/1048576}'; }
+          pct() { awk -v a="$1" -v b="$2" 'BEGIN {printf "%.0f", (a-b)*100/a}'; }
+          au=$(mo novay-universal-release.apk); zu=$(mo novay-universal-release.7z)
+          echo "::notice::universel (arm32+arm64, tous telephones Android 7+) : APK ${au} Mo | 7z ${zu} Mo (-$(pct "$au" "$zu") %)"
+
+      - name: Empreintes sha256
+        run: |
+          set -e
+          cd dist
+          ls -l
+          sha256sum novay-*.apk novay-*.7z > SHA256SUMS
+          cat SHA256SUMS
+
+      # Notes de release en francais : quel fichier choisir (universel,
+      # 7z pour connexion lente), installation, et changelog MAPPE PAR TAG -
+      # une version inconnue retombe sur un texte generique, jamais un
+      # inventaire faux.
+      - name: Notes de release (FR)
+        run: |
+          set -e
+          # Diagnostic si l etape echoue : contenu du dossier + contexte.
+          trap 'echo "::error::generation des notes a echoue (voir ls ci-dessus)"' ERR
+          ls -l dist/ || true
+          [ -f dist/SHA256SUMS ] || { echo "::error::dist/SHA256SUMS absent"; exit 1; }
+          tag="${GITHUB_REF_NAME}"
+          case "$tag" in
+            v3.3.0)
+              titre="NoVaY 3.3.0 - Lots de telechargements"
+              nouveautes="$(cat <<'CGL'
+          ## Nouveautes : les lots de telechargements
+
+          - **Telecharger une saison entiere** : une carte en tete de la liste des episodes lance tout le lot d un coup, meme qualite pour tous (les episodes deja termines ou en cours sont exclus).
+          - **Tailles honnetes, jamais inventees** : le choix de la qualite affiche une estimation par episode et le total du lot, calcules sur les tailles REELLES des episodes deja telecharges de la saison ; sans repere, l application dit « taille inconnue ».
+          - **Controle du stockage** : espace libre affiche avant le lancement du lot, alerte si le lot depasse l espace disponible, et blocage du lancement plutot qu un echec a mi-parcours.
+          - **Cartes de lot dans Telechargements** : chaque saison forme une carte - progression agregee, comptes par etat, badge d echecs, octets recus / total.
+          - **Pause et reprise d un lot** : l episode en cours s arrete au segment pres (segments deja recus conserves), tout le lot repart d un geste.
+          - **Episodes independants** : reessai d un episode echoue (reprise aux segments), priorisation d un episode en file, annulation individuelle.
+          - **Retirer ou Supprimer** : « Retirer de la liste » garde le fichier publie dans Download/NoVaY/, « Supprimer le fichier » l efface - confirmation systematique.
+
+          ## Egalement depuis la derniere release (2.9.5)
+
+          - **V3.0** : catalogue de scans en ligne, lecture chapitre par chapitre.
+          - **V3.1** : telechargement des scans en fichiers CBZ lisibles partout.
+          - **V3.2** : nouvelle interface - animations, palette, performances.
+          CGL
+          )"
+              ;;
+            *)
+              titre="NoVaY ${tag#v}"
+              nouveautes="$(cat <<'CGL'
+          ## Nouveautes
+
+          - Ameliorations et corrections : voir les commits de ce tag.
+          CGL
+          )"
+              ;;
+          esac
+          {
+            echo "# ${titre}"
+            echo
+            echo "**NoVaY** : application Android de streaming et de telechargement d animes en francais (catalogues anime-sama et voiranime), avec lecteur integre, bibliotheque, historique et telechargements hors-ligne dans Download/NoVaY/."
+            echo
+            echo "## Quel fichier telecharger ?"
+            echo
+            echo "| Fichier | Pour qui |"
+            echo "|---|---|"
+            echo "| \`novay-universal-release.apk\` | **Tous les telephones** Android 7.0+ (32 et 64 bits) |"
+            echo "| \`novay-universal-release.7z\` | Le meme fichier compresse (connexion lente) - a decompresser avec 7-Zip ou ZArchiver |"
+            echo
+            echo "## Installation"
+            echo
+            echo "1. Telecharge l APK (ou le 7z, puis decompresses-le)."
+            echo "2. Ouvre l APK ; Android demande d autoriser l installation d applications inconnues pour ton navigateur - acceptes."
+            echo "3. Installes. Pour mettre a jour une version precedente : installes PAR-DESSUS, sans desinstaller (la signature est stable)."
+            echo
+            echo "Configuration minimale : **Android 7.0**. L application ne demande que les permissions reseau, notifications et (Android 7-9 uniquement) stockage pour les telechargements."
+            echo
+            echo "$nouveautes"
+            echo
+            echo "## A savoir"
+            echo
+            echo "- Testee en conditions reelles sur un telephone Android 7 32 bits : streaming, telechargements, lecture hors-ligne, historique, scans."
+            echo "- Les episodes telecharges sortent en \`.ts\` (H.264) et les scans en \`.cbz\` : lisibles dans l application, VLC, MX Player et la plupart des lecteurs."
+            echo
+            echo "## Empreintes SHA-256"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } > dist/notes.md
+          echo "--- notes generees ---"
+          head -n 8 dist/notes.md
+
+      - name: Publication de la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          tag="${GITHUB_REF_NAME}"
+          titre="NoVaY ${tag#v}"
+          if ! gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$titre" \
+            --notes-file dist/notes.md \
+            dist/novay-universal-release.apk \
+            dist/novay-universal-release.7z; then
+            echo "::error::gh release create a echoue pour $tag (deja existante ? permissions ?)"
+            exit 1
+          fi
+          echo "::notice::Release $tag publiee avec 2 fichiers (APK universel + 7z)"

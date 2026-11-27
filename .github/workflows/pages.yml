@@ -1,0 +1,198 @@
+name: NoVaY Pages
+
+# Page officielle de telechargement de NoVaY.
+#
+# La page est CONCUE ET MAINTENUE par l owner dans JCVERSA/novay-page-0
+# (source de verite). Ce workflow la clone, y injecte la version
+# automatique (derniere release via l API GitHub, au chargement dans
+# le navigateur), la construit (Vite) et la publie sur
+# jcversa.github.io/p/ - l adresse officielle, celle des QR codes
+# deja partages.
+#
+# Le token de la session Arena peut pousser sur p mais pas sur
+# novay-page-0 : d ou cette topologie. Mise a jour de la page :
+#   - chaque nuit (cron 03:00 UTC) les changements de novay-page-0
+#     sont repris automatiquement ;
+#   - immediatement via le bouton "Run workflow" (onglet Actions) ;
+#   - a chaque commit p touchant ce workflow ou le script d injection.
+# Les numeros de version/taille/SHA, eux, sont lus dans le navigateur
+# a CHAQUE visite : une nouvelle release apparait instantanement,
+# sans redeploiement.
+
+on:
+  push:
+    branches: [main, arena/01a05555-p]
+    paths:
+      - ".github/workflows/pages.yml"
+      - ".github/scripts/**"
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build de la page (novay-page-0)
+    runs-on: ubuntu-24.04  # epingle : ubuntu-24.04, pas ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Recuperation de la page (novay-page-0)
+        run: |
+          set -e
+          rm -rf page
+          git clone --depth 5 https://github.com/JCVERSA/novay-page-0.git page
+          echo "::notice::novay-page @ $(cd page && git rev-parse --short HEAD)"
+          # Journal des commits pris en compte (visibilite sur ce qui est
+          # deploye - un seul clone depth 5 suffit pour l information).
+          (cd page && git log --oneline -5) | while IFS= read -r l; do
+            echo "  $l"
+          done
+
+      # Injecte le span + le script de version dans index.html AVANT
+      # le build. Echoue bruyamment si novay-page-0 a change de structure.
+      - name: Injection de la version automatique
+        run: python3 .github/scripts/inject_release_meta.py page/index.html
+
+      - name: Node 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # Pas de package-lock.json dans novay-page : npm install (pas ci).
+      # --legacy-peer-deps : le devDep esbuild ^0.25.0 de novay-page
+      # confirme avec le peerOptionnel de vite 8.3 (^0.27 || ^0.28) -
+      # conflit benin (peer optionnel), build verifie OK avec 0.25.
+      - name: Dependances
+        working-directory: page
+        run: npm install --no-audit --no-fund --legacy-peer-deps
+
+      - name: Build Vite
+        working-directory: page
+        # CRITIQUE : le site vit en SOUS-CHEMIN (jcversa.github.io/p/).
+        # La base par defaut de Vite ('/') fait pointer les assets vers
+        # /assets/... = 404 sous /p/ -> page servie sans CSS ni JS
+        # (bug constate 25/11 : icones geantes, texte empile). On epingle
+        # base=/p/ pour que le HTML construit reference /p/assets/...
+        # NOTE : le flag CLI GAGNE sur toute base definie dans le
+        # vite.config.ts de novay-page (verifie : une base hostile
+        # /wrong-base/ dans le config est bien ecrasee par --base=/p/).
+        # Si le script de build de novay-page devient compose (&& ...) et
+        # avale le flag, la verification du build echouera bruyamment :
+        # c'est le filet, pas le flag, qui garantit le resultat.
+        run: npm run build -- --base=/p/
+
+      # Garde-fou : la page livree doit exister, contenir les liens
+      # APK permanents et l injection de version.
+      - name: Verification du build
+        run: |
+          set -e
+          [ -f page/dist/index.html ] || { echo "::error::page/dist/index.html absent - build en echec"; exit 1; }
+          n=$(grep -c "releases/latest/download/novay-universal-release.apk" page/dist/index.html || true)
+          if [ "${n:-0}" -lt 1 ]; then
+            echo "::error::Aucun lien APK permanent dans la page construite"
+            exit 1
+          fi
+          grep -q 'id="novay-release-meta"' page/dist/index.html || {
+            echo "::error::span de version absent du build - injection perdue"; exit 1; }
+          grep -q "api.github.com/repos/JCVERSA/p/releases/latest" page/dist/index.html || {
+            echo "::error::script de version absent du build"; exit 1; }
+          # Aucune reference absolue ne doit pointer hors du sous-chemin /p/
+          # (sinon 404 -> page sans styles). src="/..." et href="/..." sont
+          # concernes ; tout ce qui commence par /p/ (ou http, //, #, data:)
+          # est sain.
+          hors_p=$(grep -oE '(src|href)="/[^"]*"' page/dist/index.html | grep -v '="/p/' || true)
+          if [ -n "$hors_p" ]; then
+            echo "::error::References d assets absolues hors /p/ (404 garanties) :"
+            echo "$hors_p"
+            exit 1
+          fi
+          # idem dans le CSS construit : url(/...) hors /p/ = 404
+          css_hors_p=$(grep -hoE 'url\(/[^)]*\)' page/dist/assets/*.css 2>/dev/null | grep -v 'url(/p/' || true)
+          if [ -n "$css_hors_p" ]; then
+            echo "::error::url() absolus hors /p/ dans le CSS construit (404 garanties) :"
+            echo "$css_hors_p"
+            exit 1
+          fi
+          # idem dans le JS construit : litteraux /assets/ ou /src/ hors /p/
+          js_hors_p=$(grep -hoE '"/(assets|src)/[^"]*"' page/dist/assets/*.js 2>/dev/null | grep -v '"/p/' || true)
+          if [ -n "$js_hors_p" ]; then
+            echo "::error::Chemins absolus hors /p/ dans le JS construit (404 garanties) :"
+            echo "$js_hors_p"
+            exit 1
+          fi
+          # Chaque asset reference doit exister reellement dans le dist
+          grep -oE '"/p/[^"]*"' page/dist/index.html | tr -d '"' | sed 's|^/p/|page/dist/|' | while read -r f; do
+            [ -e "$f" ] || { echo "::error::Asset reference introuvable dans le dist : $f"; exit 1; }
+          done
+          echo "::notice::Page construite - ${n} liens APK permanents, chemins d assets sous /p/ (HTML, CSS, JS), $(stat -c%s page/dist/index.html) octets"
+
+      - name: Upload de l artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: page/dist
+
+  deploy:
+    name: Publication sur Pages
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploiement
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      # VERIFICATION EN LIGNE - le filet ultime : le bug du 25/11
+      # (base / -> page sans CSS) aurait echoue ICI, sur le site publie.
+      # On interroge la page en ligne, on extrait CHAQUE asset local du
+      # HTML reellement servi, et on exige HTTP 200 pour chacun. Toute
+      # regression de chemin d asset fait echouer le run - jamais une
+      # page cassee livree en silence.
+      - name: Verification en ligne (anti-regression)
+        run: |
+          set -e
+          base="${{ steps.deployment.outputs.page_url }}"
+          base="${base%/}/"
+          origin=$(echo "$base" | grep -oE '^https?://[^/]+')
+          echo "Site verifie : $base"
+          code=$(curl -fsSL --retry 4 --retry-delay 3 --retry-all-errors -o /tmp/live.html -w "%{http_code}" "$base" || true)
+          [ "$code" = "200" ] || { echo "::error::Page en ligne inaccessible (HTTP $code) : $base"; exit 1; }
+          refs=$(grep -oE '(src|href)="[^"#]+"' /tmp/live.html | cut -d'"' -f2 \
+            | grep -vE '^(https?:|//|data:|mailto:)' | sort -u || true)
+          if [ -z "$refs" ]; then
+            echo "::error::Aucun asset extrait du HTML servi - selecteur a adapter au nouveau HTML"
+            exit 1
+          fi
+          ok=0
+          fail=""
+          for ref in $refs; do
+            case "$ref" in
+              /*) url="$origin$ref" ;;
+              *)  url="$base$ref" ;;
+            esac
+            c=$(curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o /dev/null -w "%{http_code}" "$url" || true)
+            if [ "$c" = "200" ]; then
+              ok=$((ok+1))
+              echo "  OK  $url"
+            else
+              echo "::error::Asset en ligne en echec (HTTP $c) : $url"
+              fail=1
+            fi
+          done
+          [ -z "$fail" ] || exit 1
+          # le CSS doit etre parmi les assets servis (sinon page sans styles)
+          grep -q '\.css' <<< "$refs" || { echo "::error::Aucune feuille de style referencee par la page servie"; exit 1; }
+          echo "::notice::$ok assets verifies en ligne (HTTP 200) sur $base"

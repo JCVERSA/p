@@ -1,0 +1,6 @@
+{
+  "name": "NoVaY",
+  "description": "Application Android de streaming et téléchargement hors-ligne d'animes VF/VOSTFR avec lecteur plein écran et thème SwiftSlate.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

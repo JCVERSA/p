@@ -1,0 +1,651 @@
+package dot.jcversa.novay.downloads
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import dot.jcversa.novay.data.DownloadChoice
+import dot.jcversa.novay.data.ResolvedStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withTimeoutOrNull
+import dot.jcversa.novay.data.sama.SamaParsers
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+
+/**
+ * Façade des téléchargements NoVaY (V2.5 « novabox ») : les épisodes
+ * deviennent de VRAIS FICHIERS dans Download/NoVaY/ du téléphone —
+ * nommés façon lisible (« Solo Leveling - S01E03 VOSTFR 1080p.mp4 »),
+ * visibles dans Fichiers/galerie/VLC, lus in-app depuis ces fichiers.
+ *
+ * L'API publique est celle consommée par les écrans (V2.3/V2.4) : le
+ * moteur derrière (FileDownloadEngine) a changé, pas les contrats.
+ */
+object Downloads {
+
+    const val CHANNEL_ID = "novay_downloads"
+
+    // ── États exposés (moteur fichier, plus de media3) ────────────────────
+
+    const val STATE_QUEUED_INT = 1
+    const val STATE_RUNNING_INT = 2
+    const val STATE_PAUSED_INT = 3
+    const val STATE_COMPLETED_INT = 4
+    const val STATE_FAILED_INT = 5
+    private const val STATE_QUEUED = STATE_QUEUED_INT
+    private const val STATE_RUNNING = STATE_RUNNING_INT
+    private const val STATE_PAUSED = STATE_PAUSED_INT
+    private const val STATE_COMPLETED = STATE_COMPLETED_INT
+    private const val STATE_FAILED = STATE_FAILED_INT
+
+    /** État d'un téléchargement, exposé à l'UI. */
+    data class DownloadInfo(
+        val id: String,
+        val state: Int,
+        val percent: Float,
+        val meta: EpisodeDownloadMeta?,
+        /** Octets reçus / taille totale (pour vitesse et temps restant). */
+        val bytesDownloaded: Long = 0L,
+        val totalBytes: Long = 0L
+    ) {
+        val isCompleted: Boolean get() = state == STATE_COMPLETED
+        val isFailed: Boolean get() = state == STATE_FAILED
+        val isActive: Boolean
+            get() = state == STATE_RUNNING || state == STATE_QUEUED
+    }
+
+    /**
+     * File réactive (V2.6, architecture owner) : émise à chaque changement
+     * du moteur ; rafraîchie toutes les 750 ms uniquement pendant qu'un
+     * téléchargement est actif — zéro polling quand tout est calme.
+     */
+    data class QueueSnapshot(
+        val items: List<DownloadInfo>,
+        val paused: Boolean
+    )
+
+    fun observeQueue(context: Context): Flow<QueueSnapshot> = flow {
+        val appCtx = context.applicationContext
+        while (true) {
+            val items = snapshot(appCtx)
+            val isPaused = FileDownloadEngine.downloadsPaused()
+            emit(QueueSnapshot(items = items, paused = isPaused))
+            if (items.any { it.isActive }) {
+                withTimeoutOrNull(750L) { FileDownloadEngine.changes().first() }
+            } else {
+                FileDownloadEngine.changes().first()
+            }
+        }
+    }.distinctUntilChanged().flowOn(Dispatchers.IO)
+
+    fun observeSnapshots(context: Context): Flow<List<DownloadInfo>> =
+        observeQueue(context).map { it.items }.distinctUntilChanged()
+
+    /** Vue « manager » (compatibilité écrans V2.4 : downloadsPaused). */
+    class ManagerView(context: Context) {
+        val downloadsPaused: Boolean
+            get() = FileDownloadEngine.downloadsPaused()
+    }
+
+    fun manager(@Suppress("UNUSED_PARAMETER") context: Context): ManagerView = ManagerView(context)
+
+    // ── Préférences ───────────────────────────────────────────────────────
+
+    private const val PREFS = "novay_download_prefs"
+    private const val KEY_WIFI_ONLY = "wifi_only"
+
+    fun isWifiOnly(context: Context): Boolean =
+        context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_WIFI_ONLY, false)
+
+    fun setWifiOnly(context: Context, wifiOnly: Boolean) {
+        context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_WIFI_ONLY, wifiOnly).apply()
+        FileDownloadEngine.setWifiOnly(wifiOnly)
+    }
+
+    // ── Cycle de vie ──────────────────────────────────────────────────────
+
+    fun init(context: Context) {
+        createChannel(context)
+        FileDownloadEngine.onNotification = {
+            NovayDownloadService.notifyState(context.applicationContext)
+        }
+        FileDownloadEngine.init(context)
+    }
+
+    // ── File ──────────────────────────────────────────────────────────────
+
+    fun downloadId(seasonUrl: String, episodeNumber: Int): String =
+        "${seasonUrl.trimEnd('/')}#ep$episodeNumber"
+
+    // ── V3.3 : lots (batch) ────────────────────────────────────────────────
+
+    /** Identifiant de lot d'une saison (ou d'un panneau de scans). */
+    fun batchIdFor(seasonUrl: String): String = "season:${seasonUrl.trimEnd('/')}"
+
+    /** Réessaye une tâche échouée (reprise aux segments déjà reçus). */
+    fun retry(id: String) {
+        FileDownloadEngine.retry(id)
+    }
+
+    /** V3.3 : suspend tout un lot. */
+    fun pauseBatch(batchId: String) {
+        FileDownloadEngine.pauseBatch(batchId)
+    }
+
+    /** V3.3 : reprend tout un lot suspendu. */
+    fun resumeBatch(batchId: String) {
+        FileDownloadEngine.resumeBatch(batchId)
+    }
+
+    /** V3.3 : fait passer une tâche en tête de la file. */
+    fun prioritize(id: String) {
+        FileDownloadEngine.prioritize(id)
+    }
+
+    /**
+     * V3.3 : résumé agrégé d'un lot (PUR, testé) — comptes par état, octets
+     * reçus et total AGGREGÉ honnête : null si une seule taille est
+     * inconnue (on ne présente jamais une somme partielle comme un total).
+     */
+    data class BatchSummary(
+        val total: Int,
+        val completed: Int,
+        val active: Int,
+        val queued: Int,
+        val paused: Int,
+        val failed: Int,
+        val bytesDone: Long,
+        val bytesTotal: Long?,
+    ) {
+        val allSizesKnown: Boolean get() = bytesTotal != null
+        val fraction: Float?
+            get() = bytesTotal?.takeIf { it > 0 }?.let { bytesDone.toFloat() / it }
+    }
+
+    fun summarizeBatch(infos: List<DownloadInfo>): BatchSummary {
+        var bytesDone = 0L
+        var bytesTotal: Long? = 0L
+        for (info in infos) {
+            bytesDone += info.bytesDownloaded
+            val total = info.totalBytes
+            if (total <= 0L) {
+                bytesTotal = null
+            } else if (bytesTotal != null) {
+                bytesTotal += total
+            }
+        }
+        return BatchSummary(
+            total = infos.size,
+            completed = infos.count { it.isCompleted },
+            active = infos.count { it.state == STATE_RUNNING },
+            queued = infos.count { it.state == STATE_QUEUED },
+            paused = infos.count { it.state == STATE_PAUSED },
+            failed = infos.count { it.isFailed },
+            bytesDone = bytesDone,
+            bytesTotal = bytesTotal,
+        )
+    }
+
+    /**
+     * Retire un téléchargement. [deleteFile] = false : « retirer de la
+     * liste » — le fichier publié dans Download/NoVaY/ est conservé.
+     */
+    fun remove(context: Context, id: String, deleteFile: Boolean = true) {
+        if (deleteFile) {
+            FileDownloadEngine.cancel(context, id)
+        } else {
+            FileDownloadEngine.removeKeepingFile(id)
+        }
+    }
+
+    /**
+     * Taille estimée d'un épisode (PUR) : moyenne des tailles RÉELLES des
+     * épisodes terminés de la même saison, à résolution égale si possible.
+     * [(hauteur, octets)] → estimation honnête, ou null si rien de connu.
+     */
+    fun estimateBytesFromCompleted(
+        completed: List<Pair<Int, Long>>,
+        preferredHeight: Int?,
+    ): Long? {
+        if (completed.isEmpty()) return null
+        val sameHeight = completed.filter { it.first == preferredHeight }
+        val sample = sameHeight.ifEmpty { completed }
+        val bytes = sample.map { it.second }.filter { it > 0 }
+        if (bytes.isEmpty()) return null
+        return bytes.sum() / bytes.size
+    }
+
+    /**
+     * Estimation affichable pour un épisode de cette saison (moenne des
+     * téléchargements terminés de la saison, même qualité de préférence).
+     */
+    fun estimateEpisodeSize(context: Context, seasonUrl: String, height: Int?): Long? {
+        val key = seasonUrl.trimEnd('/')
+        val completed = snapshot(context)
+            .filter { it.isCompleted && it.meta?.seasonUrl?.trimEnd('/') == key }
+            .mapNotNull { info ->
+                val h = info.meta?.qualityLabel?.filter { ch -> ch.isDigit() }?.toIntOrNull() ?: 0
+                h to info.totalBytes
+            }
+        return estimateBytesFromCompleted(completed, height)
+    }
+
+    /** Octets libres sur le volume des téléchargements (null si illisible). */
+    fun availableBytes(context: Context): Long? = try {
+        val dir = android.os.Environment
+            .getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+        android.os.StatFs(dir.absolutePath).availableBytes
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Format binaire lisible : « 1,4 Go », « 230 Mo », « 512 Ko ». */
+    fun formatBytes(bytes: Long): String {
+        if (bytes < 0) return "—"
+        val kb = bytes / 1024.0
+        val mb = kb / 1024.0
+        val gb = mb / 1024.0
+        return when {
+            gb >= 1.0 -> String.format(java.util.Locale.FRENCH, "%.1f Go", gb)
+            mb >= 1.0 -> String.format(java.util.Locale.FRENCH, "%.0f Mo", mb)
+            kb >= 1.0 -> String.format(java.util.Locale.FRENCH, "%.0f Ko", kb)
+            else -> "$bytes o"
+        }
+    }
+
+    /** V3.0 scans : identifiant d'un chapitre téléchargé. */
+    fun scanDownloadId(panelUrl: String, chapterId: Int): String =
+        "${panelUrl.trimEnd('/')}#chap$chapterId"
+
+    /**
+     * Nom de fichier lisible d'un chapitre publié (PUR, testé) :
+     * « Solo Leveling - Chapitre 12.cbz » — mêmes règles de nettoyage
+     * que les épisodes (aucun caractère interdit par les FAT/NTFS).
+     */
+    fun buildScanChapterFileName(animeTitle: String, chapterLabel: String): String {
+        fun clean(raw: String, fallback: String): String = raw
+            .replace(Regex("\\s*[\\/:*?\"<>|]\\s*"), " ")
+            .replace(Regex("[\\/:*?\"<>|]"), "-")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .ifEmpty { fallback }
+        return clean(animeTitle, "Anime") + " - " + clean(chapterLabel, "Chapitre") + ".cbz"
+    }
+
+    /** V3.0 scans : le chapitre de ce panneau est-il téléchargé ? */
+    fun isScanDownloaded(context: Context, panelUrl: String, chapterId: Int): Boolean {
+        FileDownloadEngine.init(context)
+        return FileDownloadEngine.find(scanDownloadId(panelUrl, chapterId))?.isCompleted == true
+    }
+
+    /**
+     * V3.0 scans : met un chapitre en file — les pages sont téléchargées
+     * en série puis publiées en UN fichier .cbz dans Download/NoVaY/.
+     */
+    fun startScanChapterDownload(
+        context: Context,
+        animeTitle: String,
+        panelName: String,
+        panelUrl: String,
+        chapterId: Int,
+        chapterLabel: String,
+        pageUrls: List<String>,
+        onStart: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        if (pageUrls.isEmpty()) {
+            onError("Chapitre sans pages")
+            return
+        }
+        val meta = EpisodeDownloadMeta(
+            animeTitle = animeTitle,
+            seasonName = panelName,
+            seasonUrl = panelUrl,
+            episodeNumber = chapterId,
+            episodeLabel = chapterLabel,
+            streamUrl = pageUrls.first(),
+            isHls = false,
+            headers = mapOf("User-Agent" to dot.jcversa.novay.data.sama.SamaParsers.UA),
+            kind = EpisodeDownloadMeta.KIND_SCAN,
+            pageUrls = pageUrls,
+            batchId = batchIdFor(panelUrl),
+            batchLabel = "$animeTitle — $panelName"
+        )
+        FileDownloadEngine.enqueue(
+            context,
+            FileDownloadEngine.Task(
+                id = scanDownloadId(panelUrl, chapterId),
+                meta = meta
+            )
+        )
+        onStart()
+    }
+
+    /**
+     * V3.0 scans : pages d'un chapitre téléchargé, extraites du .cbz vers
+     * le cache privé (une fois) — liste triée prête pour le lecteur
+     * hors-ligne. Null si le chapitre n'est pas (encore) téléchargé.
+     */
+    fun extractedScanPages(context: Context, panelUrl: String, chapterId: Int): List<java.io.File>? {
+        FileDownloadEngine.init(context)
+        val localUri = FileDownloadEngine.find(scanDownloadId(panelUrl, chapterId))
+            ?.takeIf { it.isCompleted }
+            ?.meta?.localUri?.takeIf { it.isNotBlank() }
+            ?: return null
+        val cbz = when (android.net.Uri.parse(localUri).scheme) {
+            "file" -> java.io.File(android.net.Uri.parse(localUri).path ?: return null)
+            "content" -> {
+                // Copie du content:// vers le cache avant extraction.
+                val cached = java.io.File(context.cacheDir, "scan_cbz/${scanDownloadId(panelUrl, chapterId).hashCode()}.cbz")
+                if (!cached.exists() || cached.length() == 0L) {
+                    cached.parentFile?.mkdirs()
+                    runCatching {
+                        context.contentResolver.openInputStream(android.net.Uri.parse(localUri))?.use { input ->
+                            java.io.FileOutputStream(cached).use { output -> input.copyTo(output) }
+                        } ?: return null
+                    }.getOrNull() ?: return null
+                }
+                cached
+            }
+            else -> return null
+        }
+        if (!cbz.exists() || cbz.length() == 0L) return null
+        val outDir = java.io.File(context.cacheDir, "scan_pages/${scanDownloadId(panelUrl, chapterId).hashCode()}")
+        return unzipScanPages(cbz, outDir)
+    }
+
+    /**
+     * Extraction d'un CBZ vers un dossier (PUR, testé JVM) : entrées
+     * triées par nom, une page par fichier, réutilisation du cache si
+     * l'extraction précédente est complète.
+     */
+    fun unzipScanPages(cbz: java.io.File, outDir: java.io.File): List<java.io.File> {
+        if (!cbz.exists() || cbz.length() == 0L) return emptyList()
+        val names = java.util.zip.ZipFile(cbz).use { zip ->
+            zip.entries().asSequence()
+                .filter { !it.isDirectory && it.name.lowercase().endsWith(".jpg") }
+                .map { it.name }
+                .sorted()
+                .toList()
+        }
+        if (names.isEmpty()) return emptyList()
+        val complete = outDir.exists() && names.indices.all { i -> java.io.File(outDir, "p%05d.jpg".format(i)).length() > 0L }
+        if (complete) return names.indices.map { i -> java.io.File(outDir, "p%05d.jpg".format(i)) }
+        outDir.mkdirs()
+        java.util.zip.ZipFile(cbz).use { zip ->
+            names.forEachIndexed { index, name ->
+                val entry = zip.getEntry(name) ?: return@forEachIndexed
+                val target = java.io.File(outDir, "p%05d.jpg".format(index))
+                zip.getInputStream(entry).use { input ->
+                    java.io.FileOutputStream(target).use { output -> input.copyTo(output) }
+                }
+            }
+        }
+        return names.indices.map { i -> java.io.File(outDir, "p%05d.jpg".format(i)) }
+    }
+
+    /** L'épisode de cette saison est-il téléchargé (fichier publié) ? */
+    fun isDownloaded(context: Context, seasonUrl: String, episodeNumber: Int): Boolean =
+        FileDownloadEngine.find(downloadId(seasonUrl, episodeNumber))?.isCompleted == true
+
+    /**
+     * Flux de lecture de l'épisode téléchargé : LE FICHIER du téléphone
+     * (content:///file://), jamais le réseau. Null si absent/incomplet.
+     */
+    fun downloadedStream(context: Context, seasonUrl: String, episodeNumber: Int): ResolvedStream? {
+        FileDownloadEngine.init(context)
+        val stream = FileDownloadEngine.find(downloadId(seasonUrl, episodeNumber))
+            ?.takeIf { it.isCompleted }
+            ?.meta
+            ?.toStream()
+            ?: return null
+        // Le fichier a pu être supprimé depuis Fichiers/VLC : on ne renvoie
+        // un flux local que s'il est réellement lisible (sinon repli réseau).
+        val readable = runCatching {
+            val uri = android.net.Uri.parse(stream.url)
+            when (uri.scheme) {
+                "file" -> java.io.File(uri.path ?: "").exists()
+                "content" -> context.contentResolver.openInputStream(uri)?.close() != null
+                else -> false
+            }
+        }.getOrDefault(false)
+        return if (readable) stream else null
+    }
+
+    /**
+     * Met un épisode en file : la VARIANTE choisie par l'utilisateur est
+     * résolue (DownloadChoice), les métadonnées embarquent l'URL de sa
+     * playlist + les en-têtes du lecteur.
+     */
+    fun startEpisodeDownload(
+        context: Context,
+        animeTitle: String,
+        seasonName: String,
+        seasonUrl: String,
+        episodeNumber: Int,
+        episodeLabel: String,
+        stream: ResolvedStream,
+        preferredHeight: Int? = null,
+        onStart: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        val choice = DownloadChoice.pick(stream, preferredHeight)
+        val meta = EpisodeDownloadMeta(
+            animeTitle = animeTitle,
+            seasonName = seasonName,
+            seasonUrl = seasonUrl,
+            episodeNumber = episodeNumber,
+            episodeLabel = episodeLabel,
+            streamUrl = choice.url,
+            isHls = choice.isHls,
+            headers = stream.headers,
+            qualityLabel = choice.qualityLabel,
+            batchId = batchIdFor(seasonUrl),
+            batchLabel = "$animeTitle — $seasonName"
+        )
+        FileDownloadEngine.enqueue(
+            context,
+            FileDownloadEngine.Task(
+                id = downloadId(seasonUrl, episodeNumber),
+                meta = meta
+            )
+        )
+        onStart()
+    }
+
+    /** Snapshot pour l'UI (états, pourcentages, octets). */
+    fun snapshot(context: Context): List<DownloadInfo> {
+        FileDownloadEngine.init(context)
+        return FileDownloadEngine.tasks().map { task ->
+            val percent = if (task.isCompleted) {
+                100f
+            } else if (task.bytesTotal > 0) {
+                (task.bytesDone * 100f / task.bytesTotal).coerceIn(0f, 100f)
+            } else {
+                0f
+            }
+            DownloadInfo(
+                id = task.id,
+                state = when (task.state) {
+                    FileDownloadEngine.State.QUEUED -> STATE_QUEUED
+                    FileDownloadEngine.State.RUNNING -> STATE_RUNNING
+                    FileDownloadEngine.State.WAITING_WIFI -> STATE_QUEUED
+                    FileDownloadEngine.State.PAUSED -> STATE_PAUSED
+                    FileDownloadEngine.State.DONE -> STATE_COMPLETED
+                    FileDownloadEngine.State.FAILED -> STATE_FAILED
+                },
+                percent = percent,
+                meta = task.meta,
+                bytesDownloaded = task.bytesDone,
+                totalBytes = if (task.isCompleted) task.bytesDone else task.bytesTotal
+            )
+        }
+    }
+
+    fun pauseAll(context: Context) {
+        FileDownloadEngine.pauseAll()
+        NovayDownloadService.notifyState(context)
+    }
+
+    fun resumeAll(context: Context) {
+        FileDownloadEngine.resumeAll()
+        NovayDownloadService.notifyState(context)
+    }
+
+    /** Annule un téléchargement + supprime SON fichier publié. */
+    fun remove(context: Context, id: String) {
+        FileDownloadEngine.cancel(context, id)
+        NovayDownloadService.notifyState(context)
+    }
+
+    // ── Lecture in-app ────────────────────────────────────────────────────
+
+    /**
+     * Source de lecture : l'épisode téléchargé se lit DEPUIS LE FICHIER
+     * du téléphone (content:// ou file://) ; en ligne, la source HTTP
+     * du flux avec ses en-têtes.
+     */
+    fun offlineMediaSource(
+        context: Context,
+        stream: ResolvedStream
+    ): ProgressiveMediaSource {
+        val url = stream.url
+        val isLocal = url.startsWith("content://") || url.startsWith("file://") ||
+            url.startsWith("/")
+        val factory = if (isLocal) {
+            DefaultDataSource.Factory(context)
+        } else {
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent(stream.headers["User-Agent"] ?: SamaParsers.UA)
+                .setDefaultRequestProperties(stream.headers - "User-Agent")
+                .setAllowCrossProtocolRedirects(true)
+            DefaultDataSource.Factory(context, httpFactory)
+        }
+        // Type explicite : le lecteur intégré n'a pas à deviner le
+        // conteneur d'un fichier local (MP4 fMP4 ou TS brut).
+        val item = MediaItem.Builder().setUri(url).apply {
+            when {
+                url.endsWith(".mp4", true) -> setMimeType(MimeTypes.VIDEO_MP4)
+                url.endsWith(".ts", true) -> setMimeType(MimeTypes.VIDEO_MP2T)
+            }
+        }.build()
+        // V2.9.6 : le TS n'a pas d'index — sans ces options, un .ts local
+        // serait ILLISIBLE en navigation (seek désactivé). Constant-bitrate
+        // seeking = position estimée par le débit (approximative de quelques
+        // secondes sur un saut lointain, identique au streaming HLS) ;
+        // FLAG_ALLOW_NON_IDR_KEYFRAMES = les keyframes des flux HLS
+        // (parfois non-IDR) comptent comme points de reprise.
+        val extractors = DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+            .setConstantBitrateSeekingAlwaysEnabled(true)
+            .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES)
+        return ProgressiveMediaSource.Factory(factory, extractors)
+            .createMediaSource(item)
+    }
+
+    // ── Notification pilotable (V2.3, inspiration Ketch) ──────────────────
+
+    /**
+     * Notification de progression : boutons Pause / Reprendre / Annuler
+     * directement dans le tiroir de notifications.
+     */
+    fun progressNotification(context: Context): Notification {
+        val infos = snapshot(context)
+        val active = infos.filter { it.isActive }
+        val queued = infos.filter { it.state == STATE_QUEUED }
+        val paused = infos.filter { it.state == STATE_PAUSED }
+        val done = infos.count { it.isCompleted }
+        val failed = infos.filter { it.isFailed }
+
+        val enginePaused = FileDownloadEngine.downloadsPaused()
+        val wifiOnly = isWifiOnly(context)
+
+        val (title, text) = when {
+            active.isNotEmpty() -> {
+                val current = active.firstOrNull { it.state == STATE_RUNNING } ?: active.first()
+                "Téléchargements NoVaY" to
+                    "${active.size} en cours · ${current.percent.toInt()} % · ${queued.size} en file"
+            }
+            enginePaused && paused.isNotEmpty() ->
+                "Téléchargements NoVaY" to "En pause (${paused.size} en attente)"
+            failed.isNotEmpty() ->
+                "Téléchargements NoVaY" to
+                    "${failed.size} échec(s) — ${failed.first().meta?.episodeLabel ?: ""}"
+            done > 0 && infos.all { it.isCompleted } ->
+                "Téléchargements NoVaY" to "Terminé — $done épisode(s) dans Download/NoVaY"
+            queued.isNotEmpty() && wifiOnly ->
+                "Téléchargements NoVaY" to "En attente du Wi-Fi (${queued.size})"
+            queued.isNotEmpty() ->
+                "Téléchargements NoVaY" to "En file (${queued.size})"
+            else -> "Téléchargements NoVaY" to "Aucun téléchargement"
+        }
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setOnlyAlertOnce(true)
+            .setOngoing(active.isNotEmpty())
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+
+        if (infos.isNotEmpty()) {
+            if (enginePaused) {
+                builder.addAction(
+                    0, "Reprendre",
+                    actionIntent(context, NovayDownloadService.ACTION_RESUME_ALL, 2)
+                )
+            } else {
+                builder.addAction(
+                    0, "Pause",
+                    actionIntent(context, NovayDownloadService.ACTION_PAUSE_ALL, 1)
+                )
+            }
+            builder.addAction(
+                0, "Annuler",
+                actionIntent(context, NovayDownloadService.ACTION_CANCEL_ALL, 3)
+            )
+        }
+        return builder.build()
+    }
+
+    private fun actionIntent(context: Context, action: String, requestCode: Int): PendingIntent =
+        PendingIntent.getService(
+            context,
+            requestCode,
+            Intent(context, NovayDownloadService::class.java).setAction(action),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+    private fun createChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Téléchargements NoVaY",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Progression des téléchargements d'épisodes"
+            }
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
+        }
+    }
+}

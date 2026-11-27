@@ -1,0 +1,280 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "fs";
+import path from "path";
+import { __resetOwnerLidsForTests, isKnownOwnerLid, ownerDeliveryJid, resolveOwnerIdentity } from "../src/bot/ownerIdentity.js";
+
+/**
+ * 8.89 — résolution owner sous LID (WhatsApp « masquer mon numéro »).
+ *
+ * Contexte terrain 2026-10-03 : l'owner écrivait au bot depuis un jid @lid
+ * (…5378) alors que OWNER_NUMBER est son numéro réel (…3760) → gate owner
+ * toujours refusé. Le helper résout le LID via la table Baileys
+ * (sock.signalRepository.lidMapping.getPNForLID) puis compare EXACTEMENT.
+ *
+ * Ici le « sock » est un faux structural : aucun Baileys, aucun réseau.
+ */
+
+const OWNER = "15551234567";
+const OWNER_LID = "98765432105378";
+
+const mkSock = (pn: string | null | Error, lidByPn?: string | null | Error) => ({
+  signalRepository: {
+    lidMapping: {
+      getPNForLID: vi.fn(async () => {
+        if (pn instanceof Error) throw pn;
+        return pn;
+      }),
+      getLIDForPN: vi.fn(async () => {
+        if (lidByPn === undefined) return null;
+        if (lidByPn instanceof Error) throw lidByPn;
+        return lidByPn;
+      })
+    }
+  }
+});
+
+beforeEach(() => {
+  delete process.env.NEBULA_OWNER_LID;
+});
+
+afterEach(() => {
+  delete process.env.NEBULA_OWNER_LID;
+});
+
+describe("8.89 — jid téléphone : comportement inchangé (zéro régression)", () => {
+  it("numéro = owner → owner, SANS appeler la table Baileys", async () => {
+    const sock = mkSock("1555999999999:0@s.whatsapp.net");
+    const r = await resolveOwnerIdentity(sock as any, `${OWNER}@s.whatsapp.net`, OWNER);
+    expect(r.isOwner).toBe(true);
+    expect(r.senderNumber).toBe(OWNER);
+    expect(r.resolvedNumber).toBeNull();
+    expect(sock.signalRepository.lidMapping.getPNForLID).not.toHaveBeenCalled();
+  });
+
+  it("numéro ≠ owner → non-owner", async () => {
+    const r = await resolveOwnerIdentity(mkSock(null) as any, "1555999999999@s.whatsapp.net", OWNER);
+    expect(r.isOwner).toBe(false);
+  });
+
+  it("comparaison EXACTE (C7) : numéro partiel ne passe pas", async () => {
+    const r = await resolveOwnerIdentity(mkSock(null) as any, "23764014376@s.whatsapp.net", OWNER);
+    expect(r.isOwner).toBe(false);
+  });
+
+  it("config multi-numéros : chacun des candidats est reconnu", async () => {
+    const cfg = `${OWNER}, 1555999888777`;
+    expect((await resolveOwnerIdentity(mkSock(null) as any, "1555999888777@s.whatsapp.net", cfg)).isOwner).toBe(true);
+    expect((await resolveOwnerIdentity(mkSock(null) as any, "1555111222333@s.whatsapp.net", cfg)).isOwner).toBe(false);
+  });
+
+  it("config owner vide → jamais owner (même numéro quelconque)", async () => {
+    const r = await resolveOwnerIdentity(mkSock(null) as any, `${OWNER}@s.whatsapp.net`, "");
+    expect(r.isOwner).toBe(false);
+  });
+});
+
+describe("8.89 — jid @lid : résolution via la table Baileys", () => {
+  it("LID résolu vers le numéro owner (suffixe de device éliminé) → owner", async () => {
+    // Piège du suffixe : Baileys renvoie "15551234567:0@s.whatsapp.net" —
+    // une extraction naïve des digits donnerait "155512345670" (device
+    // collé) et le gate refuserait à tort l'owner.
+    const r = await resolveOwnerIdentity(mkSock(`${OWNER}:0@s.whatsapp.net`) as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(true);
+    expect(r.resolvedNumber).toBe(OWNER);
+    expect(r.senderNumber).toBe(OWNER_LID);
+  });
+
+  it("LID résolu vers un AUTRE numéro → non-owner", async () => {
+    const r = await resolveOwnerIdentity(mkSock("1555999999999:0@s.whatsapp.net") as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(false);
+    expect(r.resolvedNumber).toBe("1555999999999");
+  });
+
+  it("table inconnue (null) + NEBULA_OWNER_LID configuré → fallback exact du LID", async () => {
+    process.env.NEBULA_OWNER_LID = OWNER_LID;
+    const r = await resolveOwnerIdentity(mkSock(null) as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(true);
+  });
+
+  it("table inconnue + NEBULA_OWNER_LID DIFFÉRENT → non-owner (exactitude)", async () => {
+    process.env.NEBULA_OWNER_LID = "1111222233334444";
+    const r = await resolveOwnerIdentity(mkSock(null) as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(false);
+  });
+
+  it("LID partiel ne passe pas le fallback (exactitude, esprit C7)", async () => {
+    process.env.NEBULA_OWNER_LID = OWNER_LID.slice(0, -1);
+    const r = await resolveOwnerIdentity(mkSock(null) as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(false);
+  });
+
+  it("table inconnue + pas de NEBULA_OWNER_LID → non-owner, pas de crash", async () => {
+    const r = await resolveOwnerIdentity(mkSock(null) as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(false);
+  });
+
+  it("table qui JETTE une erreur → pas de crash, fallback env s'applique", async () => {
+    process.env.NEBULA_OWNER_LID = OWNER_LID;
+    const r = await resolveOwnerIdentity(mkSock(new Error("boom")) as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(true);
+  });
+
+  it("sock sans signalRepository (absent/null) → pas de crash, non-owner sans fallback", async () => {
+    expect((await resolveOwnerIdentity(undefined, `${OWNER_LID}@lid`, OWNER)).isOwner).toBe(false);
+    expect((await resolveOwnerIdentity({} as any, `${OWNER_LID}@lid`, OWNER)).isOwner).toBe(false);
+  });
+});
+
+describe("8.89b — résolution inverse : OWNER_NUMBER → LID (USync)", () => {
+  it("LID→PN inconnu MAIS inverse owner→LID matche l'expéditeur → owner, zéro config", async () => {
+    const sock = mkSock(null, `${OWNER_LID}:0@lid`);
+    const r = await resolveOwnerIdentity(sock as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(true);
+    expect(r.resolvedNumber).toBe(OWNER);
+    expect(sock.signalRepository.lidMapping.getLIDForPN).toHaveBeenCalledWith(`${OWNER}@s.whatsapp.net`);
+  });
+
+  it("inverse renvoie le LID d'un AUTRE numéro → non-owner", async () => {
+    const r = await resolveOwnerIdentity(mkSock(null, "111122223333:0@lid") as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(false);
+  });
+
+  it("inverse qui JETTE (usync en erreur) → pas de crash, fallback env s'applique", async () => {
+    process.env.NEBULA_OWNER_LID = OWNER_LID;
+    const r = await resolveOwnerIdentity(mkSock(null, new Error("usync boom")) as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(true);
+  });
+
+  it("multi-candidats : le second numéro owner résout le LID", async () => {
+    const sock = mkSock(null, `${OWNER_LID}:0@lid`);
+    const r = await resolveOwnerIdentity(sock as any, `${OWNER_LID}@lid`, `1555111111111, ${OWNER}`);
+    expect(r.isOwner).toBe(true);
+  });
+});
+
+describe("8.89 — intégration structurelle (style audit 8.84)", () => {
+  const readSrc = (f: string): string =>
+    fs.readFileSync(path.resolve(process.cwd(), "src", f), "utf8");
+
+  it("botEngine : le gate owner passe par resolveOwnerIdentity", () => {
+    const src = readSrc("bot/botEngine.ts");
+    expect(src).toContain("resolveOwnerIdentity");
+    expect(src).toContain("await resolveOwnerIdentity(sock, actualSenderJid, configuredOwner)");
+    expect(src).not.toContain("cleanedOwner"); // l'ancien calcul inline est retiré
+  });
+
+  it("whois : badge owner + affichage du numéro WhatsApp résolu", () => {
+    const src = readSrc("bot/commands/whois.ts");
+    expect(src).toContain("resolveOwnerIdentity(sock, finalTarget, ownerCfg)");
+    expect(src).toContain("WhatsApp :");
+  });
+});
+
+describe("9.16b — mémoire des LID owner (routes du gestionnaire d'utilisateurs)", () => {
+  beforeEach(() => {
+    __resetOwnerLidsForTests();
+  });
+
+  it("LID reconnu comme owner → mémorisé : isKnownOwnerLid vrai (routes panneau)", async () => {
+    const lidJid = `${OWNER_LID}@lid`;
+    expect(isKnownOwnerLid(lidJid)).toBe(false); // froid : rien de mémorisé
+    const sock = mkSock(`${OWNER}:0@s.whatsapp.net`);
+    const r = await resolveOwnerIdentity(sock as any, lidJid, OWNER);
+    expect(r.isOwner).toBe(true);
+    expect(isKnownOwnerLid(lidJid)).toBe(true); // 9.16b — les routes peuvent refuser le ban
+  });
+
+  it("LID d'un AUTRE utilisateur → reconnu non-owner, PAS mémorisé", async () => {
+    const lidJid = "111122223333444@lid";
+    const sock = mkSock("1555999999999:0@s.whatsapp.net");
+    const r = await resolveOwnerIdentity(sock as any, lidJid, OWNER);
+    expect(r.isOwner).toBe(false);
+    expect(isKnownOwnerLid(lidJid)).toBe(false);
+  });
+
+  it("résolution inverse (8.89b) mémorise aussi le LID owner", async () => {
+    const lidJid = `${OWNER_LID}@lid`;
+    // getPNForLID ignore la paire → direction inverse la retrouve
+    const sock = mkSock(null, `${OWNER_LID}:5@lid`);
+    const r = await resolveOwnerIdentity(sock as any, lidJid, OWNER);
+    expect(r.isOwner).toBe(true);
+    expect(isKnownOwnerLid(lidJid)).toBe(true);
+  });
+
+  it("NEBULA_OWNER_LID (dernier recours) mémorise également", async () => {
+    process.env.NEBULA_OWNER_LID = OWNER_LID;
+    try {
+      const lidJid = `${OWNER_LID}@lid`;
+      const sock = mkSock(null, null); // aucune résolution possible
+      const r = await resolveOwnerIdentity(sock as any, lidJid, OWNER);
+      expect(r.isOwner).toBe(true);
+      expect(isKnownOwnerLid(lidJid)).toBe(true);
+    } finally {
+      delete process.env.NEBULA_OWNER_LID;
+    }
+  });
+
+  it("wiring app.ts : garde ban étendue au LID + auto-guérison owner banni", () => {
+    const src = fs.readFileSync(path.resolve(process.cwd(), "app.ts"), "utf8");
+    expect(src).toContain("isKnownOwnerLid(jid)");
+    expect(src).toContain("user.auto-unban-owner");
+    expect(src).toContain("le propriétaire ne peut pas être banni");
+  });
+});
+
+describe("9.18yy — ownerDeliveryJid (F6 : livraison des envois proactifs)", () => {
+  beforeEach(() => {
+    __resetOwnerLidsForTests();
+  });
+
+  it("froid, sans NEBULA_OWNER_LID → le PN (comportement historique inchangé)", () => {
+    expect(ownerDeliveryJid(OWNER)).toBe(`${OWNER}@s.whatsapp.net`);
+  });
+
+  it("froid, NEBULA_OWNER_LID configuré → le LID (couverture à froid)", () => {
+    process.env.NEBULA_OWNER_LID = OWNER_LID;
+    expect(ownerDeliveryJid(OWNER)).toBe(`${OWNER_LID}@lid`);
+  });
+
+  it("LID mémorisé via la table Baileys (9.16b) → livraison directe au LID", async () => {
+    const sock = mkSock(`${OWNER}:0@s.whatsapp.net`);
+    const r = await resolveOwnerIdentity(sock as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(true);
+    expect(ownerDeliveryJid(OWNER)).toBe(`${OWNER_LID}@lid`);
+  });
+
+  it("résolution inverse (8.89b) → le LID est aussi une adresse de livraison", async () => {
+    const sock = mkSock(null, `${OWNER_LID}:5@lid`);
+    const r = await resolveOwnerIdentity(sock as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(true);
+    expect(ownerDeliveryJid(OWNER)).toBe(`${OWNER_LID}@lid`);
+  });
+
+  it("LID mémorisé pour UN AUTRE owner → ne détourne pas la livraison", async () => {
+    // Multi-owners : un LID mappé au PN d'un autre owner ne doit pas
+    // intercepter la livraison de celui-ci.
+    const otherPn = "1555999999998";
+    const sock = mkSock(`${otherPn}:0@s.whatsapp.net`);
+    const r = await resolveOwnerIdentity(sock as any, "111122223333444@lid", `${otherPn}`);
+    expect(r.isOwner).toBe(true);
+    expect(ownerDeliveryJid(OWNER)).toBe(`${OWNER}@s.whatsapp.net`); // PN : le sien
+  });
+
+  it("LID du dernier recours env (PN non mappé) → livraison via le LID env", async () => {
+    // Cas env-fallback : le LID est mémorisé SANS PN connu — la livraison
+    // passe par NEBULA_OWNER_LID s'il est là, sinon le PN reste honnête.
+    const sock = mkSock(null, null);
+    const r = await resolveOwnerIdentity(sock as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r.isOwner).toBe(false); // pas d'env : non-owner ici
+    process.env.NEBULA_OWNER_LID = OWNER_LID;
+    const sock2 = mkSock(null, null);
+    const r2 = await resolveOwnerIdentity(sock2 as any, `${OWNER_LID}@lid`, OWNER);
+    expect(r2.isOwner).toBe(true);
+    expect(ownerDeliveryJid(OWNER)).toBe(`${OWNER_LID}@lid`);
+  });
+
+  it("PN vide → chaîne vide (l'appelant garde sa garde)", () => {
+    expect(ownerDeliveryJid("")).toBe("");
+    expect(ownerDeliveryJid("   ")).toBe("");
+  });
+});

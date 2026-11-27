@@ -1,0 +1,127 @@
+package dot.jcversa.novay.downloads
+
+import dot.jcversa.novay.data.ResolvedStream
+import dot.jcversa.novay.data.sama.SamaParsers
+import org.json.JSONObject
+
+/**
+ * Métadonnées d'un épisode téléchargé, persistées dans le download
+ * (request.data) — PURES (testables JVM, aucune dépendance media3).
+ *
+ * Format JSON plat : la relecture après redémarrage reconstruit le flux
+ * (URL + en-têtes) sans aucune résolution réseau.
+ */
+data class EpisodeDownloadMeta(
+    val animeTitle: String,
+    val seasonName: String,
+    val seasonUrl: String,
+    val episodeNumber: Int,
+    val episodeLabel: String,
+    val streamUrl: String,
+    val isHls: Boolean,
+    val headers: Map<String, String>,
+    /** V2.5 novabox : URI du fichier publié (content:// ou file://). */
+    val localUri: String? = null,
+    /** Nom du fichier publié dans Download/NoVaY/. */
+    val fileName: String? = null,
+    /** Résolution choisie (« 1080p ») — pour le nommage. */
+    val qualityLabel: String = "",
+    /** V2.9 : codec vidéo sondé à la publication (« H.264 », « HEVC ») —
+     *  badge diagnostic : HEVC sur un appareil ancien = décodage logiciel. */
+    val videoCodec: String? = null,
+    /** V3.0 : type de contenu — « video » (HLS/MP4) ou « scan » (pages
+     *  d'un chapitre manga, publiées en un fichier .cbz). */
+    val kind: String = KIND_VIDEO,
+    /** V3.0 scans : URLs des pages du chapitre, dans l'ordre. */
+    val pageUrls: List<String> = emptyList(),
+    /** V3.3 lots : identifiant du lot (une saison ou un panneau de scans). */
+    val batchId: String = "",
+    /** V3.3 lots : libellé lisible du lot (« Overgeared — Saison 1 VF »). */
+    val batchLabel: String = "",
+) {
+    val isScan: Boolean get() = kind == KIND_SCAN
+    fun toJson(): String = JSONObject().apply {
+        put("animeTitle", animeTitle)
+        put("seasonName", seasonName)
+        put("seasonUrl", seasonUrl)
+        put("episodeNumber", episodeNumber)
+        put("episodeLabel", episodeLabel)
+        put("streamUrl", streamUrl)
+        put("isHls", isHls)
+        put("ua", headers["User-Agent"] ?: "")
+        put("referer", headers["Referer"] ?: "")
+        put("origin", headers["Origin"] ?: "")
+        put("localUri", localUri ?: "")
+        put("fileName", fileName ?: "")
+        put("qualityLabel", qualityLabel)
+        put("videoCodec", videoCodec ?: "")
+        put("kind", kind)
+        put("pageUrls", org.json.JSONArray(pageUrls))
+        put("batchId", batchId)
+        put("batchLabel", batchLabel)
+    }.toString()
+
+    fun toStream(): ResolvedStream {
+        // V2.5 : l'épisode téléchargé vit dans Download/NoVaY/ du
+        // téléphone — on lit LE FICHIER, jamais le réseau.
+        val local = localUri?.takeIf { it.isNotBlank() }
+        if (local != null) {
+            return ResolvedStream(
+                url = local,
+                isHls = false,
+                headers = emptyMap(),
+                qualities = emptyList()
+            )
+        }
+        return ResolvedStream(
+            url = streamUrl,
+            isHls = isHls,
+            headers = mapOf(
+                "User-Agent" to (headers["User-Agent"] ?: SamaParsers.UA),
+                "Referer" to (headers["Referer"] ?: ""),
+                "Origin" to (headers["Origin"] ?: "")
+            ),
+            qualities = emptyList()
+        )
+    }
+
+    companion object {
+        const val KIND_VIDEO = "video"
+        const val KIND_SCAN = "scan"
+
+        fun fromJson(raw: ByteArray?): EpisodeDownloadMeta? {
+            if (raw == null) return null
+            return try {
+                val o = JSONObject(String(raw, Charsets.UTF_8))
+                val headers = buildMap {
+                    if (o.optString("ua").isNotEmpty()) put("User-Agent", o.optString("ua"))
+                    if (o.optString("referer").isNotEmpty()) put("Referer", o.optString("referer"))
+                    if (o.optString("origin").isNotEmpty()) put("Origin", o.optString("origin"))
+                }
+                EpisodeDownloadMeta(
+                    animeTitle = o.optString("animeTitle"),
+                    seasonName = o.optString("seasonName"),
+                    seasonUrl = o.optString("seasonUrl"),
+                    episodeNumber = o.optInt("episodeNumber"),
+                    episodeLabel = o.optString("episodeLabel"),
+                    streamUrl = o.optString("streamUrl"),
+                    isHls = o.optBoolean("isHls"),
+                    headers = headers,
+                    localUri = o.optString("localUri").ifEmpty { null },
+                    fileName = o.optString("fileName").ifEmpty { null },
+                    qualityLabel = o.optString("qualityLabel"),
+                    videoCodec = o.optString("videoCodec").ifEmpty { null },
+                    kind = o.optString("kind").ifEmpty { KIND_VIDEO },
+                    batchId = o.optString("batchId"),
+                    batchLabel = o.optString("batchLabel"),
+                    pageUrls = run {
+                        val arr = o.optJSONArray("pageUrls") ?: org.json.JSONArray()
+                        (0 until arr.length()).mapNotNull { i -> arr.optString(i).ifEmpty { null } }
+                    }
+                )
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+}

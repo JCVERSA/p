@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fond sombre des le lancement (pas de flash blanc sur les telephones
+         en theme clair) ; le theme Compose NoVaY (noir + ambre) prend le
+         relais a la 1re frame. -->
+    <style name="Theme.NoVaY" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/ic_launcher_bg</item>
+    </style>
+</resources>
