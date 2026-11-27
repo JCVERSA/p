@@ -2,7 +2,7 @@ name: NoVaY Pages
 
 # Page officielle de telechargement de NoVaY.
 #
-# La page est CONCUE ET MAINTENUE par l owner dans JCVERSA/novay-page
+# La page est CONCUE ET MAINTENUE par l owner dans JCVERSA/novay-page-0
 # (source de verite). Ce workflow la clone, y injecte la version
 # automatique (derniere release via l API GitHub, au chargement dans
 # le navigateur), la construit (Vite) et la publie sur
@@ -10,8 +10,8 @@ name: NoVaY Pages
 # deja partages.
 #
 # Le token de la session Arena peut pousser sur p mais pas sur
-# novay-page : d ou cette topologie. Mise a jour de la page :
-#   - chaque nuit (cron 03:00 UTC) les changements de novay-page
+# novay-page-0 : d ou cette topologie. Mise a jour de la page :
+#   - chaque nuit (cron 03:00 UTC) les changements de novay-page-0
 #     sont repris automatiquement ;
 #   - immediatement via le bouton "Run workflow" (onglet Actions) ;
 #   - a chaque commit p touchant ce workflow ou le script d injection.
@@ -38,17 +38,17 @@ concurrency:
 
 jobs:
   build:
-    name: Build de la page (novay-page)
+    name: Build de la page (novay-page-0)
     runs-on: ubuntu-24.04  # epingle : ubuntu-24.04, pas ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Recuperation de la page (novay-page)
+      - name: Recuperation de la page (novay-page-0)
         run: |
           set -e
           rm -rf page
-          git clone --depth 5 https://github.com/JCVERSA/novay-page.git page
+          git clone --depth 5 https://github.com/JCVERSA/novay-page-0.git page
           echo "::notice::novay-page @ $(cd page && git rev-parse --short HEAD)"
           # Journal des commits pris en compte (visibilite sur ce qui est
           # deploye - un seul clone depth 5 suffit pour l information).
@@ -57,7 +57,7 @@ jobs:
           done
 
       # Injecte le span + le script de version dans index.html AVANT
-      # le build. Echoue bruyamment si novay-page a change de structure.
+      # le build. Echoue bruyamment si novay-page-0 a change de structure.
       - name: Injection de la version automatique
         run: python3 .github/scripts/inject_release_meta.py page/index.html
 
